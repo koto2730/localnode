@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
@@ -9,20 +9,28 @@ import 'package:network_info_plus/network_info_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:package_info_plus/package_info_plus.dart';
+
+import 'dart:math';
 
 class ServerService {
+  static const _platform = MethodChannel('com.example.pocketlink/storage');
   HttpServer? _server;
   String? _ipAddress;
   final int _port = 8080;
   Directory? _documentsDir;
   Directory? _webRootDir; // Webルートディレクトリのパス
+  String? _pin;
+  final Set<String> _sessions = {};
 
   final _router = Router();
 
   String? get ipAddress => _ipAddress;
+  String? get pin => _pin;
   bool get isRunning => _server != null;
 
   ServerService() {
+    _router.post('/api/auth', _authHandler);
     _router.get('/api/info', _infoHandler);
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
@@ -30,13 +38,48 @@ class ServerService {
     _router.delete('/api/files/<filename>', _deleteFileHandler);
   }
 
-  Future<void> _init() async {
-    // Downloadsフォルダのパスを取得
-    final downloadsDir = await getDownloadsDirectory();
-    if (downloadsDir == null) {
-      throw Exception('Downloadsフォルダが見つかりません。');
+  Future<String?> _getDownloadsPathAndroid() async {
+    try {
+      final String? path = await _platform.invokeMethod('getDownloadsDirectory');
+      return path;
+    } on PlatformException catch (e) {
+      print("Failed to get downloads directory: '${e.message}'.");
+      return null;
     }
-    _documentsDir = downloadsDir;
+  }
+
+  Future<void> _init() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    final appName = packageInfo.appName;
+
+    // プラットフォームに応じて保存先ディレクトリを決定
+    if (Platform.isAndroid) {
+      final downloadsPath = await _getDownloadsPathAndroid();
+      if (downloadsPath != null) {
+        // Downloads/AppName というパスを作成
+        _documentsDir = Directory(p.join(downloadsPath, appName));
+      } else {
+        // フォールバック
+        _documentsDir = await getExternalStorageDirectory();
+      }
+    } else if (Platform.isIOS) {
+      // iOSではアプリのDocumentsディレクトリ内にサブディレクトリを作成
+      final documentsPath = await getApplicationDocumentsDirectory();
+      _documentsDir = Directory(p.join(documentsPath.path, appName));
+    } else {
+      // その他のデスクトップOSなど
+      final documentsPath = await getApplicationDocumentsDirectory();
+      _documentsDir = Directory(p.join(documentsPath.path, appName));
+    }
+
+    if (_documentsDir == null) {
+      throw Exception('保存先フォルダが見つかりません。');
+    }
+
+    // ディレクトリが存在しない場合は作成
+    if (!await _documentsDir!.exists()) {
+      await _documentsDir!.create(recursive: true);
+    }
   }
 
   /// アセットのWebファイルを一時ディレクトリに展開する
@@ -63,6 +106,38 @@ class ServerService {
   }
 
   // === Handlers ===
+
+  String _generatePin() {
+    return (1000 + Random().nextInt(9000)).toString();
+  }
+
+  String _generateSessionToken() {
+    final random = Random.secure();
+    final values = List<int>.generate(16, (i) => random.nextInt(256));
+    return base64Url.encode(values);
+  }
+
+  Future<Response> _authHandler(Request request) async {
+    final body = await request.readAsString();
+    try {
+      final params = json.decode(body) as Map<String, dynamic>;
+      final submittedPin = params['pin'];
+
+      if (submittedPin == _pin) {
+        final token = _generateSessionToken();
+        _sessions.add(token);
+        return Response.ok(json.encode({'token': token}),
+            headers: {'Content-Type': 'application/json'});
+      } else {
+        return Response.forbidden(json.encode({'error': 'Invalid PIN'}),
+            headers: {'Content-Type': 'application/json'});
+      }
+    } catch (e) {
+      return Response.badRequest(
+          body: json.encode({'error': 'Invalid request body.'}),
+          headers: {'Content-Type': 'application/json'});
+    }
+  }
 
   Response _infoHandler(Request request) {
     return Response.ok('{"version": "1.0.0", "name": "Pocket Link Server"}',
@@ -147,34 +222,64 @@ class ServerService {
   }
 
 
+  // === Middleware ===
+
+  Middleware get _authMiddleware => (innerHandler) {
+    return (request) {
+      final path = request.url.path;
+
+      // /api/で始まらないパス、または認証が不要なAPIパスはそのまま通す
+      if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth') {
+        return innerHandler(request);
+      }
+
+      // 上記以外で/api/で始まるパスは認証が必要
+      final authHeader = request.headers['Authorization'];
+      if (authHeader != null && authHeader.startsWith('Bearer ')) {
+        final token = authHeader.substring(7);
+        if (_sessions.contains(token)) {
+          return innerHandler(request); // 認証成功
+        }
+      }
+      
+      return Response.unauthorized(json.encode({'error': 'Authentication required.'}),
+          headers: {'Content-Type': 'application/json'}); // 認証失敗
+    };
+  };
+
+
   // === Server Control ===
 
   Future<void> startServer() async {
     if (_server != null) return;
 
+    _pin = _generatePin();
+    _sessions.clear();
+    print('Your PIN is: $_pin'); // デバッグ用
+
     try {
       await _init();
       await _deployAssets(); // アセットを展開
       WakelockPlus.enable();
-      
+
       _ipAddress = await NetworkInfo().getWifiIP();
       if (_ipAddress == null) throw Exception('Failed to get Wi-Fi IP address.');
 
       // 展開先の一時ディレクトリを指すように変更
-      final staticHandler = createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
+      final staticHandler =
+          createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
-      final cascade = Cascade()
-          .add(_router.call)
-          .add(staticHandler);
+      final apiHandler =
+          const Pipeline().addMiddleware(_authMiddleware).addHandler(_router.call);
 
-      final handler = const Pipeline()
-          .addMiddleware(logRequests())
-          .addHandler(cascade.handler);
+      final cascade = Cascade().add(apiHandler).add(staticHandler);
+
+      final handler =
+          const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
 
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, _port);
       print('Serving at http://${_server!.address.host}:${_server!.port}');
       print('Accessible via: http://$_ipAddress:$_port');
-
     } catch (e) {
       print('Error starting server: $e');
       await stopServer(); // Ensure cleanup on partial start
@@ -186,6 +291,8 @@ class ServerService {
     await _server?.close(force: true);
     _server = null;
     _ipAddress = null;
+    _pin = null;
+    _sessions.clear();
     WakelockPlus.disable();
     print('Server stopped.');
   }

@@ -15,11 +15,13 @@ class ServerState {
   const ServerState({
     required this.status,
     this.ipAddress,
+    this.pin,
     this.errorMessage,
   });
 
   final ServerStatus status;
   final String? ipAddress;
+  final String? pin;
   final String? errorMessage;
 }
 
@@ -60,6 +62,7 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
       state = ServerState(
         status: ServerStatus.running,
         ipAddress: _serverService.ipAddress,
+        pin: _serverService.pin,
       );
     } catch (e, stackTrace) {
       state = ServerState(
@@ -114,97 +117,84 @@ class HomePage extends ConsumerWidget {
   @override
 
   Widget build(BuildContext context, WidgetRef ref) {
-
     final serverState = ref.watch(serverStateProvider);
-
-    final url = serverState.ipAddress != null ? 'http://${serverState.ipAddress}:8080' : null;
-
-
+    final url = serverState.ipAddress != null
+        ? 'http://${serverState.ipAddress}:8080'
+        : null;
 
     return Scaffold(
-
       appBar: AppBar(
-
         title: const Text('Pocket Link'),
-
         backgroundColor: Colors.white,
-
         elevation: 1,
-
       ),
-
       body: Center(
-
         child: Padding(
-
           padding: const EdgeInsets.all(16.0),
-
           child: Column(
-
             mainAxisAlignment: MainAxisAlignment.center,
-
             children: <Widget>[
-
               // サーバーの状態に応じて表示を切り替え
-
               if (serverState.status == ServerStatus.running && url != null)
-
-                _buildConnectionInfo(context, url),
-
-              
+                _buildConnectionInfo(context, url, serverState.pin),
 
               if (serverState.status == ServerStatus.stopped)
-
-                const Text('サーバーは停止しています', style: TextStyle(fontSize: 18, color: Colors.grey)),
-
-              
+                const Text('サーバーは停止しています',
+                    style: TextStyle(fontSize: 18, color: Colors.grey)),
 
               if (serverState.status == ServerStatus.error)
-
-                Text('エラー: ${serverState.errorMessage}', style: const TextStyle(fontSize: 16, color: Colors.red)),
-
-              
+                Text('エラー: ${serverState.errorMessage}',
+                    style: const TextStyle(fontSize: 16, color: Colors.red)),
 
               const Spacer(),
 
-
-
               // Start/Stopボタン
-
               _buildControlButton(context, ref, serverState),
 
-              
-
               const SizedBox(height: 20),
-
             ],
-
           ),
-
         ),
-
       ),
-
     );
-
   }
 
-
-
-  Widget _buildConnectionInfo(BuildContext context, String url) {
-
+  Widget _buildConnectionInfo(BuildContext context, String url, String? pin) {
     return Column(
-
       children: [
-
+        if (pin != null)
+          Card(
+            color: Colors.amber[100],
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.pin, color: Colors.grey[850]),
+                  const SizedBox(width: 12),
+                  Text(
+                    'PIN: $pin',
+                    style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 6,
+                      color: Colors.grey[850],
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 25),
         const Text(
-
           '以下のQRコードまたはアドレスにアクセスしてください',
-
           textAlign: TextAlign.center,
-
           style: TextStyle(fontSize: 16),
-
         ),
 
         const SizedBox(height: 20),
