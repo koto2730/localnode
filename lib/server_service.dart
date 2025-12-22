@@ -10,8 +10,11 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 
 import 'dart:math';
+import 'package:image/image.dart' as img;
 
 class ServerService {
   static const _platform = MethodChannel('com.example.pocketlink/storage');
@@ -20,6 +23,7 @@ class ServerService {
   final int _port = 8080;
   Directory? _documentsDir;
   Directory? _webRootDir; // Webルートディレクトリのパス
+  Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
   String? _pin;
   final Set<String> _sessions = {};
 
@@ -35,6 +39,8 @@ class ServerService {
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
     _router.get('/api/download/<filename>', _downloadHandler);
+    _router.get('/api/thumbnail/<filename>', _thumbnailHandler);
+    _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<filename>', _deleteFileHandler);
   }
 
@@ -79,6 +85,13 @@ class ServerService {
     // ディレクトリが存在しない場合は作成
     if (!await _documentsDir!.exists()) {
       await _documentsDir!.create(recursive: true);
+    }
+    
+    // サムネイルキャッシュディレクトリの初期化
+    final tempDir = await getTemporaryDirectory();
+    _thumbnailCacheDir = Directory(p.join(tempDir.path, 'thumbnails'));
+    if (!await _thumbnailCacheDir!.exists()) {
+      await _thumbnailCacheDir!.create(recursive: true);
     }
   }
 
@@ -126,8 +139,16 @@ class ServerService {
       if (submittedPin == _pin) {
         final token = _generateSessionToken();
         _sessions.add(token);
-        return Response.ok(json.encode({'token': token}),
-            headers: {'Content-Type': 'application/json'});
+        
+        print('Auth success: Generated token $token. Current sessions: $_sessions');
+
+        final cookie = 'pocketlink_session=$token; Path=/; HttpOnly';
+        final headers = {
+          'Content-Type': 'application/json',
+          'Set-Cookie': cookie,
+        };
+
+        return Response.ok(json.encode({'status': 'success'}), headers: headers);
       } else {
         return Response.forbidden(json.encode({'error': 'Invalid PIN'}),
             headers: {'Content-Type': 'application/json'});
@@ -171,18 +192,40 @@ class ServerService {
     final filename = Uri.decodeComponent(encodedFilename);
 
     final sanitizedFilename = p.basename(filename); // Prevent path traversal
-    final file = File(p.join(_documentsDir!.path, sanitizedFilename));
+    final file = await _getUniqueFilePath(_documentsDir!, sanitizedFilename);
 
     final sink = file.openWrite();
     try {
       await for (final chunk in request.read()) {
         sink.add(chunk);
       }
-      return Response.ok('File uploaded successfully: $sanitizedFilename');
+      return Response.ok('File uploaded successfully: ${p.basename(file.path)}');
     } catch (e) {
       return Response.internalServerError(body: 'Failed to save file: $e');
-    } finally {
+    }
+    finally {
       await sink.close();
+    }
+  }
+
+  Future<File> _getUniqueFilePath(Directory dir, String filename) async {
+    var file = File(p.join(dir.path, filename));
+    if (!await file.exists()) {
+      return file;
+    }
+
+    // ファイルが存在する場合、連番を付けて新しいパスを試す
+    final name = p.basenameWithoutExtension(filename);
+    final extension = p.extension(filename);
+    int counter = 1;
+
+    while (true) {
+      final newFilename = '$name ($counter)$extension';
+      file = File(p.join(dir.path, newFilename));
+      if (!await file.exists()) {
+        return file;
+      }
+      counter++;
     }
   }
 
@@ -196,15 +239,93 @@ class ServerService {
       return Response.notFound('File not found: $sanitizedFilename');
     }
 
+    final mimeType = _getMimeType(sanitizedFilename);
+
+    // Content-Disposition を削除し、Content-Type を動的に設定
     return Response.ok(file.openRead())
-        .change(headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Disposition': 'attachment; filename="$sanitizedFilename"'
-        });
+        .change(headers: {'Content-Type': mimeType});
+  }
+
+  String _getMimeType(String filename) {
+    final extension = p.extension(filename).toLowerCase();
+    const mimeTypes = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.bmp': 'image/bmp',
+      '.svg': 'image/svg+xml',
+      '.mp4': 'video/mp4',
+      '.mov': 'video/quicktime',
+      '.avi': 'video/x-msvideo',
+      '.mkv': 'video/x-matroska',
+      '.webm': 'video/webm',
+      '.mp3': 'audio/mpeg',
+      '.wav': 'audio/wav',
+      '.ogg': 'audio/ogg',
+      '.m4a': 'audio/mp4',
+      '.pdf': 'application/pdf',
+      '.zip': 'application/zip',
+      '.txt': 'text/plain',
+    };
+    return mimeTypes[extension] ?? 'application/octet-stream';
+  }
+
+  Future<Response> _thumbnailHandler(Request request, String filename) async {
+    if (_documentsDir == null || _thumbnailCacheDir == null) {
+      return Response.internalServerError(body: 'Server directory not initialized.');
+    }
+
+    final sanitizedFilename = p.basename(filename);
+    if (!_isImageFile(sanitizedFilename)) {
+      return Response.badRequest(body: 'File is not an image.');
+    }
+
+    final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$sanitizedFilename.jpg'));
+
+    // 1. キャッシュを確認
+    if (await cacheFile.exists()) {
+      return Response.ok(cacheFile.openRead(), headers: {'Content-Type': 'image/jpeg'});
+    }
+
+    // 2. キャッシュがない場合は生成
+    final originalFile = File(p.join(_documentsDir!.path, sanitizedFilename));
+    if (!await originalFile.exists()) {
+      return Response.notFound('File not found: $sanitizedFilename');
+    }
+
+    try {
+      final imageBytes = await originalFile.readAsBytes();
+      final image = img.decodeImage(imageBytes);
+
+      if (image == null) {
+        return Response.internalServerError(body: 'Failed to decode image.');
+      }
+
+      // 幅120pxにリサイズ
+      final thumbnail = img.copyResize(image, width: 120);
+      final thumbnailBytes = img.encodeJpg(thumbnail, quality: 85);
+
+      // キャッシュに保存 (非同期)
+      cacheFile.writeAsBytes(thumbnailBytes);
+      
+      return Response.ok(thumbnailBytes, headers: {'Content-Type': 'image/jpeg'});
+
+    } catch (e) {
+      print('Thumbnail generation error: $e');
+      return Response.internalServerError(body: 'Failed to generate thumbnail.');
+    }
+  }
+
+  bool _isImageFile(String filename) {
+    final extension = p.extension(filename).toLowerCase();
+    const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};
+    return imageExtensions.contains(extension);
   }
 
   Future<Response> _deleteFileHandler(Request request, String filename) async {
-     if (_documentsDir == null) return Response.internalServerError(body: 'Documents directory not initialized.');
+     if (_documentsDir == null || _thumbnailCacheDir == null) return Response.internalServerError(body: 'Documents directory not initialized.');
 
     final sanitizedFilename = p.basename(filename);
     final file = File(p.join(_documentsDir!.path, sanitizedFilename));
@@ -215,10 +336,41 @@ class ServerService {
 
     try {
       await file.delete();
+      // サムネイルキャッシュも削除
+      final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$sanitizedFilename.jpg'));
+      if (await cacheFile.exists()) {
+        await cacheFile.delete();
+      }
       return Response.ok('File deleted successfully: $sanitizedFilename');
     } catch (e) {
       return Response.internalServerError(body: 'Failed to delete file: $e');
     }
+  }
+
+  Future<Response> _downloadAllHandler(Request request) async {
+    if (_documentsDir == null) {
+      return Response.internalServerError(body: 'Documents directory not initialized.');
+    }
+
+    final encoder = ZipEncoder();
+    final archive = Archive();
+
+    final files = _documentsDir!.listSync(recursive: true).whereType<File>();
+    for (final file in files) {
+      final bytes = await file.readAsBytes();
+      final filename = p.relative(file.path, from: _documentsDir!.path);
+      archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+    }
+
+    final zipData = encoder.encode(archive);
+    if (zipData == null) {
+      return Response.internalServerError(body: 'Failed to create zip file.');
+    }
+
+    return Response.ok(zipData, headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="pocketlink_files.zip"',
+    });
   }
 
 
@@ -233,17 +385,34 @@ class ServerService {
         return innerHandler(request);
       }
 
-      // 上記以外で/api/で始まるパスは認証が必要
-      final authHeader = request.headers['Authorization'];
-      if (authHeader != null && authHeader.startsWith('Bearer ')) {
-        final token = authHeader.substring(7);
-        if (_sessions.contains(token)) {
-          return innerHandler(request); // 認証成功
+      final cookieHeader = request.headers['cookie'];
+      print('Auth middleware: Received cookie header: $cookieHeader');
+      String? token;
+
+      if (cookieHeader != null) {
+        final cookies = cookieHeader.split(';');
+        for (var cookie in cookies) {
+          final trimmedCookie = cookie.trim();
+          if (trimmedCookie.startsWith('pocketlink_session=')) {
+            final separatorIndex = trimmedCookie.indexOf('=');
+            if (separatorIndex != -1) {
+              token = trimmedCookie.substring(separatorIndex + 1);
+              break;
+            }
+          }
         }
       }
       
+      print('Auth middleware: Parsed token: $token');
+
+      // トークンを検証
+      if (token != null && _sessions.contains(token)) {
+        return innerHandler(request); // 認証成功
+      }
+      
+      // 認証失敗
       return Response.unauthorized(json.encode({'error': 'Authentication required.'}),
-          headers: {'Content-Type': 'application/json'}); // 認証失敗
+          headers: {'Content-Type': 'application/json'});
     };
   };
 

@@ -108,15 +108,18 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class HomePage extends ConsumerWidget {
-
+class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
+  @override
+  ConsumerState<HomePage> createState() => _HomePageState();
+}
 
+class _HomePageState extends ConsumerState<HomePage> {
+  bool _isPinVisible = true;
 
   @override
-
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final serverState = ref.watch(serverStateProvider);
     final url = serverState.ipAddress != null
         ? 'http://${serverState.ipAddress}:8080'
@@ -177,14 +180,26 @@ class HomePage extends ConsumerWidget {
                   Icon(Icons.pin, color: Colors.grey[850]),
                   const SizedBox(width: 12),
                   Text(
-                    'PIN: $pin',
+                    _isPinVisible ? 'PIN: $pin' : 'PIN: ****',
                     style: TextStyle(
                       fontSize: 26,
                       fontWeight: FontWeight.bold,
-                      letterSpacing: 6,
+                      letterSpacing: _isPinVisible ? 6 : 2,
                       color: Colors.grey[850],
                       fontFamily: 'monospace',
                     ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: Icon(
+                      _isPinVisible ? Icons.visibility_off : Icons.visibility,
+                      color: Colors.grey[600],
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _isPinVisible = !_isPinVisible;
+                      });
+                    },
                   ),
                 ],
               ),
