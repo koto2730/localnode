@@ -17,10 +17,10 @@ import 'dart:math';
 import 'package:image/image.dart' as img;
 
 class ServerService {
-  static const _platform = MethodChannel('com.example.pocketlink/storage');
+  static const _platform = MethodChannel('com.ictglab.localnode/storage');
   HttpServer? _server;
   String? _ipAddress;
-  final int _port = 8080;
+  int? _port;
   Directory? _documentsDir;
   Directory? _webRootDir; // Webルートディレクトリのパス
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
@@ -30,6 +30,7 @@ class ServerService {
   final _router = Router();
 
   String? get ipAddress => _ipAddress;
+  int? get port => _port;
   String? get pin => _pin;
   bool get isRunning => _server != null;
 
@@ -142,7 +143,7 @@ class ServerService {
         
         print('Auth success: Generated token $token. Current sessions: $_sessions');
 
-        final cookie = 'pocketlink_session=$token; Path=/; HttpOnly';
+        final cookie = 'localnode_session=$token; Path=/; HttpOnly';
         final headers = {
           'Content-Type': 'application/json',
           'Set-Cookie': cookie,
@@ -161,7 +162,7 @@ class ServerService {
   }
 
   Response _infoHandler(Request request) {
-    return Response.ok('{"version": "1.0.0", "name": "Pocket Link Server"}',
+    return Response.ok('{"version": "1.0.0", "name": "LocalNode Server"}',
         headers: {'Content-Type': 'application/json'});
   }
 
@@ -369,7 +370,7 @@ class ServerService {
 
     return Response.ok(zipData, headers: {
       'Content-Type': 'application/zip',
-      'Content-Disposition': 'attachment; filename="pocketlink_files.zip"',
+      'Content-Disposition': 'attachment; filename="localnode_files.zip"',
     });
   }
 
@@ -393,7 +394,7 @@ class ServerService {
         final cookies = cookieHeader.split(';');
         for (var cookie in cookies) {
           final trimmedCookie = cookie.trim();
-          if (trimmedCookie.startsWith('pocketlink_session=')) {
+          if (trimmedCookie.startsWith('localnode_session=')) {
             final separatorIndex = trimmedCookie.indexOf('=');
             if (separatorIndex != -1) {
               token = trimmedCookie.substring(separatorIndex + 1);
@@ -419,7 +420,7 @@ class ServerService {
 
   // === Server Control ===
 
-  Future<void> startServer() async {
+  Future<void> startServer(int port) async {
     if (_server != null) return;
 
     _pin = _generatePin();
@@ -434,6 +435,8 @@ class ServerService {
       _ipAddress = await NetworkInfo().getWifiIP();
       if (_ipAddress == null) throw Exception('Failed to get Wi-Fi IP address.');
 
+      _port = port;
+
       // 展開先の一時ディレクトリを指すように変更
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
@@ -446,9 +449,9 @@ class ServerService {
       final handler =
           const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
 
-      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, _port);
+      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
       print('Serving at http://${_server!.address.host}:${_server!.port}');
-      print('Accessible via: http://$_ipAddress:$_port');
+      print('Accessible via: http://$_ipAddress:$port');
     } catch (e) {
       print('Error starting server: $e');
       await stopServer(); // Ensure cleanup on partial start
@@ -460,6 +463,7 @@ class ServerService {
     await _server?.close(force: true);
     _server = null;
     _ipAddress = null;
+    _port = null;
     _pin = null;
     _sessions.clear();
     WakelockPlus.disable();

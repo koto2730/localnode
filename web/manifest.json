@@ -1,6 +1,6 @@
 {
-    "name": "pocketlink",
-    "short_name": "pocketlink",
+    "name": "LocalNode",
+    "short_name": "LocalNode",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

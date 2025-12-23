@@ -3,7 +3,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:pocketlink/server_service.dart';
+import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 // サーバーの状態を表すenum
@@ -16,12 +16,14 @@ class ServerState {
     required this.status,
     this.ipAddress,
     this.pin,
+    this.port,
     this.errorMessage,
   });
 
   final ServerStatus status;
   final String? ipAddress;
   final String? pin;
+  final int? port;
   final String? errorMessage;
 }
 
@@ -51,18 +53,19 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
     return status.isGranted;
   }
 
-  Future<void> start() async {
+  Future<void> start(int port) async {
     try {
       final hasPermission = await _requestPermissions();
       if (!hasPermission) {
         throw Exception('外部ストレージへのアクセス許可が必要です。設定アプリから権限を許可してください。');
       }
 
-      await _serverService.startServer();
+      await _serverService.startServer(port);
       state = ServerState(
         status: ServerStatus.running,
         ipAddress: _serverService.ipAddress,
         pin: _serverService.pin,
+        port: _serverService.port,
       );
     } catch (e, stackTrace) {
       state = ServerState(
@@ -97,7 +100,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Pocket Link',
+      title: 'LocalNode',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
@@ -117,17 +120,30 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   bool _isPinVisible = true;
+  late final TextEditingController _portController;
+
+  @override
+  void initState() {
+    super.initState();
+    _portController = TextEditingController(text: '8080');
+  }
+
+  @override
+  void dispose() {
+    _portController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final serverState = ref.watch(serverStateProvider);
-    final url = serverState.ipAddress != null
-        ? 'http://${serverState.ipAddress}:8080'
+    final url = serverState.ipAddress != null && serverState.port != null
+        ? 'http://${serverState.ipAddress}:${serverState.port}'
         : null;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pocket Link'),
+        title: const Text('LocalNode'),
         backgroundColor: Colors.white,
         elevation: 1,
       ),
@@ -142,8 +158,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                 _buildConnectionInfo(context, url, serverState.pin),
 
               if (serverState.status == ServerStatus.stopped)
-                const Text('サーバーは停止しています',
-                    style: TextStyle(fontSize: 18, color: Colors.grey)),
+                _buildStoppedView(context),
 
               if (serverState.status == ServerStatus.error)
                 Text('エラー: ${serverState.errorMessage}',
@@ -159,6 +174,29 @@ class _HomePageState extends ConsumerState<HomePage> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildStoppedView(BuildContext context) {
+    return Column(
+      children: [
+        const Text('サーバーは停止しています',
+            style: TextStyle(fontSize: 18, color: Colors.grey)),
+        const SizedBox(height: 20),
+        SizedBox(
+          width: 150,
+          child: TextField(
+            controller: _portController,
+            decoration: const InputDecoration(
+              labelText: 'ポート番号',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            keyboardType: TextInputType.number,
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ],
     );
   }
 
@@ -313,11 +351,19 @@ class _HomePageState extends ConsumerState<HomePage> {
           notifier.stop();
 
         } else {
-
-          notifier.start();
-
+          final port = int.tryParse(_portController.text);
+          if (port != null && port > 0 && port <= 65535) {
+            notifier.start(port);
+          } else {
+            // ポート番号が無効な場合の簡単なエラー表示
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('無効なポート番号です。1〜65535の範囲で入力してください。'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
         }
-
       },
 
       label: Text(isRunning ? 'サーバーを停止' : 'サーバーを開始'),

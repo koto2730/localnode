@@ -1,4 +1,4 @@
-package com.example.pocketlink
+package com.ictglab.localnode
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -6,7 +6,7 @@ import io.flutter.plugin.common.MethodChannel
 import android.os.Environment
 
 class MainActivity: FlutterActivity() {
-    private val CHANNEL = "com.example.pocketlink/storage"
+    private val CHANNEL = "com.ictglab.localnode/storage"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)

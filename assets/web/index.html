@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pocket Link</title>
+    <title>LocalNode</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -153,7 +153,21 @@
     <!-- メインコンテンツ -->
     <div id="main-content" style="display: none;">
         <div class="container">
-            <h1>Pocket Link</h1>
+            <h1>LocalNode</h1>
+
+            <div class="upload-form">
+                <h2>ファイルをアップロード</h2>
+                <form id="uploadForm">
+                    <input type="file" id="fileInput" multiple required>
+                    <br>
+                    <button type="submit">アップロード</button>
+                </form>
+                <div id="uploadStatus" class="status"></div>
+            </div>
+
+            <div class="all-actions-container">
+                <button id="downloadAllBtn">すべてをzipでダウンロード</button>
+            </div>
 
             <div id="file-list">
                 <table>
@@ -167,20 +181,6 @@
                     </thead>
                     <tbody></tbody>
                 </table>
-            </div>
-
-            <div class="all-actions-container">
-                <button id="downloadAllBtn">すべてをzipでダウンロード</button>
-            </div>
-
-            <div class="upload-form">
-                <h2>ファイルをアップロード</h2>
-                <form id="uploadForm">
-                    <input type="file" id="fileInput" multiple required>
-                    <br>
-                    <button type="submit">アップロード</button>
-                </form>
-                <div id="uploadStatus" class="status"></div>
             </div>
         </div>
     </div>
