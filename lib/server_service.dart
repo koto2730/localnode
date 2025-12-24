@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
@@ -34,6 +35,29 @@ class ServerService {
   String? get pin => _pin;
   bool get isRunning => _server != null;
 
+  Future<List<String>> getAvailableIpAddresses() async {
+    final addresses = <String>[];
+    try {
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      for (final interface in interfaces) {
+        for (final addr in interface.addresses) {
+          addresses.add(addr.address);
+        }
+      }
+    } catch (e) {
+      print('Error getting IP addresses: $e');
+      // フォールバックとしてWi-Fi IPを試す
+      final wifiIP = await NetworkInfo().getWifiIP();
+      if (wifiIP != null) {
+        addresses.add(wifiIP);
+      }
+    }
+    return addresses.isEmpty ? ['0.0.0.0'] : addresses;
+  }
+
   ServerService() {
     _router.post('/api/auth', _authHandler);
     _router.get('/api/info', _infoHandler);
@@ -59,8 +83,13 @@ class ServerService {
     final packageInfo = await PackageInfo.fromPlatform();
     final appName = packageInfo.appName;
 
+    // Webプラットフォームはファイルシステムにアクセスできない
+    if (kIsWeb) {
+      print("Web platform detected. File system operations will be handled differently.");
+      _documentsDir = null; // またはメモリベースの仮想ディレクトリなど
+    }
     // プラットフォームに応じて保存先ディレクトリを決定
-    if (Platform.isAndroid) {
+    else if (Platform.isAndroid) {
       final downloadsPath = await _getDownloadsPathAndroid();
       if (downloadsPath != null) {
         // Downloads/AppName というパスを作成
@@ -73,26 +102,29 @@ class ServerService {
       // iOSではアプリのDocumentsディレクトリ内にサブディレクトリを作成
       final documentsPath = await getApplicationDocumentsDirectory();
       _documentsDir = Directory(p.join(documentsPath.path, appName));
+    } else if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
+      // デスクトップOS
+      final documentsPath = await getApplicationDocumentsDirectory();
+      _documentsDir = Directory(p.join(documentsPath.path, appName));
     } else {
-      // その他のデスクトップOSなど
+      // 未知のプラットフォーム
+       print("Unknown platform. Using application documents directory as fallback.");
       final documentsPath = await getApplicationDocumentsDirectory();
       _documentsDir = Directory(p.join(documentsPath.path, appName));
     }
 
-    if (_documentsDir == null) {
-      throw Exception('保存先フォルダが見つかりません。');
-    }
 
-    // ディレクトリが存在しない場合は作成
-    if (!await _documentsDir!.exists()) {
+    if (_documentsDir != null && !await _documentsDir!.exists()) {
       await _documentsDir!.create(recursive: true);
     }
     
     // サムネイルキャッシュディレクトリの初期化
-    final tempDir = await getTemporaryDirectory();
-    _thumbnailCacheDir = Directory(p.join(tempDir.path, 'thumbnails'));
-    if (!await _thumbnailCacheDir!.exists()) {
-      await _thumbnailCacheDir!.create(recursive: true);
+    if (!kIsWeb) {
+      final tempDir = await getTemporaryDirectory();
+      _thumbnailCacheDir = Directory(p.join(tempDir.path, 'thumbnails'));
+      if (!await _thumbnailCacheDir!.exists()) {
+        await _thumbnailCacheDir!.create(recursive: true);
+      }
     }
   }
 
@@ -420,7 +452,7 @@ class ServerService {
 
   // === Server Control ===
 
-  Future<void> startServer(int port) async {
+  Future<void> startServer({required String ipAddress, required int port}) async {
     if (_server != null) return;
 
     _pin = _generatePin();
@@ -432,9 +464,7 @@ class ServerService {
       await _deployAssets(); // アセットを展開
       WakelockPlus.enable();
 
-      _ipAddress = await NetworkInfo().getWifiIP();
-      if (_ipAddress == null) throw Exception('Failed to get Wi-Fi IP address.');
-
+      _ipAddress = ipAddress;
       _port = port;
 
       // 展開先の一時ディレクトリを指すように変更
@@ -449,9 +479,10 @@ class ServerService {
       final handler =
           const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
 
+      // anyIPv4でリッスンすることで、Tailscale IPなど特定のインターフェースにもアクセス可能
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
       print('Serving at http://${_server!.address.host}:${_server!.port}');
-      print('Accessible via: http://$_ipAddress:$port');
+      print('Selected IP for display: http://$_ipAddress:$port');
     } catch (e) {
       print('Error starting server: $e');
       await stopServer(); // Ensure cleanup on partial start

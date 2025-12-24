@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,14 +15,16 @@ enum ServerStatus { stopped, running, error }
 class ServerState {
   const ServerState({
     required this.status,
-    this.ipAddress,
+    this.availableIpAddresses = const [],
+    this.selectedIpAddress,
     this.pin,
     this.port,
     this.errorMessage,
   });
 
   final ServerStatus status;
-  final String? ipAddress;
+  final List<String> availableIpAddresses;
+  final String? selectedIpAddress;
   final String? pin;
   final int? port;
   final String? errorMessage;
@@ -34,9 +37,39 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
 
   final ServerService _serverService;
 
-  Future<bool> _requestPermissions() async {
-    if (!Platform.isAndroid) return true; // Android以外は常にtrue
+  Future<void> loadIpAddresses() async {
+    if (kIsWeb) return; // Webでは実行しない
+    final ips = await _serverService.getAvailableIpAddresses();
+    state = ServerState(
+      status: state.status,
+      availableIpAddresses: ips,
+      // リストの最初のIPをデフォルトで選択
+      selectedIpAddress: ips.isNotEmpty ? ips.first : null,
+      pin: state.pin,
+      port: state.port,
+      errorMessage: state.errorMessage,
+    );
+  }
 
+  void selectIpAddress(String ipAddress) {
+    if (kIsWeb) return; // Webでは実行しない
+    state = ServerState(
+      status: state.status,
+      availableIpAddresses: state.availableIpAddresses,
+      selectedIpAddress: ipAddress,
+      pin: state.pin,
+      port: state.port,
+      errorMessage: state.errorMessage,
+    );
+  }
+
+  Future<bool> _requestPermissions() async {
+    // Android以外では権限要求は不要
+    if (kIsWeb || !Platform.isAndroid) {
+      return true;
+    }
+
+    // Androidの場合のみ権限を要求
     final deviceInfo = await DeviceInfoPlugin().androidInfo;
     Permission permission;
 
@@ -54,16 +87,29 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
   }
 
   Future<void> start(int port) async {
+    if (kIsWeb) return; // Webでは実行しない
+
+    if (state.selectedIpAddress == null) {
+      state = ServerState(
+          status: ServerStatus.error, errorMessage: '利用可能なIPアドレスがありません。');
+      return;
+    }
+
     try {
       final hasPermission = await _requestPermissions();
       if (!hasPermission) {
         throw Exception('外部ストレージへのアクセス許可が必要です。設定アプリから権限を許可してください。');
       }
 
-      await _serverService.startServer(port);
+      await _serverService.startServer(
+        ipAddress: state.selectedIpAddress!,
+        port: port,
+      );
+
       state = ServerState(
         status: ServerStatus.running,
-        ipAddress: _serverService.ipAddress,
+        availableIpAddresses: state.availableIpAddresses,
+        selectedIpAddress: _serverService.ipAddress,
         pin: _serverService.pin,
         port: _serverService.port,
       );
@@ -71,6 +117,8 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
       state = ServerState(
         status: ServerStatus.error,
         errorMessage: 'エラー: $e\n$stackTrace',
+        availableIpAddresses: state.availableIpAddresses,
+        selectedIpAddress: state.selectedIpAddress,
       );
     }
   }
@@ -126,6 +174,10 @@ class _HomePageState extends ConsumerState<HomePage> {
   void initState() {
     super.initState();
     _portController = TextEditingController(text: '8080');
+    // Web以外のプラットフォームでのみIPアドレスリストを読み込む
+    if (!kIsWeb) {
+      Future.microtask(() => ref.read(serverStateProvider.notifier).loadIpAddresses());
+    }
   }
 
   @override
@@ -136,9 +188,43 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    // Webプラットフォーム用の専用UI
+    if (kIsWeb) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('LocalNode'),
+          backgroundColor: Colors.white,
+          elevation: 1,
+        ),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.cloud_done_outlined, size: 80, color: Colors.blueAccent),
+                SizedBox(height: 20),
+                Text(
+                  'Web Client Mode',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  'このページは、他のデバイスで起動しているLocalNodeサーバーにアクセスするためのクライアントです。\nサーバーのQRコードをスキャンするか、表示されたアドレスにアクセスしてください。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ネイティブプラットフォーム用のUI
     final serverState = ref.watch(serverStateProvider);
-    final url = serverState.ipAddress != null && serverState.port != null
-        ? 'http://${serverState.ipAddress}:${serverState.port}'
+    final url = serverState.selectedIpAddress != null && serverState.port != null
+        ? 'http://${serverState.selectedIpAddress}:${serverState.port}'
         : null;
 
     return Scaffold(
@@ -178,11 +264,30 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   Widget _buildStoppedView(BuildContext context) {
+    final serverState = ref.watch(serverStateProvider);
+    final notifier = ref.read(serverStateProvider.notifier);
+
     return Column(
       children: [
         const Text('サーバーは停止しています',
             style: TextStyle(fontSize: 18, color: Colors.grey)),
         const SizedBox(height: 20),
+        
+        // IPアドレス選択ドロップダウン
+        if (serverState.availableIpAddresses.isNotEmpty && serverState.selectedIpAddress != null)
+          DropdownButton<String>(
+            value: serverState.selectedIpAddress,
+            items: serverState.availableIpAddresses
+                .map((ip) => DropdownMenuItem(value: ip, child: Text(ip)))
+                .toList(),
+            onChanged: (ip) {
+              if (ip != null) {
+                notifier.selectIpAddress(ip);
+              }
+            },
+          ),
+        const SizedBox(height: 10),
+
         SizedBox(
           width: 150,
           child: TextField(
@@ -342,18 +447,20 @@ class _HomePageState extends ConsumerState<HomePage> {
 
       ),
 
-      onPressed: () {
+      onPressed: () async {
 
         final notifier = ref.read(serverStateProvider.notifier);
 
         if (isRunning) {
 
-          notifier.stop();
+          await notifier.stop();
+          // サーバー停止後にIPリストを再読み込み
+          await notifier.loadIpAddresses();
 
         } else {
           final port = int.tryParse(_portController.text);
           if (port != null && port > 0 && port <= 65535) {
-            notifier.start(port);
+            await notifier.start(port);
           } else {
             // ポート番号が無効な場合の簡単なエラー表示
             ScaffoldMessenger.of(context).showSnackBar(
