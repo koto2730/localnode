@@ -2,10 +2,13 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:state_notifier/state_notifier.dart';
+// 3.0以降で StateNotifierProvider を使うための専用インポート
+import 'package:flutter_riverpod/legacy.dart'; 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 // サーバーの状態を表すenum
 enum ServerStatus { stopped, running, error }
