@@ -15,12 +15,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
-    kotlinOptions {
-        compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
-        }
-    }
-
     defaultConfig {
         applicationId = "com.ictglab.localnode"
         minSdk = flutter.minSdkVersion
@@ -30,10 +24,10 @@ android {
     }
 
     signingConfigs {
-        debug {
-            
+        create("debug") {
+
         }
-        release {
+        create("release") {
             storeFile = file("release-keystore.jks")
             storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
             keyAlias = System.getenv("ANDROID_KEY_ALIAS")
@@ -41,14 +35,14 @@ android {
         }
     }
     buildTypes {
-        release {
-            signingConfig = signingConfigs.release
+        getByName("release") {
+            signingConfig = signingConfigs["release"]
 
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
-        debug {
-            signingConfig = signingConfigs.debug
+        getByName("debug") {
+            signingConfig = signingConfigs["debug"]
         }
     }
 }
