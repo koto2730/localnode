@@ -16,7 +16,7 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_21.toString()
+        jvmTarget = "21"
     }
 
     defaultConfig {
@@ -32,7 +32,7 @@ android {
 
     signingConfigs {
         release {
-            storeFile = file('release-keystore.jks')
+            storeFile = file("release-keystore.jks")
             storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "dummy"
             keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "dummy"
             keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: "dummy"
@@ -41,6 +41,9 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            
+            isMinifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
             signingConfig = signingConfigs.getByName("debug")
