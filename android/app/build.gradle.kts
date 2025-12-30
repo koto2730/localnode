@@ -32,10 +32,10 @@ android {
 
     signingConfigs {
         release {
-            storeFile file('release-keystore.jks')
-            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "dummy"
-            keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: "dummy"
-            keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: "dummy"
+            storeFile = file('release-keystore.jks')
+            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "dummy"
+            keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "dummy"
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: "dummy"
         }
     }
     buildTypes {
