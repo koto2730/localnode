@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "LocalNode
+            VALUE "CompanyName", "com.ictglab" "\0"
+            VALUE "FileDescription", "localnode" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "LocalNode
-            VALUE "LegalCopyright", "Copyright (C) 2025 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "LocalNode.exe" "\0"
-            VALUE "ProductName", "LocalNode
+            VALUE "InternalName", "localnode" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2025 com.ictglab. All rights reserved." "\0"
+            VALUE "OriginalFilename", "localnode.exe" "\0"
+            VALUE "ProductName", "localnode" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END
