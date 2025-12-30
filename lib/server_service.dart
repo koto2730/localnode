@@ -23,6 +23,7 @@ class ServerService {
   String? _ipAddress;
   int? _port;
   Directory? _documentsDir;
+  String? _displayPath; // 表示用のパス
   Directory? _webRootDir; // Webルートディレクトリのパス
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
   String? _pin;
@@ -34,6 +35,8 @@ class ServerService {
   int? get port => _port;
   String? get pin => _pin;
   bool get isRunning => _server != null;
+  String? get documentsPath => _documentsDir?.path;
+  String? get displayPath => _displayPath;
 
   Future<List<String>> getAvailableIpAddresses() async {
     final addresses = <String>[];
@@ -69,7 +72,7 @@ class ServerService {
     _router.delete('/api/files/<filename>', _deleteFileHandler);
   }
 
-  Future<String?> _getDownloadsPathAndroid() async {
+  Future<String?> _getDownloadsPathFromNative() async {
     try {
       final String? path = await _platform.invokeMethod('getDownloadsDirectory');
       return path;
@@ -87,32 +90,45 @@ class ServerService {
     if (kIsWeb) {
       print("Web platform detected. File system operations will be handled differently.");
       _documentsDir = null; // またはメモリベースの仮想ディレクトリなど
+    } 
+    // kDebugModeがtrueの場合、強制的にアプリケーションサンドボックス内のディレクトリを使用
+    else if (kDebugMode) {
+      print("Debug mode: Using sandboxed directory.");
+      final docDir = await getApplicationDocumentsDirectory();
+      _displayPath = p.join(docDir.path, appName);
+      _documentsDir = Directory(_displayPath!);
     }
-    // プラットフォームに応じて保存先ディレクトリを決定
-    else if (Platform.isAndroid) {
-      final downloadsPath = await _getDownloadsPathAndroid();
-      if (downloadsPath != null) {
-        // Downloads/AppName というパスを作成
-        _documentsDir = Directory(p.join(downloadsPath, appName));
+    // Releaseモードの場合
+    else {
+      if (Platform.isAndroid || Platform.isMacOS) {
+        final downloadsPath = await _getDownloadsPathFromNative();
+        if (downloadsPath != null) {
+          _displayPath = p.join(downloadsPath, appName);
+          _documentsDir = Directory(_displayPath!);
+        } else {
+          // フォールバック
+          final documentsPath = await getApplicationDocumentsDirectory();
+          _displayPath = p.join(documentsPath.path, appName);
+          _documentsDir = Directory(_displayPath!);
+        }
+      } else if (Platform.isIOS) {
+        // iOSではアプリのDocumentsディレクトリ内にサブディレクトリを作成
+        final documentsPath = await getApplicationDocumentsDirectory();
+        _displayPath = p.join(documentsPath.path, appName);
+        _documentsDir = Directory(_displayPath!);
+      } else if (Platform.isLinux || Platform.isWindows) {
+        // デスクトップOS
+        final documentsPath = await getApplicationDocumentsDirectory();
+        _displayPath = p.join(documentsPath.path, appName);
+        _documentsDir = Directory(_displayPath!);
       } else {
-        // フォールバック
-        _documentsDir = await getExternalStorageDirectory();
+        // 未知のプラットフォーム
+        print("Unknown platform. Using application documents directory as fallback.");
+        final documentsPath = await getApplicationDocumentsDirectory();
+        _displayPath = p.join(documentsPath.path, appName);
+        _documentsDir = Directory(_displayPath!);
       }
-    } else if (Platform.isIOS) {
-      // iOSではアプリのDocumentsディレクトリ内にサブディレクトリを作成
-      final documentsPath = await getApplicationDocumentsDirectory();
-      _documentsDir = Directory(p.join(documentsPath.path, appName));
-    } else if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
-      // デスクトップOS
-      final documentsPath = await getApplicationDocumentsDirectory();
-      _documentsDir = Directory(p.join(documentsPath.path, appName));
-    } else {
-      // 未知のプラットフォーム
-       print("Unknown platform. Using application documents directory as fallback.");
-      final documentsPath = await getApplicationDocumentsDirectory();
-      _documentsDir = Directory(p.join(documentsPath.path, appName));
     }
-
 
     if (_documentsDir != null && !await _documentsDir!.exists()) {
       await _documentsDir!.create(recursive: true);
@@ -496,6 +512,7 @@ class ServerService {
     _ipAddress = null;
     _port = null;
     _pin = null;
+    _displayPath = null;
     _sessions.clear();
     WakelockPlus.disable();
     print('Server stopped.');

@@ -2,10 +2,13 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:state_notifier/state_notifier.dart';
+// 3.0以降で StateNotifierProvider を使うための専用インポート
+import 'package:flutter_riverpod/legacy.dart'; 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 // サーバーの状態を表すenum
 enum ServerStatus { stopped, running, error }
@@ -20,6 +23,7 @@ class ServerState {
     this.pin,
     this.port,
     this.errorMessage,
+    this.uploadPath,
   });
 
   final ServerStatus status;
@@ -28,6 +32,7 @@ class ServerState {
   final String? pin;
   final int? port;
   final String? errorMessage;
+  final String? uploadPath;
 }
 
 // StateNotifierの定義
@@ -48,6 +53,7 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
       pin: state.pin,
       port: state.port,
       errorMessage: state.errorMessage,
+      uploadPath: state.uploadPath,
     );
   }
 
@@ -60,6 +66,7 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
       pin: state.pin,
       port: state.port,
       errorMessage: state.errorMessage,
+      uploadPath: state.uploadPath,
     );
   }
 
@@ -112,6 +119,7 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
         selectedIpAddress: _serverService.ipAddress,
         pin: _serverService.pin,
         port: _serverService.port,
+        uploadPath: _serverService.displayPath,
       );
     } catch (e, stackTrace) {
       state = ServerState(
@@ -234,29 +242,31 @@ class _HomePageState extends ConsumerState<HomePage> {
         elevation: 1,
       ),
       body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              // サーバーの状態に応じて表示を切り替え
-              if (serverState.status == ServerStatus.running && url != null)
-                _buildConnectionInfo(context, url, serverState.pin),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                // サーバーの状態に応じて表示を切り替え
+                if (serverState.status == ServerStatus.running && url != null)
+                  _buildConnectionInfo(context, url, serverState.pin, serverState.uploadPath),
 
-              if (serverState.status == ServerStatus.stopped)
-                _buildStoppedView(context),
+                if (serverState.status == ServerStatus.stopped)
+                  _buildStoppedView(context),
 
-              if (serverState.status == ServerStatus.error)
-                Text('エラー: ${serverState.errorMessage}',
-                    style: const TextStyle(fontSize: 16, color: Colors.red)),
+                if (serverState.status == ServerStatus.error)
+                  Text('エラー: ${serverState.errorMessage}',
+                      style: const TextStyle(fontSize: 16, color: Colors.red)),
 
-              const Spacer(),
+                const SizedBox(height: 40),
 
-              // Start/Stopボタン
-              _buildControlButton(context, ref, serverState),
+                // Start/Stopボタン
+                _buildControlButton(context, ref, serverState),
 
-              const SizedBox(height: 20),
-            ],
+                const SizedBox(height: 20),
+              ],
+            ),
           ),
         ),
       ),
@@ -305,7 +315,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
-  Widget _buildConnectionInfo(BuildContext context, String url, String? pin) {
+  Widget _buildConnectionInfo(BuildContext context, String url, String? pin, String? uploadPath) {
     return Column(
       children: [
         if (pin != null)
@@ -354,65 +364,67 @@ class _HomePageState extends ConsumerState<HomePage> {
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 16),
         ),
-
         const SizedBox(height: 20),
-
         Container(
-
           padding: const EdgeInsets.all(10),
-
           decoration: BoxDecoration(
-
             color: Colors.white,
-
             borderRadius: BorderRadius.circular(8),
-
             boxShadow: [
-
               BoxShadow(
-
                 color: Colors.grey.withOpacity(0.2),
-
                 spreadRadius: 2,
-
                 blurRadius: 5,
-
                 offset: const Offset(0, 3),
-
               ),
-
             ],
-
           ),
-
           child: QrImageView(
-
             data: url,
-
             version: QrVersions.auto,
-
             size: 200.0,
-
           ),
-
         ),
-
         const SizedBox(height: 20),
-
         SelectableText(
-
           url,
-
           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blue),
-
         ),
-
         const SizedBox(height: 30),
-
+        if (uploadPath != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey[300]!),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: ExpansionTile(
+                title: const Text(
+                  'アップロード先フォルダ',
+                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+                ),
+                subtitle: Text(
+                  uploadPath,
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  softWrap: false,
+                  style: const TextStyle(color: Colors.black54),
+                ),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 16.0),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: SelectableText(uploadPath, style: const TextStyle(color: Colors.black87)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
       ],
-
     );
-
   }
 
 
