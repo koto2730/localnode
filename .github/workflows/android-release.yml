@@ -38,6 +38,10 @@ jobs:
       # 5. Android App Bundle (AAB) のビルド
       # 署名情報を引数で渡すことで、プロジェクト内のファイルを汚さずビルドできます
       - name: Build AAB
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           flutter build appbundle --release \
             --build-name=1.0.0 \
