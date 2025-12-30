@@ -9,7 +9,7 @@ export PATH="$PATH:$HOME/flutter/bin"
 
 # 2. プロジェクトルートに戻ってpub get
 # ci_scripts の中から実行されるので、cd .. でルートに戻る
-cd ..
+cd ../..
 flutter pub get
 
 # 3. CocoaPodsのインストール（Xcode Cloudはbrewが遅い場合があるので、gemを検討）
