@@ -51,5 +51,7 @@
 	<string>このアプリは、Wi-Fiネットワーク上の他のデバイスとコンテンツを共有するためのファイルサーバーとして機能するために、ローカルネットワークを使用します。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>このアプリは、接続詳細を表示するためにWi-Fi情報（SSID / BSSID）にアクセスするために位置情報を使用します。位置情報データが保存または共有されることはありません。</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
