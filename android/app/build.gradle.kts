@@ -16,14 +16,13 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = "21"
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+        }
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.ictglab.localnode"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -31,22 +30,25 @@ android {
     }
 
     signingConfigs {
+        debug {
+            
+        }
         release {
             storeFile = file("release-keystore.jks")
-            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "dummy"
-            keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "dummy"
-            keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: "dummy"
+            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
         }
     }
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
-            
+            signingConfig = signingConfigs.release
+
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.debug
         }
     }
 }
