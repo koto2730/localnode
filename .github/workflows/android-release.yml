@@ -58,3 +58,4 @@ jobs:
           packageName: com.ictglab.localnode
           releaseFiles: build/app/outputs/bundle/release/app-release.aab
           track: internal # 内部テストトラック
+          status: completed
