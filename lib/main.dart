@@ -167,6 +167,13 @@ class MyApp extends StatelessWidget {
   }
 }
 
+// 表示モードを定義するenum
+enum DisplayMode {
+  pinAndQrVisible, // PINとQRコードを表示 (デフォルト)
+  allVisible,      // すべて表示
+  qrOnlyVisible,   // QRコードのみ表示
+}
+
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
@@ -175,7 +182,8 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
-  bool _isPinVisible = true;
+  // 初期状態を pinAndQrVisible に設定
+  DisplayMode _displayMode = DisplayMode.pinAndQrVisible;
   late final TextEditingController _portController;
 
   @override
@@ -193,6 +201,43 @@ class _HomePageState extends ConsumerState<HomePage> {
     _portController.dispose();
     super.dispose();
   }
+
+  // 表示モードを切り替えるメソッド
+  void _toggleDisplayMode() {
+    setState(() {
+      if (_displayMode == DisplayMode.pinAndQrVisible) {
+        _displayMode = DisplayMode.allVisible;
+      } else if (_displayMode == DisplayMode.allVisible) {
+        _displayMode = DisplayMode.qrOnlyVisible;
+      } else {
+        _displayMode = DisplayMode.pinAndQrVisible;
+      }
+    });
+  }
+
+  // 表示モードに応じたアイコンを返すメソッド
+  IconData _getDisplayModeIcon() {
+    switch (_displayMode) {
+      case DisplayMode.pinAndQrVisible:
+        return Icons.visibility; // 基本表示
+      case DisplayMode.allVisible:
+        return Icons.explore; // 詳細表示
+      case DisplayMode.qrOnlyVisible:
+        return Icons.security; // QRのみ
+    }
+  }
+  
+  String _getDisplayModeTooltip() {
+    switch (_displayMode) {
+      case DisplayMode.pinAndQrVisible:
+        return 'すべての情報を表示';
+      case DisplayMode.allVisible:
+        return 'QRコードのみ表示';
+      case DisplayMode.qrOnlyVisible:
+        return 'PINとQRコードを表示';
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -240,6 +285,14 @@ class _HomePageState extends ConsumerState<HomePage> {
         title: const Text('LocalNode'),
         backgroundColor: Colors.white,
         elevation: 1,
+        actions: [
+          if (serverState.status == ServerStatus.running)
+            IconButton(
+              icon: Icon(_getDisplayModeIcon()),
+              onPressed: _toggleDisplayMode,
+              tooltip: _getDisplayModeTooltip(),
+            ),
+        ],
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -316,55 +369,62 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   Widget _buildConnectionInfo(BuildContext context, String url, String? pin, String? uploadPath) {
+    // モードに応じて表示/非表示を決定
+    final bool showPin = _displayMode == DisplayMode.pinAndQrVisible || _displayMode == DisplayMode.allVisible;
+    final bool showDetails = _displayMode == DisplayMode.allVisible;
+
     return Column(
       children: [
-        if (pin != null)
-          Card(
-            color: Colors.amber[100],
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.pin, color: Colors.grey[850]),
-                  const SizedBox(width: 12),
-                  Text(
-                    _isPinVisible ? 'PIN: $pin' : 'PIN: ****',
-                    style: TextStyle(
-                      fontSize: 26,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: _isPinVisible ? 6 : 2,
-                      color: Colors.grey[850],
-                      fontFamily: 'monospace',
+        // PIN表示エリア
+        // 高さを固定して、表示/非表示でレイアウトがガタつかないようにする
+        SizedBox(
+          height: 80, // Cardのおおよその高さ
+          child: AnimatedOpacity(
+            opacity: showPin && pin != null ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 200),
+            child: pin != null
+              ? Card(
+                  color: Colors.amber[100],
+                  elevation: 2,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.pin, color: Colors.grey[850]),
+                          const SizedBox(width: 12),
+                          Text(
+                            'PIN: $pin',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 6,
+                              color: Colors.grey[850],
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: Icon(
-                      _isPinVisible ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.grey[600],
-                    ),
-                    onPressed: () {
-                      setState(() {
-                        _isPinVisible = !_isPinVisible;
-                      });
-                    },
-                  ),
-                ],
-              ),
-            ),
+                )
+              : const SizedBox.shrink(), // pinがnullの場合は何も表示しない
           ),
+        ),
+        
         const SizedBox(height: 25),
+        
         const Text(
           '以下のQRコードまたはアドレスにアクセスしてください',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 16),
         ),
         const SizedBox(height: 20),
+        
+        // QRコード
         Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
@@ -386,11 +446,22 @@ class _HomePageState extends ConsumerState<HomePage> {
           ),
         ),
         const SizedBox(height: 20),
-        SelectableText(
-          url,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blue),
+
+        // URL表示エリア
+        SizedBox(
+          height: 30, // SelectableTextのおおよその高さ
+          child: AnimatedOpacity(
+            opacity: showDetails ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 200),
+            child: SelectableText(
+              url,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blue),
+            ),
+          ),
         ),
         const SizedBox(height: 30),
+
+        // アップロード先フォルダ表示エリア
         if (uploadPath != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -399,28 +470,36 @@ class _HomePageState extends ConsumerState<HomePage> {
                 border: Border.all(color: Colors.grey[300]!),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: ExpansionTile(
-                title: const Text(
-                  'アップロード先フォルダ',
-                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
-                ),
-                subtitle: Text(
-                  uploadPath,
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
-                  softWrap: false,
-                  style: const TextStyle(color: Colors.black54),
-                ),
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 16.0),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: SelectableText(uploadPath, style: const TextStyle(color: Colors.black87)),
+              child: showDetails
+                ? ExpansionTile(
+                    title: const Text(
+                      'アップロード先フォルダ',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
                     ),
+                    subtitle: Text(
+                      uploadPath,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      softWrap: false,
+                      style: const TextStyle(color: Colors.black54),
+                    ),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 16.0),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: SelectableText(uploadPath, style: const TextStyle(color: Colors.black87)),
+                        ),
+                      ),
+                    ],
+                  )
+                : const ListTile( // 非表示の場合
+                    title: Text(
+                      'アップロード先フォルダ',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+                    ),
+                    subtitle: Text('非表示（詳細表示モードで確認）', style: TextStyle(color: Colors.black54)),
                   ),
-                ],
-              ),
             ),
           ),
       ],
