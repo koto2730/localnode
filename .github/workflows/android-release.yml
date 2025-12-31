@@ -50,6 +50,14 @@ jobs:
             --dart-define=KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }} \
             --dart-define=KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}
 
+      - name: Create Draft Release and Upload Android Asset
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          tag_name: build-${{ github.run_number }}
+          files: build/app/build/outputs/bundle/release/app-release.aab
+
       # 6. Google Play 内部テストトラックへアップロード
       - name: Upload to Google Play
         uses: r0adkll/upload-google-play@v1
