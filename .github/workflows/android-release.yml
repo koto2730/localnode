@@ -6,7 +6,7 @@ on:
       - main  # mainブランチにマージされた時に実行
 
 permissions:
-　　contents: write
+  contents: write
 
 jobs:
   deploy:
