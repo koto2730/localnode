@@ -5,6 +5,9 @@ on:
     branches:
       - main  # mainブランチにマージされた時に実行
 
+permissions:
+　　contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
