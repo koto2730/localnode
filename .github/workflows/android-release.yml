@@ -56,7 +56,7 @@ jobs:
         with:
           draft: true
           tag_name: build-${{ github.run_number }}
-          files: build/app/build/outputs/bundle/release/app-release.aab
+          files: build/app/outputs/bundle/release/app-release.aab
 
       # 6. Google Play 内部テストトラックへアップロード
       - name: Upload to Google Play
