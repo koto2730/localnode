@@ -1,13 +1,9 @@
 import 'dart:io';
-import 'package:device_info_plus/device_info_plus.dart';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:state_notifier/state_notifier.dart';
-// 3.0以降で StateNotifierProvider を使うための専用インポート
-import 'package:flutter_riverpod/legacy.dart'; 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 // サーバーの状態を表すenum
@@ -23,7 +19,7 @@ class ServerState {
     this.pin,
     this.port,
     this.errorMessage,
-    this.uploadPath,
+    this.storagePath,
   });
 
   final ServerStatus status;
@@ -32,15 +28,19 @@ class ServerState {
   final String? pin;
   final int? port;
   final String? errorMessage;
-  final String? uploadPath;
+  final String? storagePath;
 }
 
-// StateNotifierの定義
-class ServerStateNotifier extends StateNotifier<ServerState> {
-  ServerStateNotifier(this._serverService)
-      : super(const ServerState(status: ServerStatus.stopped));
+// Notifierの定義
+class ServerNotifier extends Notifier<ServerState> {
+  @override
+  ServerState build() {
+    // 初期状態を返す
+    return const ServerState(status: ServerStatus.stopped);
+  }
 
-  final ServerService _serverService;
+  // _serverService を ref 経由で取得
+  ServerService get _serverService => ref.read(serverServiceProvider);
 
   Future<void> loadIpAddresses() async {
     if (kIsWeb) return; // Webでは実行しない
@@ -48,12 +48,11 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
     state = ServerState(
       status: state.status,
       availableIpAddresses: ips,
-      // リストの最初のIPをデフォルトで選択
       selectedIpAddress: ips.isNotEmpty ? ips.first : null,
       pin: state.pin,
       port: state.port,
       errorMessage: state.errorMessage,
-      uploadPath: state.uploadPath,
+      storagePath: _serverService.documentsPath, // 初期パスも反映
     );
   }
 
@@ -66,31 +65,22 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
       pin: state.pin,
       port: state.port,
       errorMessage: state.errorMessage,
-      uploadPath: state.uploadPath,
+      storagePath: state.storagePath,
     );
   }
 
-  Future<bool> _requestPermissions() async {
-    // Android以外では権限要求は不要
-    if (kIsWeb || !Platform.isAndroid) {
-      return true;
-    }
-
-    // Androidの場合のみ権限を要求
-    final deviceInfo = await DeviceInfoPlugin().androidInfo;
-    Permission permission;
-
-    // Android 11 (API 30) 以上かどうかを判定
-    if (deviceInfo.version.sdkInt >= 30) {
-      // 全ファイルへのアクセス権限をリクエスト
-      permission = Permission.manageExternalStorage;
-    } else {
-      // Android 10以下は従来のストレージ権限
-      permission = Permission.storage;
-    }
-
-    final status = await permission.request();
-    return status.isGranted;
+  Future<void> selectSafDirectory() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    await _serverService.selectSafDirectory();
+    state = ServerState(
+      status: state.status,
+      availableIpAddresses: state.availableIpAddresses,
+      selectedIpAddress: state.selectedIpAddress,
+      pin: state.pin,
+      port: state.port,
+      errorMessage: state.errorMessage,
+      storagePath: _serverService.documentsPath, // 更新されたパスを取得
+    );
   }
 
   Future<void> start(int port) async {
@@ -103,11 +93,6 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
     }
 
     try {
-      final hasPermission = await _requestPermissions();
-      if (!hasPermission) {
-        throw Exception('外部ストレージへのアクセス許可が必要です。設定アプリから権限を許可してください。');
-      }
-
       await _serverService.startServer(
         ipAddress: state.selectedIpAddress!,
         port: port,
@@ -119,7 +104,7 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
         selectedIpAddress: _serverService.ipAddress,
         pin: _serverService.pin,
         port: _serverService.port,
-        uploadPath: _serverService.displayPath,
+        storagePath: state.storagePath, // 既存のパスを維持する
       );
     } catch (e, stackTrace) {
       state = ServerState(
@@ -127,6 +112,7 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
         errorMessage: 'エラー: $e\n$stackTrace',
         availableIpAddresses: state.availableIpAddresses,
         selectedIpAddress: state.selectedIpAddress,
+        storagePath: state.storagePath,
       );
     }
   }
@@ -134,16 +120,16 @@ class ServerStateNotifier extends StateNotifier<ServerState> {
   Future<void> stop() async {
     await _serverService.stopServer();
     state = const ServerState(status: ServerStatus.stopped);
+    // 停止後もIPアドレスとパスは維持する
+    loadIpAddresses();
   }
 }
 
 // Providerの定義
 final serverServiceProvider = Provider((ref) => ServerService());
 
-final serverStateProvider =
-    StateNotifierProvider<ServerStateNotifier, ServerState>((ref) {
-  return ServerStateNotifier(ref.watch(serverServiceProvider));
-});
+final serverNotifierProvider = 
+    NotifierProvider<ServerNotifier, ServerState>(ServerNotifier.new);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -192,7 +178,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _portController = TextEditingController(text: '8080');
     // Web以外のプラットフォームでのみIPアドレスリストを読み込む
     if (!kIsWeb) {
-      Future.microtask(() => ref.read(serverStateProvider.notifier).loadIpAddresses());
+      Future.microtask(() => ref.read(serverNotifierProvider.notifier).loadIpAddresses());
     }
   }
 
@@ -275,7 +261,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
 
     // ネイティブプラットフォーム用のUI
-    final serverState = ref.watch(serverStateProvider);
+    final serverState = ref.watch(serverNotifierProvider);
     final url = serverState.selectedIpAddress != null && serverState.port != null
         ? 'http://${serverState.selectedIpAddress}:${serverState.port}'
         : null;
@@ -303,7 +289,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               children: <Widget>[
                 // サーバーの状態に応じて表示を切り替え
                 if (serverState.status == ServerStatus.running && url != null)
-                  _buildConnectionInfo(context, url, serverState.pin, serverState.uploadPath),
+                  _buildConnectionInfo(context, url, serverState.pin, serverState.storagePath),
 
                 if (serverState.status == ServerStatus.stopped)
                   _buildStoppedView(context),
@@ -327,8 +313,8 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   Widget _buildStoppedView(BuildContext context) {
-    final serverState = ref.watch(serverStateProvider);
-    final notifier = ref.read(serverStateProvider.notifier);
+    final serverState = ref.watch(serverNotifierProvider);
+    final notifier = ref.read(serverNotifierProvider.notifier);
 
     return Column(
       children: [
@@ -364,11 +350,24 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
+        if (Platform.isAndroid) ...[
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.folder_open),
+            label: const Text('共有フォルダを選択'),
+            onPressed: () async {
+              await notifier.selectSafDirectory();
+            },
+          ),
+          const SizedBox(height: 10),
+          if (serverState.storagePath != null)
+            Text('選択中のフォルダ: ${serverState.storagePath}', textAlign: TextAlign.center),
+        ],
       ],
     );
   }
 
-  Widget _buildConnectionInfo(BuildContext context, String url, String? pin, String? uploadPath) {
+  Widget _buildConnectionInfo(BuildContext context, String url, String? pin, String? storagePath) {
     // モードに応じて表示/非表示を決定
     final bool showPin = _displayMode == DisplayMode.pinAndQrVisible || _displayMode == DisplayMode.allVisible;
     final bool showDetails = _displayMode == DisplayMode.allVisible;
@@ -376,7 +375,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     return Column(
       children: [
         // PIN表示エリア
-        // 高さを固定して、表示/非表示でレイアウトがガタつかないようにする
         SizedBox(
           height: 80, // Cardのおおよその高さ
           child: AnimatedOpacity(
@@ -461,99 +459,35 @@ class _HomePageState extends ConsumerState<HomePage> {
         ),
         const SizedBox(height: 30),
 
-        // アップロード先フォルダ表示エリア
-        if (uploadPath != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.grey[300]!),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: showDetails
-                ? ExpansionTile(
-                    title: const Text(
-                      'アップロード先フォルダ',
-                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
-                    ),
-                    subtitle: Text(
-                      uploadPath,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                      softWrap: false,
-                      style: const TextStyle(color: Colors.black54),
-                    ),
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 16.0),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: SelectableText(uploadPath, style: const TextStyle(color: Colors.black87)),
-                        ),
-                      ),
-                    ],
-                  )
-                : const ListTile( // 非表示の場合
-                    title: Text(
-                      'アップロード先フォルダ',
-                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
-                    ),
-                    subtitle: Text('非表示（詳細表示モードで確認）', style: TextStyle(color: Colors.black54)),
-                  ),
-            ),
-          ),
+
       ],
     );
   }
 
-
-
   Widget _buildControlButton(BuildContext context, WidgetRef ref, ServerState serverState) {
-
     final bool isRunning = serverState.status == ServerStatus.running;
 
-    
-
     return ElevatedButton.icon(
-
       icon: Icon(isRunning ? Icons.stop : Icons.play_arrow),
-
       style: ElevatedButton.styleFrom(
-
         backgroundColor: isRunning ? Colors.redAccent : Colors.lightBlue,
-
         foregroundColor: Colors.white,
-
         padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-
         textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-
         shape: RoundedRectangleBorder(
-
           borderRadius: BorderRadius.circular(30),
-
         ),
-
         elevation: 5,
-
       ),
-
       onPressed: () async {
-
-        final notifier = ref.read(serverStateProvider.notifier);
-
+        final notifier = ref.read(serverNotifierProvider.notifier);
         if (isRunning) {
-
           await notifier.stop();
-          // サーバー停止後にIPリストを再読み込み
-          await notifier.loadIpAddresses();
-
         } else {
           final port = int.tryParse(_portController.text);
           if (port != null && port > 0 && port <= 65535) {
             await notifier.start(port);
           } else {
-            // ポート番号が無効な場合の簡単なエラー表示
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('無効なポート番号です。1〜65535の範囲で入力してください。'),
@@ -563,11 +497,7 @@ class _HomePageState extends ConsumerState<HomePage> {
           }
         }
       },
-
       label: Text(isRunning ? 'サーバーを停止' : 'サーバーを開始'),
-
     );
-
   }
-
 }

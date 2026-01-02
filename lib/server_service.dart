@@ -1,28 +1,30 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:math';
+
+import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:network_info_plus/network_info_plus.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
-import 'package:network_info_plus/network_info_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:archive/archive.dart';
-import 'package:archive/archive_io.dart';
-
-import 'dart:math';
-import 'package:image/image.dart' as img;
 
 class ServerService {
-  static const _platform = MethodChannel('com.ictglab.localnode/storage');
+  static const _safPlatform = MethodChannel('com.ictglab.localnode/saf_storage');
+  String? _safDirectoryUri; // 選択されたSAFディレクトリURI
   HttpServer? _server;
   String? _ipAddress;
   int? _port;
-  Directory? _documentsDir;
+  String? _fallbackStoragePath; // SAFが使えない場合のストレージパス
   String? _displayPath; // 表示用のパス
   Directory? _webRootDir; // Webルートディレクトリのパス
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
@@ -35,7 +37,7 @@ class ServerService {
   int? get port => _port;
   String? get pin => _pin;
   bool get isRunning => _server != null;
-  String? get documentsPath => _documentsDir?.path;
+  String? get documentsPath => _fallbackStoragePath;
   String? get displayPath => _displayPath;
 
   Future<List<String>> getAvailableIpAddresses() async {
@@ -66,76 +68,36 @@ class ServerService {
     _router.get('/api/info', _infoHandler);
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
-    _router.get('/api/download/<filename>', _downloadHandler);
-    _router.get('/api/thumbnail/<filename>', _thumbnailHandler);
+    _router.get('/api/download/<id>', _downloadHandler);
+    _router.get('/api/thumbnail/<id>', _thumbnailHandler);
     _router.get('/api/download-all', _downloadAllHandler);
-    _router.delete('/api/files/<filename>', _deleteFileHandler);
-  }
-
-  Future<String?> _getDownloadsPathFromNative() async {
-    try {
-      final String? path = await _platform.invokeMethod('getDownloadsDirectory');
-      return path;
-    } on PlatformException catch (e) {
-      print("Failed to get downloads directory: '${e.message}'.");
-      return null;
-    }
+    _router.delete('/api/files/<id>', _deleteFileHandler);
   }
 
   Future<void> _init() async {
+    if (kIsWeb) {
+      print("Web platform detected. No file system access.");
+      return;
+    }
+
     final packageInfo = await PackageInfo.fromPlatform();
     final appName = packageInfo.appName;
 
-    // Webプラットフォームはファイルシステムにアクセスできない
-    if (kIsWeb) {
-      print("Web platform detected. File system operations will be handled differently.");
-      _documentsDir = null; // またはメモリベースの仮想ディレクトリなど
-    } 
-    // kDebugModeがtrueの場合、強制的にアプリケーションサンドボックス内のディレクトリを使用
-    else if (kDebugMode) {
-      print("Debug mode: Using sandboxed directory.");
-      final docDir = await getApplicationDocumentsDirectory();
-      _displayPath = p.join(docDir.path, appName);
-      _documentsDir = Directory(_displayPath!);
-    }
-    // Releaseモードの場合
-    else {
-      if (Platform.isAndroid || Platform.isMacOS) {
-        final downloadsPath = await _getDownloadsPathFromNative();
-        if (downloadsPath != null) {
-          _displayPath = p.join(downloadsPath, appName);
-          _documentsDir = Directory(_displayPath!);
-        } else {
-          // フォールバック
-          final documentsPath = await getApplicationDocumentsDirectory();
-          _displayPath = p.join(documentsPath.path, appName);
-          _documentsDir = Directory(_displayPath!);
-        }
-      } else if (Platform.isIOS) {
-        // iOSではアプリのDocumentsディレクトリ内にサブディレクトリを作成
-        final documentsPath = await getApplicationDocumentsDirectory();
-        _displayPath = p.join(documentsPath.path, appName);
-        _documentsDir = Directory(_displayPath!);
-      } else if (Platform.isLinux || Platform.isWindows) {
-        // デスクトップOS
-        final documentsPath = await getApplicationDocumentsDirectory();
-        _displayPath = p.join(documentsPath.path, appName);
-        _documentsDir = Directory(_displayPath!);
-      } else {
-        // 未知のプラットフォーム
-        print("Unknown platform. Using application documents directory as fallback.");
-        final documentsPath = await getApplicationDocumentsDirectory();
-        _displayPath = p.join(documentsPath.path, appName);
-        _documentsDir = Directory(_displayPath!);
+    // アプリケーションサンドボックス内のディレクトリをフォールバックとして設定
+    final docDir = await getApplicationDocumentsDirectory();
+    _displayPath = p.join(docDir.path, appName);
+    _fallbackStoragePath = p.join(docDir.path, appName);
+
+    if (_fallbackStoragePath != null) {
+      final tempDocumentDir = Directory(_fallbackStoragePath!);
+      if (!await tempDocumentDir.exists()) {
+        await tempDocumentDir.create(recursive: true);
       }
     }
 
-    if (_documentsDir != null && !await _documentsDir!.exists()) {
-      await _documentsDir!.create(recursive: true);
-    }
-    
     // サムネイルキャッシュディレクトリの初期化
     if (!kIsWeb) {
+      await loadPersistedSafUri(); // SAF URIを読み込む
       final tempDir = await getTemporaryDirectory();
       _thumbnailCacheDir = Directory(p.join(tempDir.path, 'thumbnails'));
       if (!await _thumbnailCacheDir!.exists()) {
@@ -188,7 +150,7 @@ class ServerService {
       if (submittedPin == _pin) {
         final token = _generateSessionToken();
         _sessions.add(token);
-        
+
         print('Auth success: Generated token $token. Current sessions: $_sessions');
 
         final cookie = 'localnode_session=$token; Path=/; HttpOnly';
@@ -215,45 +177,98 @@ class ServerService {
   }
 
   Future<Response> _getFilesHandler(Request request) async {
-    if (_documentsDir == null) return Response.internalServerError(body: 'Documents directory not initialized.');
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
+      return Response.internalServerError(body: 'Documents directory not initialized.');
+    }
 
-    final files = await _documentsDir!.list().where((item) => item is File).cast<File>().toList();
-    final fileList = files.map((file) async {
-      final stat = await file.stat();
-      return {
-        'name': p.basename(file.path),
-        'size': stat.size,
-        'modified': stat.modified.toIso8601String(),
-      };
-    }).toList();
+    // AndroidでSAF URIが設定されている場合は、Platform Channel経由でファイルリストを取得
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      try {
+        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
+        if (files == null) {
+          return Response.internalServerError(body: 'Failed to list files.');
+        }
+        // URIをBase64エンコードしてIDとして追加
+        final filesWithId = files.map((file) {
+          final uri = file['uri'] as String;
+          final id = base64Url.encode(utf8.encode(uri));
+          return {...file, 'id': id};
+        }).toList();
+        return Response.ok(jsonEncode(filesWithId), headers: {'Content-Type': 'application/json'});
+      } on PlatformException catch (e) {
+        return Response.internalServerError(body: "Failed to list files: ${e.message}");
+      }
+    }
+    // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合は、従来のdart:ioを使用
+    else {
+      final directory = Directory(storagePath);
+      if (!await directory.exists()) {
+        return Response.internalServerError(body: 'Documents directory not found.');
+      }
+      final files = await directory.list().where((item) => item is File).cast<File>().toList();
+      final fileList = files.map((file) async {
+        final stat = await file.stat();
+        // パスをBase64エンコードしてIDとして追加
+        final id = base64Url.encode(utf8.encode(file.path));
+        return {
+          'name': p.basename(file.path),
+          'size': stat.size,
+          'modified': stat.modified.toIso8601String(),
+          'id': id,
+        };
+      }).toList();
 
-    final results = await Future.wait(fileList);
-    return Response.ok(jsonEncode(results), headers: {'Content-Type': 'application/json'});
+      final results = await Future.wait(fileList);
+      return Response.ok(jsonEncode(results), headers: {'Content-Type': 'application/json'});
+    }
   }
-
   Future<Response> _uploadHandler(Request request) async {
-    if (_documentsDir == null) return Response.internalServerError(body: 'Documents directory not initialized.');
-    
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
+      return Response.internalServerError(body: 'Documents directory not initialized.');
+    }
+
     final encodedFilename = request.headers['x-filename'];
     if (encodedFilename == null || encodedFilename.isEmpty) {
       return Response.badRequest(body: 'x-filename header is required.');
     }
     final filename = Uri.decodeComponent(encodedFilename);
+    final sanitizedFilename = p.basename(filename);
 
-    final sanitizedFilename = p.basename(filename); // Prevent path traversal
-    final file = await _getUniqueFilePath(_documentsDir!, sanitizedFilename);
+    // AndroidでSAF URIが設定されている場合
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      try {
+        final bytes = await request.read().fold<List<int>>([], (prev, chunk) => prev..addAll(chunk));
+        final mimeType = _getMimeType(sanitizedFilename);
 
-    final sink = file.openWrite();
-    try {
-      await for (final chunk in request.read()) {
-        sink.add(chunk);
+        final String? newFileUri = await _safPlatform.invokeMethod('createFile', {
+          'uri': _safDirectoryUri,
+          'filename': sanitizedFilename,
+          'mimeType': mimeType,
+          'bytes': Uint8List.fromList(bytes),
+        });
+
+        if (newFileUri != null) {
+          return Response.ok('File uploaded successfully: $sanitizedFilename');
+        } else {
+          return Response.internalServerError(body: 'Failed to create file via SAF.');
+        }
+      } on PlatformException catch (e) {
+        return Response.internalServerError(body: "Failed to save file: ${e.message}");
       }
-      return Response.ok('File uploaded successfully: ${p.basename(file.path)}');
-    } catch (e) {
-      return Response.internalServerError(body: 'Failed to save file: $e');
     }
-    finally {
-      await sink.close();
+    // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
+    else {
+      final directory = Directory(storagePath);
+      final file = await _getUniqueFilePath(directory, sanitizedFilename);
+      final sink = file.openWrite();
+      try {
+        await request.read().pipe(sink);
+        return Response.ok('File uploaded successfully: ${p.basename(file.path)}');
+      } catch (e) {
+        return Response.internalServerError(body: 'Failed to save file: $e');
+      }
     }
   }
 
@@ -278,21 +293,43 @@ class ServerService {
     }
   }
 
-  Future<Response> _downloadHandler(Request request, String filename) async {
-    if (_documentsDir == null) return Response.internalServerError(body: 'Documents directory not initialized.');
-    
-    final sanitizedFilename = p.basename(filename);
-    final file = File(p.join(_documentsDir!.path, sanitizedFilename));
-
-    if (!await file.exists()) {
-      return Response.notFound('File not found: $sanitizedFilename');
+  Future<Response> _downloadHandler(Request request, String id) async {
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
+      return Response.internalServerError(body: 'Documents directory not initialized.');
     }
 
-    final mimeType = _getMimeType(sanitizedFilename);
+    try {
+      final decoded = utf8.decode(base64Url.decode(id));
+      
+      // AndroidでSAF URIが設定されている場合
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        final fileUri = decoded;
+        final Uint8List? bytes = await _safPlatform.invokeMethod('readFile', {'uri': fileUri});
 
-    // Content-Disposition を削除し、Content-Type を動的に設定
-    return Response.ok(file.openRead())
-        .change(headers: {'Content-Type': mimeType});
+        if (bytes == null) {
+          return Response.internalServerError(body: 'Failed to read file.');
+        }
+        
+        final filename = Uri.parse(fileUri).pathSegments.last;
+        final mimeType = _getMimeType(filename);
+        return Response.ok(bytes, headers: {'Content-Type': mimeType});
+
+      } 
+      // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
+      else {
+        final filePath = decoded;
+        final file = File(filePath);
+        if (!await file.exists()) {
+          return Response.notFound('File not found: $filePath');
+        }
+        final mimeType = _getMimeType(p.basename(filePath));
+        return Response.ok(file.openRead())
+            .change(headers: {'Content-Type': mimeType});
+      }
+    } catch (e) {
+      return Response.internalServerError(body: "Failed to process download request: $e");
+    }
   }
 
   String _getMimeType(String filename) {
@@ -321,42 +358,52 @@ class ServerService {
     return mimeTypes[extension] ?? 'application/octet-stream';
   }
 
-  Future<Response> _thumbnailHandler(Request request, String filename) async {
-    if (_documentsDir == null || _thumbnailCacheDir == null) {
+  Future<Response> _thumbnailHandler(Request request, String id) async {
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null || _thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Server directory not initialized.');
     }
 
-    final sanitizedFilename = p.basename(filename);
-    if (!_isImageFile(sanitizedFilename)) {
-      return Response.badRequest(body: 'File is not an image.');
-    }
-
-    final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$sanitizedFilename.jpg'));
-
-    // 1. キャッシュを確認
-    if (await cacheFile.exists()) {
-      return Response.ok(cacheFile.openRead(), headers: {'Content-Type': 'image/jpeg'});
-    }
-
-    // 2. キャッシュがない場合は生成
-    final originalFile = File(p.join(_documentsDir!.path, sanitizedFilename));
-    if (!await originalFile.exists()) {
-      return Response.notFound('File not found: $sanitizedFilename');
-    }
-
     try {
-      final imageBytes = await originalFile.readAsBytes();
-      final image = img.decodeImage(imageBytes);
+      final decoded = utf8.decode(base64Url.decode(id));
+      final filename = Platform.isAndroid && _safDirectoryUri != null 
+          ? Uri.parse(decoded).pathSegments.last 
+          : p.basename(decoded);
 
+      if (!_isImageFile(filename)) {
+        return Response.badRequest(body: 'File is not an image.');
+      }
+
+      final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+
+      if (await cacheFile.exists()) {
+        return Response.ok(cacheFile.openRead(), headers: {'Content-Type': 'image/jpeg'});
+      }
+      
+      Uint8List? imageBytes;
+
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        imageBytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
+      } else {
+        final file = File(decoded);
+        if (!await file.exists()) {
+          return Response.notFound('File not found: $filename');
+        }
+        imageBytes = await file.readAsBytes();
+      }
+
+      if (imageBytes == null) {
+        return Response.internalServerError(body: 'Failed to read image bytes.');
+      }
+
+      final image = img.decodeImage(imageBytes);
       if (image == null) {
         return Response.internalServerError(body: 'Failed to decode image.');
       }
 
-      // 幅120pxにリサイズ
       final thumbnail = img.copyResize(image, width: 120);
       final thumbnailBytes = img.encodeJpg(thumbnail, quality: 85);
 
-      // キャッシュに保存 (非同期)
       cacheFile.writeAsBytes(thumbnailBytes);
       
       return Response.ok(thumbnailBytes, headers: {'Content-Type': 'image/jpeg'});
@@ -366,49 +413,97 @@ class ServerService {
       return Response.internalServerError(body: 'Failed to generate thumbnail.');
     }
   }
-
+  
   bool _isImageFile(String filename) {
     final extension = p.extension(filename).toLowerCase();
     const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};
     return imageExtensions.contains(extension);
   }
 
-  Future<Response> _deleteFileHandler(Request request, String filename) async {
-     if (_documentsDir == null || _thumbnailCacheDir == null) return Response.internalServerError(body: 'Documents directory not initialized.');
-
-    final sanitizedFilename = p.basename(filename);
-    final file = File(p.join(_documentsDir!.path, sanitizedFilename));
-
-    if (!await file.exists()) {
-      return Response.notFound('File not found: $sanitizedFilename');
+  Future<Response> _deleteFileHandler(Request request, String id) async {
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null || _thumbnailCacheDir == null) {
+      return Response.internalServerError(body: 'Documents directory not initialized.');
     }
 
     try {
-      await file.delete();
-      // サムネイルキャッシュも削除
-      final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$sanitizedFilename.jpg'));
-      if (await cacheFile.exists()) {
-        await cacheFile.delete();
+      final decoded = utf8.decode(base64Url.decode(id));
+      bool? deleted = false;
+
+      // AndroidでSAF URIが設定されている場合
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        final fileUri = decoded;
+        deleted = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
+      } 
+      // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
+      else {
+        final filePath = decoded;
+        final file = File(filePath);
+        if (await file.exists()) {
+          await file.delete();
+          deleted = true;
+        }
       }
-      return Response.ok('File deleted successfully: $sanitizedFilename');
+
+      if (deleted == true) {
+        // サムネイルキャッシュも削除
+        final filename = Platform.isAndroid && _safDirectoryUri != null 
+            ? Uri.parse(decoded).pathSegments.last 
+            : p.basename(decoded);
+        final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+        if (await cacheFile.exists()) {
+          await cacheFile.delete();
+        }
+        return Response.ok('File deleted successfully');
+      } else {
+        return Response.internalServerError(body: 'Failed to delete file.');
+      }
     } catch (e) {
-      return Response.internalServerError(body: 'Failed to delete file: $e');
+      return Response.internalServerError(body: "Failed to process delete request: $e");
     }
   }
 
   Future<Response> _downloadAllHandler(Request request) async {
-    if (_documentsDir == null) {
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
       return Response.internalServerError(body: 'Documents directory not initialized.');
     }
 
     final encoder = ZipEncoder();
     final archive = Archive();
 
-    final files = _documentsDir!.listSync(recursive: true).whereType<File>();
-    for (final file in files) {
-      final bytes = await file.readAsBytes();
-      final filename = p.relative(file.path, from: _documentsDir!.path);
-      archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+    // AndroidでSAF URIが設定されている場合
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      try {
+        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
+        if (files == null) {
+          return Response.internalServerError(body: 'Failed to list files for zipping.');
+        }
+
+        for (final fileInfo in files) {
+          final String fileUri = fileInfo['uri'];
+          final String filename = fileInfo['name'];
+          final Uint8List? bytes = await _safPlatform.invokeMethod('readFile', {'uri': fileUri});
+          if (bytes != null) {
+            archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+          }
+        }
+      } on PlatformException catch(e) {
+        return Response.internalServerError(body: 'Failed to read files for zipping: ${e.message}');
+      }
+    }
+    // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
+    else {
+      final directory = Directory(storagePath);
+      if (!await directory.exists()) {
+        return Response.internalServerError(body: 'Documents directory not found.');
+      }
+      final files = directory.listSync(recursive: true).whereType<File>();
+      for (final file in files) {
+        final bytes = await file.readAsBytes();
+        final filename = p.relative(file.path, from: directory.path);
+        archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+      }
     }
 
     final zipData = encoder.encode(archive);
@@ -451,14 +546,14 @@ class ServerService {
           }
         }
       }
-      
+
       print('Auth middleware: Parsed token: $token');
 
       // トークンを検証
       if (token != null && _sessions.contains(token)) {
         return innerHandler(request); // 認証成功
       }
-      
+
       // 認証失敗
       return Response.unauthorized(json.encode({'error': 'Authentication required.'}),
           headers: {'Content-Type': 'application/json'});
@@ -516,5 +611,32 @@ class ServerService {
     _sessions.clear();
     WakelockPlus.disable();
     print('Server stopped.');
+  }
+
+  // SAF ディレクトリを選択するメソッド
+  Future<void> selectSafDirectory() async {
+    try {
+      final String? uri = await _safPlatform.invokeMethod('requestSafDirectory');
+      if (uri != null) {
+        _safDirectoryUri = uri;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('saf_directory_uri', uri);
+        print('SAF Directory URI selected and persisted: $uri');
+      } else {
+        print('SAF Directory selection cancelled.');
+      }
+    } on PlatformException catch (e) {
+      print("Failed to select SAF Directory: '${e.message}'.");
+    }
+  }
+
+  // 永続化されたSAFディレクトリURIを読み込むメソッド
+  Future<void> loadPersistedSafUri() async {
+    final prefs = await SharedPreferences.getInstance();
+    _safDirectoryUri = prefs.getString('saf_directory_uri');
+    if (_safDirectoryUri != null) {
+      print('Loaded persisted SAF Directory URI: $_safDirectoryUri');
+      // ここでネイティブ側にもURIを渡し、アクセス権を再確認させるなどの処理が必要になる可能性
+    }
   }
 }
