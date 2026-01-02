@@ -86,7 +86,11 @@ class ServerService {
 
     // アプリケーションサンドボックス内のディレクトリをフォールバックとして設定
     final docDir = await getApplicationDocumentsDirectory();
-    _displayPath = p.join(docDir.path, appName);
+    if (Platform.isIOS) {
+      _displayPath = 'On My iPhone/$appName'; // iOSではよりユーザーフレンドリーなパスを表示
+    } else {
+      _displayPath = p.join(docDir.path, appName);
+    }
     _fallbackStoragePath = p.join(docDir.path, appName);
 
     if (_fallbackStoragePath != null) {
@@ -344,6 +348,28 @@ class ServerService {
     } catch (e) {
       return Response.internalServerError(body: "Failed to process download request: $e");
     }
+  }
+
+  // iOS向けの表示パスを整形するヘルパー
+  String _getIosDisplayPath(String fullPath, String appName, String appDocDirPath) {
+    // アプリのデフォルトのドキュメントディレクトリ、またはその直下のアプリ名フォルダの場合
+    if (fullPath == appDocDirPath || fullPath == p.join(appDocDirPath, appName)) {
+      return 'On My iPhone/$appName (App Storage)';
+    }
+
+    // パスに '/Downloads' が含まれる場合
+    final downloadsIndex = fullPath.indexOf('/Downloads');
+    if (downloadsIndex != -1) {
+      String relativePath = fullPath.substring(downloadsIndex); // 例: /Downloads/MyFolder
+      // 最初の '/' を取り除いて、On My iPhone/Downloads/MyFolder の形式にする
+      if (relativePath.startsWith('/')) {
+        relativePath = relativePath.substring(1);
+      }
+      return 'On My iPhone/$relativePath';
+    }
+
+    // その他のカスタムフォルダの場合: 最後のフォルダ名のみ表示
+    return 'On My iPhone/${p.basename(fullPath)}';
   }
 
   String _getMimeType(String filename) {
@@ -642,18 +668,24 @@ class ServerService {
           print('SAF Directory selection cancelled.');
         }
       } else if (Platform.isIOS) {
-        // iOS: アプリサンドボックス内のDocuments配下を使用（Filesアプリから参照可能）
-        final docDir = await getApplicationDocumentsDirectory();
-        final packageInfo = await PackageInfo.fromPlatform();
-        final path = p.join(docDir.path, packageInfo.appName);
-        await _ensureDirectoryExists(path);
-        _fallbackStoragePath = path;
-        _displayPath = path;
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('selected_directory_path', path);
-        print('iOS documents directory set: $path');
-      } else {
+        // iOS: file_picker を使用してディレクトリを選択させる
+        final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
+        if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
+          await _ensureDirectoryExists(selectedDirectory);
+          _fallbackStoragePath = selectedDirectory;
+          
+          final packageInfo = await PackageInfo.fromPlatform();
+          final docDir = await getApplicationDocumentsDirectory();
+
+          _displayPath = _getIosDisplayPath(selectedDirectory, packageInfo.appName, docDir.path);
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('selected_directory_path', selectedDirectory);
+          print('iOS directory selected and persisted: $selectedDirectory');
+        } else {
+          print('Directory selection cancelled.');
+        } 
         // Windows, macOS, Linux: file_picker を使用
+      } else {
         final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
         if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
           await _ensureDirectoryExists(selectedDirectory);
