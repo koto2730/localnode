@@ -70,7 +70,7 @@ class ServerNotifier extends Notifier<ServerState> {
   }
 
   Future<void> selectSafDirectory() async {
-    if (kIsWeb || !Platform.isAndroid) return;
+    if (kIsWeb) return;
     await _serverService.selectSafDirectory();
     state = ServerState(
       status: state.status,
@@ -350,7 +350,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
-        if (Platform.isAndroid) ...[
+        if (!kIsWeb) ...[
           const SizedBox(height: 20),
           ElevatedButton.icon(
             icon: const Icon(Icons.folder_open),
