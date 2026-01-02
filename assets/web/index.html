@@ -247,16 +247,15 @@
                 }
             });
 
-            const getFilePreview = (filename) => {
-                const ext = (filename.split('.').pop() || '').toLowerCase();
+            const getFilePreview = (file) => {
+                const ext = (file.name.split('.').pop() || '').toLowerCase();
                 const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
                 const videoExtensions = ['mp4', 'mov', 'avi', 'mkv', 'webm'];
                 const audioExtensions = ['mp3', 'wav', 'ogg', 'm4a'];
 
                 if (imageExtensions.includes(ext)) {
-                    // Cookieが自動で送信されるため、URLにトークンは不要
-                    const imageUrl = `/api/thumbnail/${encodeURIComponent(filename)}`;
-                    return `<img src="${imageUrl}" alt="${escapeHtml(filename)}" loading="lazy">`;
+                    const imageUrl = `/api/thumbnail/${file.id}`;
+                    return `<img src="${imageUrl}" alt="${escapeHtml(file.name)}" loading="lazy">`;
                 }
                 if (videoExtensions.includes(ext)) return '🎬';
                 if (audioExtensions.includes(ext)) return '🎵';
@@ -280,15 +279,15 @@
                         files.forEach(file => {
                             const row = document.createElement('tr');
                             const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
-                            const preview = getFilePreview(file.name);
+                            const preview = getFilePreview(file);
 
                             row.innerHTML = `
                                 <td class="preview-col">${preview}</td>
                                 <td>${escapeHtml(file.name)}</td>
                                 <td>${sizeMB} MB</td>
                                 <td class="actions">
-                                    <button class="btn-download" onclick="downloadFile('${escapeHtml(file.name)}')">DL</button>
-                                    <button class="btn-delete" onclick="deleteFile('${escapeHtml(file.name)}')">削除</button>
+                                    <button class="btn-download" onclick="downloadFile('${file.id}', '${escapeHtml(file.name)}')">DL</button>
+                                    <button class="btn-delete" onclick="deleteFile('${file.id}', '${escapeHtml(file.name)}')">削除</button>
                                 </td>
                             `;
                             fileListBody.appendChild(row);
@@ -338,9 +337,9 @@
                 }
             });
 
-            window.downloadFile = async (filename) => {
+            window.downloadFile = async (id, filename) => {
                 try {
-                    const response = await safeFetch(`/api/download/${filename}`);
+                    const response = await safeFetch(`/api/download/${id}`);
                     if (!response.ok) throw new Error('Download failed.');
 
                     const blob = await response.blob();
@@ -358,11 +357,11 @@
                 }
             };
 
-            window.deleteFile = async (filename) => {
+            window.deleteFile = async (id, filename) => {
                 if (!confirm(`本当に'${filename}'を削除しますか？`)) return;
 
                 try {
-                    const response = await safeFetch(`/api/files/${filename}`, { method: 'DELETE' });
+                    const response = await safeFetch(`/api/files/${id}`, { method: 'DELETE' });
                     if (!response.ok) throw new Error('削除に失敗しました。');
                     fetchFiles();
                 } catch (error) {

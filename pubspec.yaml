@@ -46,11 +46,13 @@ dependencies:
   permission_handler: ^12.0.1
   device_info_plus: ^12.3.0
   flutter_riverpod: ^3.0.3
-  state_notifier: ^1.0.0
+
   file_saver: ^0.3.1
   package_info_plus: ^9.0.0
   image: ^4.1.7
   archive: ^4.0.7
+  shared_preferences: ^2.2.0
+  unorm_dart: ^0.2.0
 
 dev_dependencies:
   flutter_test:
