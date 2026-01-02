@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Localnode</string>
+	<string>PLocalNode</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>localnode</string>
+	<string>pLocalNode</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>このアプリはファイル転送のために写真ライブラリからファイルを選択するためにアクセスを必要とします。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>このアプリは、Wi-Fiネットワーク上の他のデバイスとコンテンツを共有するためのファイルサーバーとして機能するために、ローカルネットワークを使用します。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>このアプリは、接続詳細を表示するためにWi-Fi情報（SSID / BSSID）にアクセスするために位置情報を使用します。位置情報データが保存または共有されることはありません。</string>
 </dict>
 </plist>
