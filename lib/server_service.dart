@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:math';
 
 import 'package:archive/archive.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
@@ -261,12 +262,25 @@ class ServerService {
     // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
     else {
       final directory = Directory(storagePath);
+      if (!await directory.exists()) {
+        print('Upload error: storage directory missing -> $storagePath');
+        return Response.internalServerError(body: 'Documents directory not found.');
+      }
+
       final file = await _getUniqueFilePath(directory, sanitizedFilename);
       final sink = file.openWrite();
       try {
-        await request.read().pipe(sink);
+        int totalBytes = 0;
+        await for (final chunk in request.read()) {
+          totalBytes += chunk.length;
+          sink.add(chunk);
+        }
+        await sink.close();
+        print('Upload success: ${p.basename(file.path)} bytes=$totalBytes');
         return Response.ok('File uploaded successfully: ${p.basename(file.path)}');
-      } catch (e) {
+      } catch (e, st) {
+        await sink.close();
+        print('Upload error: $e\n$st');
         return Response.internalServerError(body: 'Failed to save file: $e');
       }
     }
@@ -616,17 +630,51 @@ class ServerService {
   // SAF ディレクトリを選択するメソッド
   Future<void> selectSafDirectory() async {
     try {
-      final String? uri = await _safPlatform.invokeMethod('requestSafDirectory');
-      if (uri != null) {
-        _safDirectoryUri = uri;
+      if (Platform.isAndroid) {
+        // Android: SAF (Storage Access Framework) を使用
+        final String? uri = await _safPlatform.invokeMethod('requestSafDirectory');
+        if (uri != null) {
+          _safDirectoryUri = uri;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('saf_directory_uri', uri);
+          print('SAF Directory URI selected and persisted: $uri');
+        } else {
+          print('SAF Directory selection cancelled.');
+        }
+      } else if (Platform.isIOS) {
+        // iOS: アプリサンドボックス内のDocuments配下を使用（Filesアプリから参照可能）
+        final docDir = await getApplicationDocumentsDirectory();
+        final packageInfo = await PackageInfo.fromPlatform();
+        final path = p.join(docDir.path, packageInfo.appName);
+        await _ensureDirectoryExists(path);
+        _fallbackStoragePath = path;
+        _displayPath = path;
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('saf_directory_uri', uri);
-        print('SAF Directory URI selected and persisted: $uri');
+        await prefs.setString('selected_directory_path', path);
+        print('iOS documents directory set: $path');
       } else {
-        print('SAF Directory selection cancelled.');
+        // Windows, macOS, Linux: file_picker を使用
+        final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
+        if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
+          await _ensureDirectoryExists(selectedDirectory);
+          _fallbackStoragePath = selectedDirectory;
+          _displayPath = selectedDirectory;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('selected_directory_path', selectedDirectory);
+          print('Directory selected and persisted: $selectedDirectory');
+        } else {
+          print('Directory selection cancelled.');
+        }
       }
     } on PlatformException catch (e) {
-      print("Failed to select SAF Directory: '${e.message}'.");
+      print("Failed to select directory: '${e.message}'.");
+    }
+  }
+
+  Future<void> _ensureDirectoryExists(String path) async {
+    final dir = Directory(path);
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
     }
   }
 
