@@ -33,6 +33,12 @@ class ServerService {
   String? _pin;
   final Set<String> _sessions = {};
 
+  // ブルートフォース保護用
+  final Map<String, int> _failedAttempts = {};
+  final Map<String, DateTime> _lockoutUntil = {};
+  static const int _maxFailedAttempts = 5;
+  static const Duration _lockoutDuration = Duration(minutes: 5);
+
   final _router = Router();
 
   String? get ipAddress => _ipAddress;
@@ -149,12 +155,30 @@ class ServerService {
   }
 
   Future<Response> _authHandler(Request request) async {
+    // クライアントIPを取得
+    final clientIp = _getClientIp(request);
+
+    // ロックアウト中かチェック
+    final lockout = _lockoutUntil[clientIp];
+    if (lockout != null && DateTime.now().isBefore(lockout)) {
+      final remaining = lockout.difference(DateTime.now()).inSeconds;
+      return Response.forbidden(
+          json.encode({
+            'error': 'Too many failed attempts. Try again in $remaining seconds.'
+          }),
+          headers: {'Content-Type': 'application/json'});
+    }
+
     final body = await request.readAsString();
     try {
       final params = json.decode(body) as Map<String, dynamic>;
       final submittedPin = params['pin'];
 
       if (submittedPin == _pin) {
+        // 認証成功: 失敗カウントをリセット
+        _failedAttempts.remove(clientIp);
+        _lockoutUntil.remove(clientIp);
+
         final token = _generateSessionToken();
         _sessions.add(token);
 
@@ -168,6 +192,24 @@ class ServerService {
 
         return Response.ok(json.encode({'status': 'success'}), headers: headers);
       } else {
+        // 認証失敗: 失敗カウントを増加
+        final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
+        _failedAttempts[clientIp] = attempts;
+
+        print('Auth failed from $clientIp. Attempt $attempts of $_maxFailedAttempts');
+
+        if (attempts >= _maxFailedAttempts) {
+          _lockoutUntil[clientIp] = DateTime.now().add(_lockoutDuration);
+          _failedAttempts.remove(clientIp);
+          print('IP $clientIp locked out for ${_lockoutDuration.inMinutes} minutes');
+          return Response.forbidden(
+              json.encode({
+                'error':
+                    'Too many failed attempts. Locked out for ${_lockoutDuration.inMinutes} minutes.'
+              }),
+              headers: {'Content-Type': 'application/json'});
+        }
+
         return Response.forbidden(json.encode({'error': 'Invalid PIN'}),
             headers: {'Content-Type': 'application/json'});
       }
@@ -176,6 +218,18 @@ class ServerService {
           body: json.encode({'error': 'Invalid request body.'}),
           headers: {'Content-Type': 'application/json'});
     }
+  }
+
+  String _getClientIp(Request request) {
+    // X-Forwarded-For ヘッダーがあれば使用（プロキシ経由の場合）
+    final forwarded = request.headers['x-forwarded-for'];
+    if (forwarded != null && forwarded.isNotEmpty) {
+      return forwarded.split(',').first.trim();
+    }
+    // 直接接続の場合はコンテキストから取得を試みる
+    // shelf ではリクエストコンテキストからIPを取得できないため、
+    // デフォルトでは 'unknown' を返す
+    return request.headers['x-real-ip'] ?? 'unknown';
   }
 
   Response _infoHandler(Request request) {
@@ -671,11 +725,150 @@ class ServerService {
 
   // === Server Control ===
 
+  /// CLI用の初期化（Flutterプラグインを使用しない）
+  Future<void> _initCli(String? storagePath) async {
+    if (storagePath != null) {
+      _fallbackStoragePath = storagePath;
+      _displayPath = storagePath;
+    } else {
+      // デフォルトはカレントディレクトリ
+      _fallbackStoragePath = Directory.current.path;
+      _displayPath = Directory.current.path;
+    }
+
+    // ストレージディレクトリの存在確認
+    final storageDir = Directory(_fallbackStoragePath!);
+    if (!await storageDir.exists()) {
+      await storageDir.create(recursive: true);
+    }
+
+    // サムネイルキャッシュディレクトリの初期化
+    final tempPath = Platform.environment['TMPDIR'] ??
+        Platform.environment['TEMP'] ??
+        '/tmp';
+    _thumbnailCacheDir = Directory(p.join(tempPath, 'localnode_thumbnails'));
+    if (!await _thumbnailCacheDir!.exists()) {
+      await _thumbnailCacheDir!.create(recursive: true);
+    }
+  }
+
+  /// CLI用のアセット展開（Flutterプラグインを使用しない）
+  Future<void> _deployAssetsCli() async {
+    final tempPath = Platform.environment['TMPDIR'] ??
+        Platform.environment['TEMP'] ??
+        '/tmp';
+    _webRootDir = Directory(p.join(tempPath, 'localnode_web'));
+
+    // 既存のディレクトリがあればクリーンアップ
+    if (await _webRootDir!.exists()) {
+      await _webRootDir!.delete(recursive: true);
+    }
+    await _webRootDir!.create(recursive: true);
+
+    // CLIモードでは実行ファイルと同じディレクトリにあるassetsを使用
+    final executablePath = Platform.resolvedExecutable;
+    final executableDir = p.dirname(executablePath);
+
+    // アセットの探索パス
+    final possiblePaths = [
+      p.join(executableDir, 'data', 'flutter_assets', 'assets', 'web', 'index.html'),
+      p.join(executableDir, 'assets', 'web', 'index.html'),
+      p.join(Directory.current.path, 'assets', 'web', 'index.html'),
+    ];
+
+    File? sourceFile;
+    for (final path in possiblePaths) {
+      final file = File(path);
+      if (await file.exists()) {
+        sourceFile = file;
+        break;
+      }
+    }
+
+    if (sourceFile != null) {
+      final destinationFile = File(p.join(_webRootDir!.path, 'index.html'));
+      await sourceFile.copy(destinationFile.path);
+    } else {
+      // アセットが見つからない場合は最小限のHTMLを生成
+      final destinationFile = File(p.join(_webRootDir!.path, 'index.html'));
+      await destinationFile.writeAsString(_getMinimalHtml());
+      print('Warning: Web assets not found. Using minimal HTML.');
+    }
+  }
+
+  String _getMinimalHtml() {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LocalNode</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; text-align: center; }
+    h1 { color: #333; }
+  </style>
+</head>
+<body>
+  <h1>LocalNode Server</h1>
+  <p>Server is running. Web UI assets not found.</p>
+  <p>API is available at /api/*</p>
+</body>
+</html>
+''';
+  }
+
+  /// CLIモード用のサーバー起動
+  Future<void> startServerCli({
+    required String ipAddress,
+    required int port,
+    String? fixedPin,
+    String? storagePath,
+  }) async {
+    if (_server != null) return;
+
+    // 固定PINまたはランダム生成
+    _pin = fixedPin ?? _generatePin();
+    _sessions.clear();
+    _failedAttempts.clear();
+    _lockoutUntil.clear();
+    print('Your PIN is: $_pin');
+
+    try {
+      await _initCli(storagePath);
+      await _deployAssetsCli();
+
+      _ipAddress = ipAddress;
+      _port = port;
+
+      final staticHandler =
+          createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
+
+      final apiHandler =
+          const Pipeline().addMiddleware(_authMiddleware).addHandler(_router.call);
+
+      final cascade = Cascade().add(apiHandler).add(staticHandler);
+
+      final handler =
+          const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
+
+      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+      print('Serving at http://${_server!.address.host}:${_server!.port}');
+      print('Selected IP for display: http://$_ipAddress:$port');
+    } catch (e) {
+      print('Error starting server: $e');
+      await stopServer();
+      rethrow;
+    }
+  }
+
   Future<void> startServer({required String ipAddress, required int port}) async {
     if (_server != null) return;
 
     _pin = _generatePin();
     _sessions.clear();
+    _failedAttempts.clear();
+    _lockoutUntil.clear();
     print('Your PIN is: $_pin'); // デバッグ用
 
     try {
@@ -717,7 +910,14 @@ class ServerService {
     _pin = null;
     _displayPath = null;
     _sessions.clear();
-    WakelockPlus.disable();
+    _failedAttempts.clear();
+    _lockoutUntil.clear();
+    // WakelockPlusはCLIモードでは使用されないため、try-catchで囲む
+    try {
+      WakelockPlus.disable();
+    } catch (_) {
+      // CLIモードでは無視
+    }
     print('Server stopped.');
   }
 

@@ -53,6 +53,8 @@ dependencies:
   archive: ^4.0.7
   shared_preferences: ^2.2.0
   unorm_dart: ^0.2.0
+  args: ^2.4.2
+  qr: ^3.0.1
 
 dev_dependencies:
   flutter_test:

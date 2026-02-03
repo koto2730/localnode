@@ -1,7 +1,6 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:localnode/cli_runner.dart';
 import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -136,7 +135,16 @@ final serverServiceProvider = Provider((ref) => ServerService());
 final serverNotifierProvider = 
     NotifierProvider<ServerNotifier, ServerState>(ServerNotifier.new);
 
-void main() {
+void main(List<String> args) async {
+  // CLIモードかチェック
+  if (CliRunner.isCliMode(args)) {
+    // CLIモードではFlutter UIを使わずにサーバーを起動
+    final runner = CliRunner(args);
+    await runner.run();
+    return;
+  }
+
+  // 通常のFlutter UIモード
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: MyApp()));
 }
