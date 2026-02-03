@@ -87,6 +87,16 @@
             font-size: 0.9rem;
             cursor: pointer;
         }
+        #deleteAllBtn {
+            padding: 0.6rem 1.2rem;
+            background-color: #ea4335;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            margin-left: 0.5rem;
+        }
         .status { margin-top: 1rem; text-align: center; }
 
         /* PIN Modal Styles */
@@ -167,6 +177,7 @@
 
             <div class="all-actions-container">
                 <button id="downloadAllBtn">すべてをzipでダウンロード</button>
+                <button id="deleteAllBtn">すべてを削除</button>
             </div>
 
             <div id="file-list">
@@ -198,6 +209,7 @@
             const fileInput = document.getElementById('fileInput');
             const uploadStatus = document.getElementById('uploadStatus');
             const downloadAllBtn = document.getElementById('downloadAllBtn');
+            const deleteAllBtn = document.getElementById('deleteAllBtn');
 
             // 401を検知してPINモーダルを表示する汎用fetchラッパー
             const safeFetch = async (url, options = {}) => {
@@ -274,8 +286,10 @@
                     if (files.length === 0) {
                         fileListBody.innerHTML = '<tr><td colspan="4" style="text-align:center;">ファイルはありません。</td></tr>';
                         downloadAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
+                        deleteAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                     } else {
                         downloadAllBtn.style.display = 'inline-block'; // ファイルがあればボタンを表示
+                        deleteAllBtn.style.display = 'inline-block'; // ファイルがあればボタンを表示
                         files.forEach(file => {
                             const row = document.createElement('tr');
                             const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
@@ -303,6 +317,21 @@
             // 全ファイルダウンロード処理
             downloadAllBtn.addEventListener('click', () => {
                 window.location.href = '/api/download-all';
+            });
+
+            // 全ファイル削除処理
+            deleteAllBtn.addEventListener('click', async () => {
+                if (!confirm('本当にすべてのファイルを削除しますか？この操作は取り消せません。')) return;
+
+                try {
+                    const response = await safeFetch('/api/files', { method: 'DELETE' });
+                    if (!response.ok) throw new Error('削除に失敗しました。');
+                    const result = await response.json();
+                    alert(`${result.deleted}個のファイルを削除しました。`);
+                    fetchFiles();
+                } catch (error) {
+                    alert(error.message);
+                }
             });
 
             // ファイルアップロード処理
