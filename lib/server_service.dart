@@ -21,6 +21,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 class ServerService {
   static const _safPlatform = MethodChannel('com.ictglab.localnode/saf_storage');
+  static const _folderPlatform = MethodChannel('com.ictglab.localnode/folder');
   String? _safDirectoryUri; // 選択されたSAFディレクトリURI
   HttpServer? _server;
   String? _ipAddress;
@@ -73,6 +74,7 @@ class ServerService {
     _router.get('/api/thumbnail/<id>', _thumbnailHandler);
     _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<id>', _deleteFileHandler);
+    _router.delete('/api/files', _deleteAllFilesHandler);
   }
 
   Future<void> _init() async {
@@ -503,6 +505,72 @@ class ServerService {
     }
   }
 
+  Future<Response> _deleteAllFilesHandler(Request request) async {
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null || _thumbnailCacheDir == null) {
+      return Response.internalServerError(body: 'Documents directory not initialized.');
+    }
+
+    int deleted = 0;
+    int failed = 0;
+
+    try {
+      // AndroidでSAF URIが設定されている場合
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
+        if (files != null) {
+          for (final fileInfo in files) {
+            try {
+              final String fileUri = fileInfo['uri'];
+              final String filename = fileInfo['name'];
+              final bool? success = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
+              if (success == true) {
+                deleted++;
+                // サムネイルキャッシュも削除
+                final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+                if (await cacheFile.exists()) {
+                  await cacheFile.delete();
+                }
+              } else {
+                failed++;
+              }
+            } catch (e) {
+              failed++;
+            }
+          }
+        }
+      }
+      // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
+      else {
+        final directory = Directory(storagePath);
+        if (await directory.exists()) {
+          final files = await directory.list().where((item) => item is File).cast<File>().toList();
+          for (final file in files) {
+            try {
+              final filename = p.basename(file.path);
+              await file.delete();
+              deleted++;
+              // サムネイルキャッシュも削除
+              final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+              if (await cacheFile.exists()) {
+                await cacheFile.delete();
+              }
+            } catch (e) {
+              failed++;
+            }
+          }
+        }
+      }
+
+      return Response.ok(
+        json.encode({'deleted': deleted, 'failed': failed}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.internalServerError(body: "Failed to delete files: $e");
+    }
+  }
+
   Future<Response> _downloadAllHandler(Request request) async {
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null) {
@@ -718,5 +786,43 @@ class ServerService {
       print('Loaded persisted SAF Directory URI: $_safDirectoryUri');
       // ここでネイティブ側にもURIを渡し、アクセス権を再確認させるなどの処理が必要になる可能性
     }
+  }
+
+  /// フォルダを開く
+  /// iOSでは制限があるため、パス表示ダイアログを返す（戻り値がfalseの場合）
+  Future<bool> openDownloadsFolder() async {
+    final storagePath = _fallbackStoragePath;
+    if (storagePath == null) {
+      return false;
+    }
+
+    try {
+      if (Platform.isMacOS) {
+        // macOS: MethodChannel経由でFinderでフォルダを開く
+        await _folderPlatform.invokeMethod('openFolder', {'path': storagePath});
+        return true;
+      } else if (Platform.isWindows) {
+        // Windows: explorerで開く
+        await Process.run('explorer', [storagePath]);
+        return true;
+      } else if (Platform.isLinux) {
+        // Linux: xdg-openで開く
+        await Process.run('xdg-open', [storagePath]);
+        return true;
+      } else if (Platform.isAndroid) {
+        // Android: MethodChannel経由でファイルマネージャーを開く
+        final String? uriToOpen = _safDirectoryUri ?? storagePath;
+        await _folderPlatform.invokeMethod('openFolder', {'path': uriToOpen});
+        return true;
+      } else if (Platform.isIOS) {
+        // iOS: 制限があるため、falseを返してダイアログ表示を促す
+        return false;
+      }
+    } on PlatformException catch (e) {
+      print('Failed to open folder: ${e.message}');
+    } catch (e) {
+      print('Failed to open folder: $e');
+    }
+    return false;
   }
 }

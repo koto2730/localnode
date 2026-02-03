@@ -123,6 +123,11 @@ class ServerNotifier extends Notifier<ServerState> {
     // 停止後もIPアドレスとパスは維持する
     loadIpAddresses();
   }
+
+  Future<bool> openDownloadsFolder() async {
+    if (kIsWeb) return false;
+    return await _serverService.openDownloadsFolder();
+  }
 }
 
 // Providerの定義
@@ -362,6 +367,34 @@ class _HomePageState extends ConsumerState<HomePage> {
           const SizedBox(height: 10),
           if (serverState.storagePath != null)
             Text('選択中のフォルダ: ${serverState.storagePath}', textAlign: TextAlign.center),
+          if (serverState.storagePath != null) ...[
+            const SizedBox(height: 10),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.launch),
+              label: const Text('フォルダを開く'),
+              onPressed: () async {
+                final opened = await notifier.openDownloadsFolder();
+                if (!opened && context.mounted) {
+                  // iOS等で開けない場合はダイアログでパスを表示
+                  showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('フォルダの場所'),
+                      content: Text(
+                        'ファイルアプリで以下の場所を確認してください:\n\n${serverState.storagePath}',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('OK'),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
         ],
       ],
     );
