@@ -19,6 +19,25 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+/// クリップボード共有アイテム
+class ClipboardItem {
+  final String id;
+  final String text;
+  final DateTime createdAt;
+
+  ClipboardItem({
+    required this.id,
+    required this.text,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'text': text,
+    'createdAt': createdAt.toUtc().toIso8601String(),
+  };
+}
+
 class ServerService {
   static const _safPlatform = MethodChannel('com.ictglab.localnode/saf_storage');
   static const _folderPlatform = MethodChannel('com.ictglab.localnode/folder');
@@ -32,6 +51,16 @@ class ServerService {
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
   String? _pin;
   final Set<String> _sessions = {};
+
+  // クリップボード共有用
+  final List<ClipboardItem> _clipboardItems = [];
+  int _clipboardLastModified = 0;
+  static const int _maxClipboardItems = 10;
+  static const int _maxTextLength = 10000;
+
+  // クリップボードアイテムへの外部アクセス用ゲッター
+  List<ClipboardItem> get clipboardItems => List.unmodifiable(_clipboardItems);
+  int get clipboardLastModified => _clipboardLastModified;
 
   // ブルートフォース保護用
   final Map<String, int> _failedAttempts = {};
@@ -81,6 +110,11 @@ class ServerService {
     _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<id>', _deleteFileHandler);
     _router.delete('/api/files', _deleteAllFilesHandler);
+    // クリップボード共有API
+    _router.get('/api/clipboard', _getClipboardHandler);
+    _router.post('/api/clipboard', _postClipboardHandler);
+    _router.delete('/api/clipboard/<id>', _deleteClipboardItemHandler);
+    _router.delete('/api/clipboard', _clearClipboardHandler);
   }
 
   Future<void> _init() async {
@@ -679,6 +713,149 @@ class ServerService {
     });
   }
 
+  // === Clipboard Handlers ===
+
+  /// GET /api/clipboard - クリップボード履歴取得
+  Response _getClipboardHandler(Request request) {
+    final response = {
+      'items': _clipboardItems.map((item) => item.toJson()).toList(),
+      'lastModified': _clipboardLastModified,
+    };
+    return Response.ok(
+      json.encode(response),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  /// POST /api/clipboard - テキスト追加
+  Future<Response> _postClipboardHandler(Request request) async {
+    try {
+      final body = await request.readAsString();
+      final params = json.decode(body) as Map<String, dynamic>;
+      final text = (params['text'] as String?)?.trim();
+
+      if (text == null || text.isEmpty) {
+        return Response.badRequest(
+          body: json.encode({'error': 'Text is required and cannot be empty.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (text.length > _maxTextLength) {
+        return Response.badRequest(
+          body: json.encode({'error': 'Text exceeds maximum length of $_maxTextLength characters.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final item = ClipboardItem(
+        id: _generateClipboardId(),
+        text: text,
+        createdAt: DateTime.now(),
+      );
+
+      _clipboardItems.insert(0, item);
+
+      // 最大件数を超えたら古いものを削除
+      while (_clipboardItems.length > _maxClipboardItems) {
+        _clipboardItems.removeLast();
+      }
+
+      _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+      return Response.ok(
+        json.encode(item.toJson()),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.badRequest(
+        body: json.encode({'error': 'Invalid request body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  }
+
+  /// DELETE /api/clipboard/<id> - 個別アイテム削除
+  Response _deleteClipboardItemHandler(Request request, String id) {
+    final index = _clipboardItems.indexWhere((item) => item.id == id);
+    if (index == -1) {
+      return Response.notFound(
+        json.encode({'error': 'Clipboard item not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    _clipboardItems.removeAt(index);
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+    return Response.ok(
+      json.encode({'status': 'deleted'}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  /// DELETE /api/clipboard - 全アイテム削除
+  Response _clearClipboardHandler(Request request) {
+    final count = _clipboardItems.length;
+    _clipboardItems.clear();
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+    return Response.ok(
+      json.encode({'status': 'cleared', 'count': count}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  /// クリップボードID生成
+  String _generateClipboardId() {
+    final random = Random.secure();
+    final values = List<int>.generate(8, (i) => random.nextInt(256));
+    return base64Url.encode(values);
+  }
+
+  /// クリップボードにテキストを追加（Flutter UIから直接呼び出し用）
+  ClipboardItem addClipboardText(String text) {
+    final trimmedText = text.trim();
+    if (trimmedText.isEmpty) {
+      throw ArgumentError('Text cannot be empty.');
+    }
+    if (trimmedText.length > _maxTextLength) {
+      throw ArgumentError('Text exceeds maximum length of $_maxTextLength characters.');
+    }
+
+    final item = ClipboardItem(
+      id: _generateClipboardId(),
+      text: trimmedText,
+      createdAt: DateTime.now(),
+    );
+
+    _clipboardItems.insert(0, item);
+
+    while (_clipboardItems.length > _maxClipboardItems) {
+      _clipboardItems.removeLast();
+    }
+
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return item;
+  }
+
+  /// クリップボードアイテムを削除（Flutter UIから直接呼び出し用）
+  bool deleteClipboardItem(String id) {
+    final index = _clipboardItems.indexWhere((item) => item.id == id);
+    if (index == -1) return false;
+
+    _clipboardItems.removeAt(index);
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return true;
+  }
+
+  /// クリップボードをクリア（Flutter UIから直接呼び出し用）
+  int clearClipboard() {
+    final count = _clipboardItems.length;
+    _clipboardItems.clear();
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return count;
+  }
 
   // === Middleware ===
 
@@ -912,6 +1089,8 @@ class ServerService {
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
+    _clipboardItems.clear();
+    _clipboardLastModified = 0;
     // WakelockPlusはCLIモードでは使用されないため、try-catchで囲む
     try {
       WakelockPlus.disable();

@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:localnode/cli_runner.dart';
 import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -28,6 +30,50 @@ class ServerState {
   final int? port;
   final String? errorMessage;
   final String? storagePath;
+}
+
+// クリップボード状態を保持するクラス
+@immutable
+class ClipboardState {
+  const ClipboardState({
+    this.items = const [],
+    this.lastModified = 0,
+  });
+
+  final List<ClipboardItemData> items;
+  final int lastModified;
+
+  ClipboardState copyWith({
+    List<ClipboardItemData>? items,
+    int? lastModified,
+  }) {
+    return ClipboardState(
+      items: items ?? this.items,
+      lastModified: lastModified ?? this.lastModified,
+    );
+  }
+}
+
+// クリップボードアイテムデータ
+@immutable
+class ClipboardItemData {
+  const ClipboardItemData({
+    required this.id,
+    required this.text,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String text;
+  final DateTime createdAt;
+
+  factory ClipboardItemData.fromClipboardItem(ClipboardItem item) {
+    return ClipboardItemData(
+      id: item.id,
+      text: item.text,
+      createdAt: item.createdAt,
+    );
+  }
 }
 
 // Notifierの定義
@@ -105,6 +151,9 @@ class ServerNotifier extends Notifier<ServerState> {
         port: _serverService.port,
         storagePath: state.storagePath, // 既存のパスを維持する
       );
+
+      // クリップボードポーリングを開始
+      ref.read(clipboardNotifierProvider.notifier).startPolling();
     } catch (e, stackTrace) {
       state = ServerState(
         status: ServerStatus.error,
@@ -117,6 +166,8 @@ class ServerNotifier extends Notifier<ServerState> {
   }
 
   Future<void> stop() async {
+    // クリップボードポーリングを停止
+    ref.read(clipboardNotifierProvider.notifier).stopPolling();
     await _serverService.stopServer();
     state = const ServerState(status: ServerStatus.stopped);
     // 停止後もIPアドレスとパスは維持する
@@ -129,11 +180,76 @@ class ServerNotifier extends Notifier<ServerState> {
   }
 }
 
+// クリップボードNotifierの定義
+class ClipboardNotifier extends Notifier<ClipboardState> {
+  Timer? _pollingTimer;
+
+  @override
+  ClipboardState build() {
+    ref.onDispose(() {
+      _pollingTimer?.cancel();
+    });
+    return const ClipboardState();
+  }
+
+  ServerService get _serverService => ref.read(serverServiceProvider);
+
+  void startPolling() {
+    _pollingTimer?.cancel();
+    _refreshFromService();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _refreshFromService();
+    });
+  }
+
+  void stopPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = null;
+    state = const ClipboardState();
+  }
+
+  void _refreshFromService() {
+    final currentLastModified = _serverService.clipboardLastModified;
+    if (currentLastModified != state.lastModified) {
+      final items = _serverService.clipboardItems
+          .map((item) => ClipboardItemData.fromClipboardItem(item))
+          .toList();
+      state = ClipboardState(
+        items: items,
+        lastModified: currentLastModified,
+      );
+    }
+  }
+
+  void addText(String text) {
+    try {
+      _serverService.addClipboardText(text);
+      _refreshFromService();
+    } catch (e) {
+      // エラーは呼び出し側で処理
+      rethrow;
+    }
+  }
+
+  void deleteItem(String id) {
+    _serverService.deleteClipboardItem(id);
+    _refreshFromService();
+  }
+
+  void clearAll() {
+    _serverService.clearClipboard();
+    _refreshFromService();
+  }
+}
+
 // Providerの定義
 final serverServiceProvider = Provider((ref) => ServerService());
 
-final serverNotifierProvider = 
+final serverNotifierProvider =
     NotifierProvider<ServerNotifier, ServerState>(ServerNotifier.new);
+
+final clipboardNotifierProvider =
+    NotifierProvider<ClipboardNotifier, ClipboardState>(ClipboardNotifier.new);
 
 void main(List<String> args) async {
   // CLIモードかチェック
@@ -173,6 +289,12 @@ enum DisplayMode {
   qrOnlyVisible,   // QRコードのみ表示
 }
 
+// サーバー稼働時のタブを定義するenum
+enum ServerTab {
+  connection, // 接続情報
+  clipboard,  // クリップボード共有
+}
+
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
@@ -183,6 +305,8 @@ class HomePage extends ConsumerStatefulWidget {
 class _HomePageState extends ConsumerState<HomePage> {
   // 初期状態を pinAndQrVisible に設定
   DisplayMode _displayMode = DisplayMode.pinAndQrVisible;
+  // サーバー稼働時のタブ
+  ServerTab _currentTab = ServerTab.connection;
   late final TextEditingController _portController;
 
   @override
@@ -237,6 +361,36 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
   }
 
+  Widget _buildTabSelector() {
+    return SegmentedButton<ServerTab>(
+      segments: const [
+        ButtonSegment<ServerTab>(
+          value: ServerTab.connection,
+          label: Text('接続情報'),
+          icon: Icon(Icons.qr_code),
+        ),
+        ButtonSegment<ServerTab>(
+          value: ServerTab.clipboard,
+          label: Text('クリップボード'),
+          icon: Icon(Icons.content_paste),
+        ),
+      ],
+      selected: {_currentTab},
+      onSelectionChanged: (Set<ServerTab> newSelection) {
+        setState(() {
+          _currentTab = newSelection.first;
+        });
+      },
+      style: ButtonStyle(
+        backgroundColor: WidgetStateProperty.resolveWith<Color?>((states) {
+          if (states.contains(WidgetState.selected)) {
+            return Colors.teal[100];
+          }
+          return null;
+        }),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -300,9 +454,15 @@ class _HomePageState extends ConsumerState<HomePage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: <Widget>[
-                // サーバーの状態に応じて表示を切り替え
-                if (serverState.status == ServerStatus.running && url != null)
-                  _buildConnectionInfo(context, url, serverState.pin, serverState.storagePath),
+                // サーバー稼働時：タブ切り替え
+                if (serverState.status == ServerStatus.running) ...[
+                  _buildTabSelector(),
+                  const SizedBox(height: 16),
+                  if (_currentTab == ServerTab.connection && url != null)
+                    _buildConnectionInfo(context, url, serverState.pin, serverState.storagePath),
+                  if (_currentTab == ServerTab.clipboard)
+                    _buildClipboardSection(context),
+                ],
 
                 if (serverState.status == ServerStatus.stopped)
                   _buildStoppedView(context),
@@ -540,5 +700,226 @@ class _HomePageState extends ConsumerState<HomePage> {
       },
       label: Text(isRunning ? 'サーバーを停止' : 'サーバーを開始'),
     );
+  }
+
+  Widget _buildClipboardSection(BuildContext context) {
+    final clipboardState = ref.watch(clipboardNotifierProvider);
+    final clipboardNotifier = ref.read(clipboardNotifierProvider.notifier);
+
+    return Card(
+      color: Colors.teal[50],
+      elevation: 2,
+      margin: const EdgeInsets.symmetric(vertical: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ヘッダー
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.content_paste, color: Colors.teal[700]),
+                    const SizedBox(width: 8),
+                    Text(
+                      'クリップボード共有',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.teal[700],
+                      ),
+                    ),
+                  ],
+                ),
+                if (clipboardState.items.isNotEmpty)
+                  TextButton.icon(
+                    icon: const Icon(Icons.delete_sweep, size: 18),
+                    label: const Text('すべて削除'),
+                    onPressed: () => clipboardNotifier.clearAll(),
+                    style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // 入力フィールド
+            _ClipboardInputField(
+              onSubmit: (text) {
+                try {
+                  clipboardNotifier.addText(text);
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('エラー: $e'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              },
+            ),
+            const SizedBox(height: 16),
+
+            // アイテムリスト
+            if (clipboardState.items.isEmpty)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    'テキストを入力して共有しましょう',
+                    style: TextStyle(color: Colors.grey[600]),
+                  ),
+                ),
+              )
+            else
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 300),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: clipboardState.items.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final item = clipboardState.items[index];
+                    return _ClipboardItemTile(
+                      item: item,
+                      onCopy: () => _copyToClipboard(context, item.text),
+                      onDelete: () => clipboardNotifier.deleteItem(item.id),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copyToClipboard(BuildContext context, String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('クリップボードにコピーしました'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+}
+
+// クリップボード入力フィールドウィジェット
+class _ClipboardInputField extends StatefulWidget {
+  final Function(String) onSubmit;
+
+  const _ClipboardInputField({required this.onSubmit});
+
+  @override
+  State<_ClipboardInputField> createState() => _ClipboardInputFieldState();
+}
+
+class _ClipboardInputFieldState extends State<_ClipboardInputField> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final text = _controller.text.trim();
+    if (text.isNotEmpty) {
+      widget.onSubmit(text);
+      _controller.clear();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            decoration: InputDecoration(
+              hintText: '共有するテキストを入力...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 12,
+              ),
+            ),
+            maxLines: 3,
+            minLines: 1,
+            onSubmitted: (_) => _submit(),
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton.filled(
+          icon: const Icon(Icons.send),
+          onPressed: _submit,
+          style: IconButton.styleFrom(
+            backgroundColor: Colors.teal,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// クリップボードアイテムタイルウィジェット
+class _ClipboardItemTile extends StatelessWidget {
+  final ClipboardItemData item;
+  final VoidCallback onCopy;
+  final VoidCallback onDelete;
+
+  const _ClipboardItemTile({
+    required this.item,
+    required this.onCopy,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      title: Text(
+        item.text,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        _formatTime(item.createdAt),
+        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.copy, color: Colors.teal),
+            onPressed: onCopy,
+            tooltip: 'コピー',
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.red),
+            onPressed: onDelete,
+            tooltip: '削除',
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTime(DateTime dateTime) {
+    final now = DateTime.now();
+    final diff = now.difference(dateTime);
+    if (diff.inMinutes < 1) return '今';
+    if (diff.inHours < 1) return '${diff.inMinutes}分前';
+    if (diff.inDays < 1) return '${diff.inHours}時間前';
+    return '${diff.inDays}日前';
   }
 }
