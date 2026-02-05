@@ -19,6 +19,12 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+/// 動作モード
+enum OperationMode { normal, downloadOnly }
+
+/// 認証モード
+enum AuthMode { randomPin, fixedPin, noPin }
+
 /// クリップボード共有アイテム
 class ClipboardItem {
   final String id;
@@ -51,6 +57,8 @@ class ServerService {
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
   String? _pin;
   final Set<String> _sessions = {};
+  OperationMode _operationMode = OperationMode.normal;
+  AuthMode _authMode = AuthMode.randomPin;
 
   // クリップボード共有用
   final List<ClipboardItem> _clipboardItems = [];
@@ -76,6 +84,8 @@ class ServerService {
   bool get isRunning => _server != null;
   String? get documentsPath => _fallbackStoragePath;
   String? get displayPath => _displayPath;
+  OperationMode get operationMode => _operationMode;
+  AuthMode get authMode => _authMode;
 
   Future<List<String>> getAvailableIpAddresses() async {
     final addresses = <String>[];
@@ -189,6 +199,15 @@ class ServerService {
   }
 
   Future<Response> _authHandler(Request request) async {
+    // PINなしモードでは自動認証
+    if (_authMode == AuthMode.noPin) {
+      final token = _generateSessionToken();
+      _sessions.add(token);
+      final cookie = 'localnode_session=$token; Path=/; HttpOnly';
+      return Response.ok(json.encode({'status': 'success'}),
+          headers: {'Content-Type': 'application/json', 'Set-Cookie': cookie});
+    }
+
     // クライアントIPを取得
     final clientIp = _getClientIp(request);
 
@@ -267,7 +286,14 @@ class ServerService {
   }
 
   Response _infoHandler(Request request) {
-    return Response.ok('{"version": "1.0.0", "name": "LocalNode Server"}',
+    final info = {
+      'version': '1.1.0',
+      'name': 'LocalNode Server',
+      'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
+      'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
+      'requiresAuth': _authMode != AuthMode.noPin,
+    };
+    return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
   }
 
@@ -318,7 +344,19 @@ class ServerService {
       return Response.ok(jsonEncode(results), headers: {'Content-Type': 'application/json'});
     }
   }
+  /// ダウンロード専用モード時に書き込み操作を拒否するガード
+  Response? _checkDownloadOnlyMode() {
+    if (_operationMode != OperationMode.downloadOnly) return null;
+    return Response.forbidden(
+      json.encode({'error': 'This server is in download-only mode.'}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
   Future<Response> _uploadHandler(Request request) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null) {
       return Response.internalServerError(body: 'Documents directory not initialized.');
@@ -551,6 +589,9 @@ class ServerService {
   }
 
   Future<Response> _deleteFileHandler(Request request, String id) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null || _thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Documents directory not initialized.');
@@ -594,6 +635,9 @@ class ServerService {
   }
 
   Future<Response> _deleteAllFilesHandler(Request request) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null || _thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Documents directory not initialized.');
@@ -729,6 +773,9 @@ class ServerService {
 
   /// POST /api/clipboard - テキスト追加
   Future<Response> _postClipboardHandler(Request request) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     try {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
@@ -777,6 +824,9 @@ class ServerService {
 
   /// DELETE /api/clipboard/<id> - 個別アイテム削除
   Response _deleteClipboardItemHandler(Request request, String id) {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     final index = _clipboardItems.indexWhere((item) => item.id == id);
     if (index == -1) {
       return Response.notFound(
@@ -796,6 +846,9 @@ class ServerService {
 
   /// DELETE /api/clipboard - 全アイテム削除
   Response _clearClipboardHandler(Request request) {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     final count = _clipboardItems.length;
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
@@ -865,6 +918,11 @@ class ServerService {
 
       // /api/で始まらないパス、または認証が不要なAPIパスはそのまま通す
       if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth') {
+        return innerHandler(request);
+      }
+
+      // PINなしモードでは認証をスキップ
+      if (_authMode == AuthMode.noPin) {
         return innerHandler(request);
       }
 
@@ -1001,11 +1059,23 @@ class ServerService {
     required int port,
     String? fixedPin,
     String? storagePath,
+    OperationMode operationMode = OperationMode.normal,
+    AuthMode authMode = AuthMode.randomPin,
   }) async {
     if (_server != null) return;
 
-    // 固定PINまたはランダム生成
-    _pin = fixedPin ?? _generatePin();
+    _operationMode = operationMode;
+    _authMode = authMode;
+
+    // 認証モードに応じたPIN設定
+    switch (authMode) {
+      case AuthMode.randomPin:
+        _pin = _generatePin();
+      case AuthMode.fixedPin:
+        _pin = fixedPin ?? _generatePin();
+      case AuthMode.noPin:
+        _pin = null;
+    }
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
@@ -1039,10 +1109,27 @@ class ServerService {
     }
   }
 
-  Future<void> startServer({required String ipAddress, required int port}) async {
+  Future<void> startServer({
+    required String ipAddress,
+    required int port,
+    OperationMode operationMode = OperationMode.normal,
+    AuthMode authMode = AuthMode.randomPin,
+    String? fixedPin,
+  }) async {
     if (_server != null) return;
 
-    _pin = _generatePin();
+    _operationMode = operationMode;
+    _authMode = authMode;
+
+    // 認証モードに応じたPIN設定
+    switch (authMode) {
+      case AuthMode.randomPin:
+        _pin = _generatePin();
+      case AuthMode.fixedPin:
+        _pin = fixedPin ?? _generatePin();
+      case AuthMode.noPin:
+        _pin = null;
+    }
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();

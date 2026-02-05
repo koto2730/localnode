@@ -325,6 +325,7 @@
     <div id="main-content" style="display: none;">
         <div class="container">
             <h1>LocalNode</h1>
+            <div id="mode-indicator" style="display:none; text-align:center; margin-bottom: 1rem;"></div>
 
             <!-- タブナビゲーション -->
             <div class="tab-nav">
@@ -404,6 +405,9 @@
             const downloadAllBtn = document.getElementById('downloadAllBtn');
             const deleteAllBtn = document.getElementById('deleteAllBtn');
 
+            // サーバー情報（モード等）
+            let serverInfo = {};
+
             // 401を検知してPINモーダルを表示する汎用fetchラッパー
             const safeFetch = async (url, options = {}) => {
                 const response = await fetch(url, options);
@@ -425,6 +429,31 @@
                 mainContent.style.display = 'block';
                 fetchFiles();
                 startClipboardPolling();
+                applyModeRestrictions();
+            };
+
+            // ダウンロード専用モード時にUI要素を非表示にする
+            const applyModeRestrictions = () => {
+                const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+                const modeIndicator = document.getElementById('mode-indicator');
+
+                if (isDownloadOnly) {
+                    // アップロードフォームを非表示
+                    const uploadFormEl = document.querySelector('.upload-form');
+                    if (uploadFormEl) uploadFormEl.style.display = 'none';
+                    // 全削除ボタンを非表示
+                    deleteAllBtn.style.display = 'none';
+                    // クリップボード入力エリアを非表示
+                    const clipInput = document.querySelector('.clipboard-input');
+                    if (clipInput) clipInput.style.display = 'none';
+                    // 全クリアボタンを非表示
+                    clearClipboardBtn.style.display = 'none';
+                    // モードインジケータ表示
+                    if (modeIndicator) {
+                        modeIndicator.style.display = 'block';
+                        modeIndicator.innerHTML = '<span style="background:#e3f2fd; color:#1565c0; padding:4px 12px; border-radius:4px; font-size:0.9rem;">ダウンロード専用モード</span>';
+                    }
+                }
             };
 
             // タブ切り替え処理
@@ -502,12 +531,17 @@
                         downloadAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                         deleteAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                     } else {
+                        const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
                         downloadAllBtn.style.display = 'inline-block'; // ファイルがあればボタンを表示
-                        deleteAllBtn.style.display = 'inline-block'; // ファイルがあればボタンを表示
+                        deleteAllBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
                         files.forEach(file => {
                             const row = document.createElement('tr');
                             const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
                             const preview = getFilePreview(file);
+
+                            const deleteBtn = isDownloadOnly
+                                ? ''
+                                : `<button class="btn-delete" onclick="deleteFile('${file.id}', '${escapeHtml(file.name)}')">削除</button>`;
 
                             row.innerHTML = `
                                 <td class="preview-col">${preview}</td>
@@ -515,7 +549,7 @@
                                 <td>${sizeMB} MB</td>
                                 <td class="actions">
                                     <button class="btn-download" onclick="downloadFile('${file.id}', '${escapeHtml(file.name)}')">DL</button>
-                                    <button class="btn-delete" onclick="deleteFile('${file.id}', '${escapeHtml(file.name)}')">削除</button>
+                                    ${deleteBtn}
                                 </td>
                             `;
                             fileListBody.appendChild(row);
@@ -656,13 +690,17 @@
             };
 
             const renderClipboardItems = (items) => {
+                const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+
                 if (items.length === 0) {
-                    clipboardList.innerHTML = '<p class="empty-message">テキストを入力して共有しましょう</p>';
+                    clipboardList.innerHTML = isDownloadOnly
+                        ? '<p class="empty-message">クリップボードにアイテムがありません</p>'
+                        : '<p class="empty-message">テキストを入力して共有しましょう</p>';
                     clearClipboardBtn.style.display = 'none';
                     return;
                 }
 
-                clearClipboardBtn.style.display = 'inline-block';
+                clearClipboardBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
 
                 clipboardList.innerHTML = items.map(item => `
                     <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
@@ -672,7 +710,7 @@
                         </div>
                         <div class="clipboard-item-actions">
                             <button class="btn-copy" onclick="copyClipboardItem('${escapeHtml(item.id)}')">コピー</button>
-                            <button class="btn-delete-clip" onclick="deleteClipboardItem('${escapeHtml(item.id)}')">削除</button>
+                            ${isDownloadOnly ? '' : `<button class="btn-delete-clip" onclick="deleteClipboardItem('${escapeHtml(item.id)}')">削除</button>`}
                         </div>
                     </div>
                 `).join('');
@@ -774,14 +812,30 @@
                 }
             });
 
-            // 初期化処理：セッションが有効か確認
+            // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
             const init = async () => {
                 try {
-                    // /api/info にリクエストを送り、Cookieが有効か（401が返ってこないか）確認
-                    await safeFetch('/api/info');
-                    showMainContent();
+                    // /api/info は認証不要なのでfetchで直接取得
+                    const infoResponse = await fetch('/api/info');
+                    if (infoResponse.ok) {
+                        serverInfo = await infoResponse.json();
+                    }
+
+                    // PINなしモードの場合はPINモーダルをスキップ
+                    if (serverInfo.requiresAuth === false) {
+                        showMainContent();
+                        return;
+                    }
+
+                    // 既存セッションが有効か確認
+                    const testResponse = await fetch('/api/files');
+                    if (testResponse.ok) {
+                        showMainContent();
+                    } else {
+                        showPinModal();
+                    }
                 } catch (error) {
-                    // safeFetchがPINモーダルを表示してくれる
+                    showPinModal();
                 }
             };
             

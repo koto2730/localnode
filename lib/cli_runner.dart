@@ -21,6 +21,12 @@ class CliRunner {
           abbr: 'p', help: 'サーバーのポート番号', defaultsTo: '8080')
       ..addOption('pin', help: '固定PIN（指定しない場合はランダム生成）')
       ..addOption('dir', abbr: 'd', help: '共有ディレクトリのパス')
+      ..addOption('mode',
+          abbr: 'm',
+          help: '動作モード (normal/download-only)',
+          defaultsTo: 'normal',
+          allowed: ['normal', 'download-only'])
+      ..addFlag('no-pin', help: 'PIN認証を無効化（信頼できるネットワーク用）', negatable: false)
       ..addFlag('help', abbr: 'h', help: 'ヘルプを表示', negatable: false);
   }
 
@@ -56,6 +62,22 @@ class CliRunner {
     final fixedPin = results['pin'] as String?;
     final dir = results['dir'] as String?;
 
+    // モード設定
+    final modeStr = results['mode'] as String;
+    final operationMode = modeStr == 'download-only'
+        ? OperationMode.downloadOnly
+        : OperationMode.normal;
+
+    final noPin = results['no-pin'] as bool;
+    final AuthMode authMode;
+    if (noPin) {
+      authMode = AuthMode.noPin;
+    } else if (fixedPin != null) {
+      authMode = AuthMode.fixedPin;
+    } else {
+      authMode = AuthMode.randomPin;
+    }
+
     // ディレクトリの検証
     if (dir != null) {
       final directory = Directory(dir);
@@ -79,6 +101,8 @@ class CliRunner {
         port: port,
         fixedPin: fixedPin,
         storagePath: dir,
+        operationMode: operationMode,
+        authMode: authMode,
       );
 
       final url = 'http://$ipAddress:$port';
@@ -87,7 +111,12 @@ class CliRunner {
       stdout.writeln('サーバー起動中...');
       stdout.writeln('');
       stdout.writeln('URL: $url');
-      stdout.writeln('PIN: $pin');
+      if (authMode != AuthMode.noPin) {
+        stdout.writeln('PIN: $pin');
+      } else {
+        stdout.writeln('PIN: 無効（認証なし）');
+      }
+      stdout.writeln('モード: ${operationMode == OperationMode.downloadOnly ? "ダウンロード専用" : "通常"}');
       stdout.writeln('');
       stdout.writeln('QRコード:');
       _printAsciiQrCode(url);
@@ -115,6 +144,7 @@ class CliRunner {
     stdout.writeln('');
     stdout.writeln('例:');
     stdout.writeln('  localnode --cli --port 8080 --pin 1234 --dir /home/user/share');
+    stdout.writeln('  localnode --cli --mode download-only --no-pin --dir /home/user/share');
   }
 
   /// QRコードをASCIIアートとして出力
