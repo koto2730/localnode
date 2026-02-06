@@ -14,6 +14,7 @@ import androidx.documentfile.provider.DocumentFile
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.ictglab.localnode/saf_storage"
+    private val FOLDER_CHANNEL = "com.ictglab.localnode/folder"
     private val REQUEST_CODE_OPEN_DOCUMENT_TREE = 42
     private var pendingResult: MethodChannel.Result? = null // Dart側への結果を保持するため
 
@@ -120,6 +121,59 @@ class MainActivity: FlutterActivity() {
                         }
                     } catch (e: Exception) {
                         result.error("DELETE_FAILED", "Failed to delete file: ${e.message}", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Folder channel for opening folders
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, FOLDER_CHANNEL).setMethodCallHandler {
+            call, result ->
+            when (call.method) {
+                "openFolder" -> {
+                    val path = call.argument<String>("path")
+                    if (path == null) {
+                        result.error("ARGUMENT_ERROR", "Path is required.", null)
+                        return@setMethodCallHandler
+                    }
+
+                    try {
+                        // SAF URIの場合
+                        if (path.startsWith("content://")) {
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(Uri.parse(path), "resource/folder")
+                                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            }
+                            // フォルダを開けるアプリがあるか確認
+                            if (intent.resolveActivity(packageManager) != null) {
+                                startActivity(intent)
+                            } else {
+                                // フォールバック: ファイルマネージャーを開く
+                                val fallbackIntent = Intent(Intent.ACTION_VIEW).apply {
+                                    data = Uri.parse(path)
+                                    flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                }
+                                startActivity(Intent.createChooser(fallbackIntent, "Open with"))
+                            }
+                        } else {
+                            // 通常のファイルパスの場合
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(Uri.parse("file://$path"), "resource/folder")
+                            }
+                            if (intent.resolveActivity(packageManager) != null) {
+                                startActivity(intent)
+                            } else {
+                                // フォールバック: 一般的なファイルマネージャーを起動
+                                val fallbackIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                    type = "*/*"
+                                }
+                                startActivity(Intent.createChooser(fallbackIntent, "Open folder"))
+                            }
+                        }
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("OPEN_FAILED", "Failed to open folder: ${e.message}", null)
                     }
                 }
                 else -> result.notImplemented()

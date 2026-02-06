@@ -19,8 +19,34 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+/// 動作モード
+enum OperationMode { normal, downloadOnly }
+
+/// 認証モード
+enum AuthMode { randomPin, fixedPin, noPin }
+
+/// クリップボード共有アイテム
+class ClipboardItem {
+  final String id;
+  final String text;
+  final DateTime createdAt;
+
+  ClipboardItem({
+    required this.id,
+    required this.text,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'text': text,
+    'createdAt': createdAt.toUtc().toIso8601String(),
+  };
+}
+
 class ServerService {
   static const _safPlatform = MethodChannel('com.ictglab.localnode/saf_storage');
+  static const _folderPlatform = MethodChannel('com.ictglab.localnode/folder');
   String? _safDirectoryUri; // 選択されたSAFディレクトリURI
   HttpServer? _server;
   String? _ipAddress;
@@ -31,6 +57,24 @@ class ServerService {
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
   String? _pin;
   final Set<String> _sessions = {};
+  OperationMode _operationMode = OperationMode.normal;
+  AuthMode _authMode = AuthMode.randomPin;
+
+  // クリップボード共有用
+  final List<ClipboardItem> _clipboardItems = [];
+  int _clipboardLastModified = 0;
+  static const int _maxClipboardItems = 10;
+  static const int _maxTextLength = 10000;
+
+  // クリップボードアイテムへの外部アクセス用ゲッター
+  List<ClipboardItem> get clipboardItems => List.unmodifiable(_clipboardItems);
+  int get clipboardLastModified => _clipboardLastModified;
+
+  // ブルートフォース保護用
+  final Map<String, int> _failedAttempts = {};
+  final Map<String, DateTime> _lockoutUntil = {};
+  static const int _maxFailedAttempts = 5;
+  static const Duration _lockoutDuration = Duration(minutes: 5);
 
   final _router = Router();
 
@@ -40,6 +84,8 @@ class ServerService {
   bool get isRunning => _server != null;
   String? get documentsPath => _fallbackStoragePath;
   String? get displayPath => _displayPath;
+  OperationMode get operationMode => _operationMode;
+  AuthMode get authMode => _authMode;
 
   Future<List<String>> getAvailableIpAddresses() async {
     final addresses = <String>[];
@@ -73,6 +119,12 @@ class ServerService {
     _router.get('/api/thumbnail/<id>', _thumbnailHandler);
     _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<id>', _deleteFileHandler);
+    _router.delete('/api/files', _deleteAllFilesHandler);
+    // クリップボード共有API
+    _router.get('/api/clipboard', _getClipboardHandler);
+    _router.post('/api/clipboard', _postClipboardHandler);
+    _router.delete('/api/clipboard/<id>', _deleteClipboardItemHandler);
+    _router.delete('/api/clipboard', _clearClipboardHandler);
   }
 
   Future<void> _init() async {
@@ -91,7 +143,12 @@ class ServerService {
     } else {
       _displayPath = p.join(docDir.path, appName);
     }
-    _fallbackStoragePath = p.join(docDir.path, appName);
+    // iOSではDocumentsディレクトリが既にアプリ固有のため、appNameの付加は不要
+    if (Platform.isIOS) {
+      _fallbackStoragePath = docDir.path;
+    } else {
+      _fallbackStoragePath = p.join(docDir.path, appName);
+    }
 
     if (_fallbackStoragePath != null) {
       final tempDocumentDir = Directory(_fallbackStoragePath!);
@@ -147,12 +204,39 @@ class ServerService {
   }
 
   Future<Response> _authHandler(Request request) async {
+    // PINなしモードでは自動認証
+    if (_authMode == AuthMode.noPin) {
+      final token = _generateSessionToken();
+      _sessions.add(token);
+      final cookie = 'localnode_session=$token; Path=/; HttpOnly';
+      return Response.ok(json.encode({'status': 'success'}),
+          headers: {'Content-Type': 'application/json', 'Set-Cookie': cookie});
+    }
+
+    // クライアントIPを取得
+    final clientIp = _getClientIp(request);
+
+    // ロックアウト中かチェック
+    final lockout = _lockoutUntil[clientIp];
+    if (lockout != null && DateTime.now().isBefore(lockout)) {
+      final remaining = lockout.difference(DateTime.now()).inSeconds;
+      return Response.forbidden(
+          json.encode({
+            'error': 'Too many failed attempts. Try again in $remaining seconds.'
+          }),
+          headers: {'Content-Type': 'application/json'});
+    }
+
     final body = await request.readAsString();
     try {
       final params = json.decode(body) as Map<String, dynamic>;
       final submittedPin = params['pin'];
 
       if (submittedPin == _pin) {
+        // 認証成功: 失敗カウントをリセット
+        _failedAttempts.remove(clientIp);
+        _lockoutUntil.remove(clientIp);
+
         final token = _generateSessionToken();
         _sessions.add(token);
 
@@ -166,6 +250,24 @@ class ServerService {
 
         return Response.ok(json.encode({'status': 'success'}), headers: headers);
       } else {
+        // 認証失敗: 失敗カウントを増加
+        final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
+        _failedAttempts[clientIp] = attempts;
+
+        print('Auth failed from $clientIp. Attempt $attempts of $_maxFailedAttempts');
+
+        if (attempts >= _maxFailedAttempts) {
+          _lockoutUntil[clientIp] = DateTime.now().add(_lockoutDuration);
+          _failedAttempts.remove(clientIp);
+          print('IP $clientIp locked out for ${_lockoutDuration.inMinutes} minutes');
+          return Response.forbidden(
+              json.encode({
+                'error':
+                    'Too many failed attempts. Locked out for ${_lockoutDuration.inMinutes} minutes.'
+              }),
+              headers: {'Content-Type': 'application/json'});
+        }
+
         return Response.forbidden(json.encode({'error': 'Invalid PIN'}),
             headers: {'Content-Type': 'application/json'});
       }
@@ -176,8 +278,27 @@ class ServerService {
     }
   }
 
+  String _getClientIp(Request request) {
+    // X-Forwarded-For ヘッダーがあれば使用（プロキシ経由の場合）
+    final forwarded = request.headers['x-forwarded-for'];
+    if (forwarded != null && forwarded.isNotEmpty) {
+      return forwarded.split(',').first.trim();
+    }
+    // 直接接続の場合はコンテキストから取得を試みる
+    // shelf ではリクエストコンテキストからIPを取得できないため、
+    // デフォルトでは 'unknown' を返す
+    return request.headers['x-real-ip'] ?? 'unknown';
+  }
+
   Response _infoHandler(Request request) {
-    return Response.ok('{"version": "1.0.0", "name": "LocalNode Server"}',
+    final info = {
+      'version': '1.1.0',
+      'name': 'LocalNode Server',
+      'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
+      'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
+      'requiresAuth': _authMode != AuthMode.noPin,
+    };
+    return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
   }
 
@@ -228,7 +349,19 @@ class ServerService {
       return Response.ok(jsonEncode(results), headers: {'Content-Type': 'application/json'});
     }
   }
+  /// ダウンロード専用モード時に書き込み操作を拒否するガード
+  Response? _checkDownloadOnlyMode() {
+    if (_operationMode != OperationMode.downloadOnly) return null;
+    return Response.forbidden(
+      json.encode({'error': 'This server is in download-only mode.'}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
   Future<Response> _uploadHandler(Request request) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null) {
       return Response.internalServerError(body: 'Documents directory not initialized.');
@@ -461,6 +594,9 @@ class ServerService {
   }
 
   Future<Response> _deleteFileHandler(Request request, String id) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null || _thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Documents directory not initialized.');
@@ -500,6 +636,75 @@ class ServerService {
       }
     } catch (e) {
       return Response.internalServerError(body: "Failed to process delete request: $e");
+    }
+  }
+
+  Future<Response> _deleteAllFilesHandler(Request request) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null || _thumbnailCacheDir == null) {
+      return Response.internalServerError(body: 'Documents directory not initialized.');
+    }
+
+    int deleted = 0;
+    int failed = 0;
+
+    try {
+      // AndroidでSAF URIが設定されている場合
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
+        if (files != null) {
+          for (final fileInfo in files) {
+            try {
+              final String fileUri = fileInfo['uri'];
+              final String filename = fileInfo['name'];
+              final bool? success = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
+              if (success == true) {
+                deleted++;
+                // サムネイルキャッシュも削除
+                final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+                if (await cacheFile.exists()) {
+                  await cacheFile.delete();
+                }
+              } else {
+                failed++;
+              }
+            } catch (e) {
+              failed++;
+            }
+          }
+        }
+      }
+      // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
+      else {
+        final directory = Directory(storagePath);
+        if (await directory.exists()) {
+          final files = await directory.list().where((item) => item is File).cast<File>().toList();
+          for (final file in files) {
+            try {
+              final filename = p.basename(file.path);
+              await file.delete();
+              deleted++;
+              // サムネイルキャッシュも削除
+              final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+              if (await cacheFile.exists()) {
+                await cacheFile.delete();
+              }
+            } catch (e) {
+              failed++;
+            }
+          }
+        }
+      }
+
+      return Response.ok(
+        json.encode({'deleted': deleted, 'failed': failed}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.internalServerError(body: "Failed to delete files: $e");
     }
   }
 
@@ -557,6 +762,158 @@ class ServerService {
     });
   }
 
+  // === Clipboard Handlers ===
+
+  /// GET /api/clipboard - クリップボード履歴取得
+  Response _getClipboardHandler(Request request) {
+    final response = {
+      'items': _clipboardItems.map((item) => item.toJson()).toList(),
+      'lastModified': _clipboardLastModified,
+    };
+    return Response.ok(
+      json.encode(response),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  /// POST /api/clipboard - テキスト追加
+  Future<Response> _postClipboardHandler(Request request) async {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
+    try {
+      final body = await request.readAsString();
+      final params = json.decode(body) as Map<String, dynamic>;
+      final text = (params['text'] as String?)?.trim();
+
+      if (text == null || text.isEmpty) {
+        return Response.badRequest(
+          body: json.encode({'error': 'Text is required and cannot be empty.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (text.length > _maxTextLength) {
+        return Response.badRequest(
+          body: json.encode({'error': 'Text exceeds maximum length of $_maxTextLength characters.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final item = ClipboardItem(
+        id: _generateClipboardId(),
+        text: text,
+        createdAt: DateTime.now(),
+      );
+
+      _clipboardItems.insert(0, item);
+
+      // 最大件数を超えたら古いものを削除
+      while (_clipboardItems.length > _maxClipboardItems) {
+        _clipboardItems.removeLast();
+      }
+
+      _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+      return Response.ok(
+        json.encode(item.toJson()),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.badRequest(
+        body: json.encode({'error': 'Invalid request body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  }
+
+  /// DELETE /api/clipboard/<id> - 個別アイテム削除
+  Response _deleteClipboardItemHandler(Request request, String id) {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
+    final index = _clipboardItems.indexWhere((item) => item.id == id);
+    if (index == -1) {
+      return Response.notFound(
+        json.encode({'error': 'Clipboard item not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    _clipboardItems.removeAt(index);
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+    return Response.ok(
+      json.encode({'status': 'deleted'}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  /// DELETE /api/clipboard - 全アイテム削除
+  Response _clearClipboardHandler(Request request) {
+    final guard = _checkDownloadOnlyMode();
+    if (guard != null) return guard;
+
+    final count = _clipboardItems.length;
+    _clipboardItems.clear();
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+    return Response.ok(
+      json.encode({'status': 'cleared', 'count': count}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  /// クリップボードID生成
+  String _generateClipboardId() {
+    final random = Random.secure();
+    final values = List<int>.generate(8, (i) => random.nextInt(256));
+    return base64Url.encode(values);
+  }
+
+  /// クリップボードにテキストを追加（Flutter UIから直接呼び出し用）
+  ClipboardItem addClipboardText(String text) {
+    final trimmedText = text.trim();
+    if (trimmedText.isEmpty) {
+      throw ArgumentError('Text cannot be empty.');
+    }
+    if (trimmedText.length > _maxTextLength) {
+      throw ArgumentError('Text exceeds maximum length of $_maxTextLength characters.');
+    }
+
+    final item = ClipboardItem(
+      id: _generateClipboardId(),
+      text: trimmedText,
+      createdAt: DateTime.now(),
+    );
+
+    _clipboardItems.insert(0, item);
+
+    while (_clipboardItems.length > _maxClipboardItems) {
+      _clipboardItems.removeLast();
+    }
+
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return item;
+  }
+
+  /// クリップボードアイテムを削除（Flutter UIから直接呼び出し用）
+  bool deleteClipboardItem(String id) {
+    final index = _clipboardItems.indexWhere((item) => item.id == id);
+    if (index == -1) return false;
+
+    _clipboardItems.removeAt(index);
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return true;
+  }
+
+  /// クリップボードをクリア（Flutter UIから直接呼び出し用）
+  int clearClipboard() {
+    final count = _clipboardItems.length;
+    _clipboardItems.clear();
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return count;
+  }
 
   // === Middleware ===
 
@@ -566,6 +923,11 @@ class ServerService {
 
       // /api/で始まらないパス、または認証が不要なAPIパスはそのまま通す
       if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth') {
+        return innerHandler(request);
+      }
+
+      // PINなしモードでは認証をスキップ
+      if (_authMode == AuthMode.noPin) {
         return innerHandler(request);
       }
 
@@ -603,11 +965,179 @@ class ServerService {
 
   // === Server Control ===
 
-  Future<void> startServer({required String ipAddress, required int port}) async {
+  /// CLI用の初期化（Flutterプラグインを使用しない）
+  Future<void> _initCli(String? storagePath) async {
+    if (storagePath != null) {
+      _fallbackStoragePath = storagePath;
+      _displayPath = storagePath;
+    } else {
+      // デフォルトはカレントディレクトリ
+      _fallbackStoragePath = Directory.current.path;
+      _displayPath = Directory.current.path;
+    }
+
+    // ストレージディレクトリの存在確認
+    final storageDir = Directory(_fallbackStoragePath!);
+    if (!await storageDir.exists()) {
+      await storageDir.create(recursive: true);
+    }
+
+    // サムネイルキャッシュディレクトリの初期化
+    final tempPath = Platform.environment['TMPDIR'] ??
+        Platform.environment['TEMP'] ??
+        '/tmp';
+    _thumbnailCacheDir = Directory(p.join(tempPath, 'localnode_thumbnails'));
+    if (!await _thumbnailCacheDir!.exists()) {
+      await _thumbnailCacheDir!.create(recursive: true);
+    }
+  }
+
+  /// CLI用のアセット展開（Flutterプラグインを使用しない）
+  Future<void> _deployAssetsCli() async {
+    final tempPath = Platform.environment['TMPDIR'] ??
+        Platform.environment['TEMP'] ??
+        '/tmp';
+    _webRootDir = Directory(p.join(tempPath, 'localnode_web'));
+
+    // 既存のディレクトリがあればクリーンアップ
+    if (await _webRootDir!.exists()) {
+      await _webRootDir!.delete(recursive: true);
+    }
+    await _webRootDir!.create(recursive: true);
+
+    // CLIモードでは実行ファイルと同じディレクトリにあるassetsを使用
+    final executablePath = Platform.resolvedExecutable;
+    final executableDir = p.dirname(executablePath);
+
+    // アセットの探索パス
+    final possiblePaths = [
+      p.join(executableDir, 'data', 'flutter_assets', 'assets', 'web', 'index.html'),
+      p.join(executableDir, 'assets', 'web', 'index.html'),
+      p.join(Directory.current.path, 'assets', 'web', 'index.html'),
+    ];
+
+    File? sourceFile;
+    for (final path in possiblePaths) {
+      final file = File(path);
+      if (await file.exists()) {
+        sourceFile = file;
+        break;
+      }
+    }
+
+    if (sourceFile != null) {
+      final destinationFile = File(p.join(_webRootDir!.path, 'index.html'));
+      await sourceFile.copy(destinationFile.path);
+    } else {
+      // アセットが見つからない場合は最小限のHTMLを生成
+      final destinationFile = File(p.join(_webRootDir!.path, 'index.html'));
+      await destinationFile.writeAsString(_getMinimalHtml());
+      print('Warning: Web assets not found. Using minimal HTML.');
+    }
+  }
+
+  String _getMinimalHtml() {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LocalNode</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; text-align: center; }
+    h1 { color: #333; }
+  </style>
+</head>
+<body>
+  <h1>LocalNode Server</h1>
+  <p>Server is running. Web UI assets not found.</p>
+  <p>API is available at /api/*</p>
+</body>
+</html>
+''';
+  }
+
+  /// CLIモード用のサーバー起動
+  Future<void> startServerCli({
+    required String ipAddress,
+    required int port,
+    String? fixedPin,
+    String? storagePath,
+    OperationMode operationMode = OperationMode.normal,
+    AuthMode authMode = AuthMode.randomPin,
+  }) async {
     if (_server != null) return;
 
-    _pin = _generatePin();
+    _operationMode = operationMode;
+    _authMode = authMode;
+
+    // 認証モードに応じたPIN設定
+    switch (authMode) {
+      case AuthMode.randomPin:
+        _pin = _generatePin();
+      case AuthMode.fixedPin:
+        _pin = fixedPin ?? _generatePin();
+      case AuthMode.noPin:
+        _pin = null;
+    }
     _sessions.clear();
+    _failedAttempts.clear();
+    _lockoutUntil.clear();
+    print('Your PIN is: $_pin');
+
+    try {
+      await _initCli(storagePath);
+      await _deployAssetsCli();
+
+      _ipAddress = ipAddress;
+      _port = port;
+
+      final staticHandler =
+          createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
+
+      final apiHandler =
+          const Pipeline().addMiddleware(_authMiddleware).addHandler(_router.call);
+
+      final cascade = Cascade().add(apiHandler).add(staticHandler);
+
+      final handler =
+          const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
+
+      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+      print('Serving at http://${_server!.address.host}:${_server!.port}');
+      print('Selected IP for display: http://$_ipAddress:$port');
+    } catch (e) {
+      print('Error starting server: $e');
+      await stopServer();
+      rethrow;
+    }
+  }
+
+  Future<void> startServer({
+    required String ipAddress,
+    required int port,
+    OperationMode operationMode = OperationMode.normal,
+    AuthMode authMode = AuthMode.randomPin,
+    String? fixedPin,
+  }) async {
+    if (_server != null) return;
+
+    _operationMode = operationMode;
+    _authMode = authMode;
+
+    // 認証モードに応じたPIN設定
+    switch (authMode) {
+      case AuthMode.randomPin:
+        _pin = _generatePin();
+      case AuthMode.fixedPin:
+        _pin = fixedPin ?? _generatePin();
+      case AuthMode.noPin:
+        _pin = null;
+    }
+    _sessions.clear();
+    _failedAttempts.clear();
+    _lockoutUntil.clear();
     print('Your PIN is: $_pin'); // デバッグ用
 
     try {
@@ -649,7 +1179,16 @@ class ServerService {
     _pin = null;
     _displayPath = null;
     _sessions.clear();
-    WakelockPlus.disable();
+    _failedAttempts.clear();
+    _lockoutUntil.clear();
+    _clipboardItems.clear();
+    _clipboardLastModified = 0;
+    // WakelockPlusはCLIモードでは使用されないため、try-catchで囲む
+    try {
+      WakelockPlus.disable();
+    } catch (_) {
+      // CLIモードでは無視
+    }
     print('Server stopped.');
   }
 
@@ -718,5 +1257,43 @@ class ServerService {
       print('Loaded persisted SAF Directory URI: $_safDirectoryUri');
       // ここでネイティブ側にもURIを渡し、アクセス権を再確認させるなどの処理が必要になる可能性
     }
+  }
+
+  /// フォルダを開く
+  /// iOSでは制限があるため、パス表示ダイアログを返す（戻り値がfalseの場合）
+  Future<bool> openDownloadsFolder() async {
+    final storagePath = _fallbackStoragePath;
+    if (storagePath == null) {
+      return false;
+    }
+
+    try {
+      if (Platform.isMacOS) {
+        // macOS: MethodChannel経由でFinderでフォルダを開く
+        await _folderPlatform.invokeMethod('openFolder', {'path': storagePath});
+        return true;
+      } else if (Platform.isWindows) {
+        // Windows: explorerで開く
+        await Process.run('explorer', [storagePath]);
+        return true;
+      } else if (Platform.isLinux) {
+        // Linux: xdg-openで開く
+        await Process.run('xdg-open', [storagePath]);
+        return true;
+      } else if (Platform.isAndroid) {
+        // Android: MethodChannel経由でファイルマネージャーを開く
+        final String? uriToOpen = _safDirectoryUri ?? storagePath;
+        await _folderPlatform.invokeMethod('openFolder', {'path': uriToOpen});
+        return true;
+      } else if (Platform.isIOS) {
+        // iOS: 制限があるため、falseを返してダイアログ表示を促す
+        return false;
+      }
+    } on PlatformException catch (e) {
+      print('Failed to open folder: ${e.message}');
+    } catch (e) {
+      print('Failed to open folder: $e');
+    }
+    return false;
   }
 }

@@ -28,6 +28,28 @@ class AppDelegate: FlutterAppDelegate {
         result(FlutterMethodNotImplemented)
       }
     })
+
+    // Folder channel for opening folders
+    let folderChannel = FlutterMethodChannel(name: "com.ictglab.localnode/folder",
+                                             binaryMessenger: controller.engine.binaryMessenger)
+    folderChannel.setMethodCallHandler({
+      (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
+      switch call.method {
+      case "openFolder":
+        guard let args = call.arguments as? [String: Any],
+              let path = args["path"] as? String else {
+          result(FlutterError(code: "ARGUMENT_ERROR",
+                              message: "Path is required.",
+                              details: nil))
+          return
+        }
+        let url = URL(fileURLWithPath: path)
+        NSWorkspace.shared.open(url)
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    })
   }
 
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {

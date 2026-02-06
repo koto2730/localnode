@@ -87,6 +87,16 @@
             font-size: 0.9rem;
             cursor: pointer;
         }
+        #deleteAllBtn {
+            padding: 0.6rem 1.2rem;
+            background-color: #ea4335;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            margin-left: 0.5rem;
+        }
         .status { margin-top: 1rem; text-align: center; }
 
         /* PIN Modal Styles */
@@ -133,6 +143,167 @@
             width: 100%;
         }
         #pinStatus { color: red; }
+
+        /* Clipboard Section Styles */
+        .clipboard-section {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background-color: #e0f2f1;
+            border-radius: 8px;
+        }
+        .clipboard-section h2 {
+            margin: 0 0 1rem 0;
+            color: #00796b;
+            font-size: 1.3rem;
+        }
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .clipboard-input {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .clipboard-input textarea {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid #b2dfdb;
+            border-radius: 4px;
+            resize: vertical;
+            font-family: inherit;
+            font-size: 1rem;
+            min-height: 60px;
+        }
+        .clipboard-input button {
+            padding: 0.75rem 1.5rem;
+            background-color: #00796b;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            white-space: nowrap;
+            align-self: flex-end;
+        }
+        .clipboard-input button:hover {
+            background-color: #00695c;
+        }
+        .clipboard-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .clipboard-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 0.75rem;
+            background: white;
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .clipboard-item-content {
+            flex: 1;
+            margin-right: 1rem;
+            min-width: 0;
+        }
+        .clipboard-item-text {
+            word-break: break-word;
+            white-space: pre-wrap;
+            margin: 0 0 0.5rem 0;
+        }
+        .clipboard-item-time {
+            font-size: 0.8rem;
+            color: #666;
+        }
+        .clipboard-item-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-shrink: 0;
+        }
+        .clipboard-item-actions button {
+            padding: 0.4rem 0.8rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .btn-copy {
+            background-color: #00796b;
+            color: white;
+        }
+        .btn-copy:hover {
+            background-color: #00695c;
+        }
+        .btn-delete-clip {
+            background-color: #ef5350;
+            color: white;
+        }
+        .btn-delete-clip:hover {
+            background-color: #e53935;
+        }
+        .btn-clear-clip {
+            background-color: #ef5350;
+            color: white;
+            padding: 0.4rem 0.8rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .empty-message {
+            text-align: center;
+            color: #666;
+            padding: 1rem;
+        }
+
+        /* Tab Navigation Styles */
+        .tab-nav {
+            display: flex;
+            gap: 0;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 1rem 1.5rem;
+            border: none;
+            background: transparent;
+            font-size: 1rem;
+            font-weight: 500;
+            color: #666;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+        .tab-btn:hover {
+            color: #333;
+            background-color: #f5f5f5;
+        }
+        .tab-btn.active {
+            color: #00796b;
+            border-bottom-color: #00796b;
+        }
+        .tab-btn .tab-icon {
+            font-size: 1.2rem;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .clipboard-section {
+            margin-top: 0;
+        }
     </style>
 </head>
 <body>
@@ -154,33 +325,67 @@
     <div id="main-content" style="display: none;">
         <div class="container">
             <h1>LocalNode</h1>
+            <div id="mode-indicator" style="display:none; text-align:center; margin-bottom: 1rem;"></div>
 
-            <div class="upload-form">
-                <h2>ファイルをアップロード</h2>
-                <form id="uploadForm">
-                    <input type="file" id="fileInput" multiple required>
-                    <br>
-                    <button type="submit">アップロード</button>
-                </form>
-                <div id="uploadStatus" class="status"></div>
+            <!-- タブナビゲーション -->
+            <div class="tab-nav">
+                <button class="tab-btn active" data-tab="files">
+                    <span class="tab-icon">📁</span>
+                    <span>ファイル</span>
+                </button>
+                <button class="tab-btn" data-tab="clipboard">
+                    <span class="tab-icon">📋</span>
+                    <span>クリップボード</span>
+                </button>
             </div>
 
-            <div class="all-actions-container">
-                <button id="downloadAllBtn">すべてをzipでダウンロード</button>
+            <!-- ファイルタブ -->
+            <div id="tab-files" class="tab-content active">
+                <div class="upload-form">
+                    <h2>ファイルをアップロード</h2>
+                    <form id="uploadForm">
+                        <input type="file" id="fileInput" multiple required>
+                        <br>
+                        <button type="submit">アップロード</button>
+                    </form>
+                    <div id="uploadStatus" class="status"></div>
+                </div>
+
+                <div class="all-actions-container">
+                    <button id="downloadAllBtn">すべてをzipでダウンロード</button>
+                    <button id="deleteAllBtn">すべてを削除</button>
+                </div>
+
+                <div id="file-list">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="preview-col"></th>
+                                <th>ファイル名</th>
+                                <th>サイズ</th>
+                                <th class="actions">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
             </div>
 
-            <div id="file-list">
-                <table>
-                    <thead>
-                        <tr>
-                            <th class="preview-col"></th>
-                            <th>ファイル名</th>
-                            <th>サイズ</th>
-                            <th class="actions">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
+            <!-- クリップボードタブ -->
+            <div id="tab-clipboard" class="tab-content">
+                <div class="clipboard-section">
+                    <div class="section-header">
+                        <h2>📋 クリップボード共有</h2>
+                        <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
+                    </div>
+                    <div class="clipboard-input">
+                        <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
+                        <button id="sendClipboardBtn">送信</button>
+                    </div>
+                    <div id="clipboardList" class="clipboard-list">
+                        <p class="empty-message">テキストを入力して共有しましょう</p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -198,6 +403,10 @@
             const fileInput = document.getElementById('fileInput');
             const uploadStatus = document.getElementById('uploadStatus');
             const downloadAllBtn = document.getElementById('downloadAllBtn');
+            const deleteAllBtn = document.getElementById('deleteAllBtn');
+
+            // サーバー情報（モード等）
+            let serverInfo = {};
 
             // 401を検知してPINモーダルを表示する汎用fetchラッパー
             const safeFetch = async (url, options = {}) => {
@@ -219,7 +428,53 @@
                 pinModal.style.display = 'none';
                 mainContent.style.display = 'block';
                 fetchFiles();
+                startClipboardPolling();
+                applyModeRestrictions();
             };
+
+            // ダウンロード専用モード時にUI要素を非表示にする
+            const applyModeRestrictions = () => {
+                const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+                const modeIndicator = document.getElementById('mode-indicator');
+
+                if (isDownloadOnly) {
+                    // アップロードフォームを非表示
+                    const uploadFormEl = document.querySelector('.upload-form');
+                    if (uploadFormEl) uploadFormEl.style.display = 'none';
+                    // 全削除ボタンを非表示
+                    deleteAllBtn.style.display = 'none';
+                    // クリップボード入力エリアを非表示
+                    const clipInput = document.querySelector('.clipboard-input');
+                    if (clipInput) clipInput.style.display = 'none';
+                    // 全クリアボタンを非表示
+                    clearClipboardBtn.style.display = 'none';
+                    // モードインジケータ表示
+                    if (modeIndicator) {
+                        modeIndicator.style.display = 'block';
+                        modeIndicator.innerHTML = '<span style="background:#e3f2fd; color:#1565c0; padding:4px 12px; border-radius:4px; font-size:0.9rem;">ダウンロード専用モード</span>';
+                    }
+                }
+            };
+
+            // タブ切り替え処理
+            const tabBtns = document.querySelectorAll('.tab-btn');
+            const tabContents = document.querySelectorAll('.tab-content');
+
+            tabBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const targetTab = btn.dataset.tab;
+
+                    // すべてのタブボタンからactiveを削除
+                    tabBtns.forEach(b => b.classList.remove('active'));
+                    // クリックされたボタンにactiveを追加
+                    btn.classList.add('active');
+
+                    // すべてのタブコンテンツを非表示
+                    tabContents.forEach(content => content.classList.remove('active'));
+                    // 対象のタブコンテンツを表示
+                    document.getElementById(`tab-${targetTab}`).classList.add('active');
+                });
+            });
 
             // PIN認証処理
             pinForm.addEventListener('submit', async (event) => {
@@ -274,12 +529,19 @@
                     if (files.length === 0) {
                         fileListBody.innerHTML = '<tr><td colspan="4" style="text-align:center;">ファイルはありません。</td></tr>';
                         downloadAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
+                        deleteAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                     } else {
+                        const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
                         downloadAllBtn.style.display = 'inline-block'; // ファイルがあればボタンを表示
+                        deleteAllBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
                         files.forEach(file => {
                             const row = document.createElement('tr');
                             const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
                             const preview = getFilePreview(file);
+
+                            const deleteBtn = isDownloadOnly
+                                ? ''
+                                : `<button class="btn-delete" onclick="deleteFile('${file.id}', '${escapeHtml(file.name)}')">削除</button>`;
 
                             row.innerHTML = `
                                 <td class="preview-col">${preview}</td>
@@ -287,7 +549,7 @@
                                 <td>${sizeMB} MB</td>
                                 <td class="actions">
                                     <button class="btn-download" onclick="downloadFile('${file.id}', '${escapeHtml(file.name)}')">DL</button>
-                                    <button class="btn-delete" onclick="deleteFile('${file.id}', '${escapeHtml(file.name)}')">削除</button>
+                                    ${deleteBtn}
                                 </td>
                             `;
                             fileListBody.appendChild(row);
@@ -303,6 +565,21 @@
             // 全ファイルダウンロード処理
             downloadAllBtn.addEventListener('click', () => {
                 window.location.href = '/api/download-all';
+            });
+
+            // 全ファイル削除処理
+            deleteAllBtn.addEventListener('click', async () => {
+                if (!confirm('本当にすべてのファイルを削除しますか？この操作は取り消せません。')) return;
+
+                try {
+                    const response = await safeFetch('/api/files', { method: 'DELETE' });
+                    if (!response.ok) throw new Error('削除に失敗しました。');
+                    const result = await response.json();
+                    alert(`${result.deleted}個のファイルを削除しました。`);
+                    fetchFiles();
+                } catch (error) {
+                    alert(error.message);
+                }
             });
 
             // ファイルアップロード処理
@@ -373,14 +650,192 @@
                 return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
             }
 
-            // 初期化処理：セッションが有効か確認
+            // === クリップボード共有機能 ===
+            const clipboardInput = document.getElementById('clipboardInput');
+            const sendClipboardBtn = document.getElementById('sendClipboardBtn');
+            const clipboardList = document.getElementById('clipboardList');
+            const clearClipboardBtn = document.getElementById('clearClipboardBtn');
+
+            let clipboardLastModified = 0;
+            let clipboardPollingInterval = null;
+
+            const startClipboardPolling = () => {
+                fetchClipboard();
+                clipboardPollingInterval = setInterval(fetchClipboard, 2000);
+            };
+
+            const stopClipboardPolling = () => {
+                if (clipboardPollingInterval) {
+                    clearInterval(clipboardPollingInterval);
+                    clipboardPollingInterval = null;
+                }
+            };
+
+            const fetchClipboard = async () => {
+                try {
+                    const response = await safeFetch('/api/clipboard');
+                    if (!response.ok) throw new Error('Failed to fetch clipboard.');
+
+                    const data = await response.json();
+
+                    if (data.lastModified !== clipboardLastModified) {
+                        clipboardLastModified = data.lastModified;
+                        renderClipboardItems(data.items);
+                    }
+                } catch (error) {
+                    if (error.message !== 'Authentication required.') {
+                        console.error('Clipboard fetch error:', error);
+                    }
+                }
+            };
+
+            const renderClipboardItems = (items) => {
+                const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+
+                if (items.length === 0) {
+                    clipboardList.innerHTML = isDownloadOnly
+                        ? '<p class="empty-message">クリップボードにアイテムがありません</p>'
+                        : '<p class="empty-message">テキストを入力して共有しましょう</p>';
+                    clearClipboardBtn.style.display = 'none';
+                    return;
+                }
+
+                clearClipboardBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
+
+                clipboardList.innerHTML = items.map(item => `
+                    <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
+                        <div class="clipboard-item-content">
+                            <p class="clipboard-item-text">${escapeHtml(item.text)}</p>
+                            <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
+                        </div>
+                        <div class="clipboard-item-actions">
+                            <button class="btn-copy" onclick="copyClipboardItem('${escapeHtml(item.id)}')">コピー</button>
+                            ${isDownloadOnly ? '' : `<button class="btn-delete-clip" onclick="deleteClipboardItem('${escapeHtml(item.id)}')">削除</button>`}
+                        </div>
+                    </div>
+                `).join('');
+            };
+
+            const formatTime = (isoString) => {
+                const date = new Date(isoString);
+                const now = new Date();
+                const diffMs = now - date;
+                const diffMins = Math.floor(diffMs / 60000);
+
+                if (diffMins < 1) return '今';
+                if (diffMins < 60) return `${diffMins}分前`;
+
+                const diffHours = Math.floor(diffMins / 60);
+                if (diffHours < 24) return `${diffHours}時間前`;
+
+                const diffDays = Math.floor(diffHours / 24);
+                return `${diffDays}日前`;
+            };
+
+            const sendClipboardText = async () => {
+                const text = clipboardInput.value.trim();
+                if (!text) return;
+
+                try {
+                    const response = await safeFetch('/api/clipboard', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text })
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Failed to send.');
+                    }
+
+                    clipboardInput.value = '';
+                    fetchClipboard();
+                } catch (error) {
+                    alert('送信エラー: ' + error.message);
+                }
+            };
+
+            sendClipboardBtn.addEventListener('click', sendClipboardText);
+            clipboardInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendClipboardText();
+                }
+            });
+
+            window.copyClipboardItem = async (id) => {
+                const item = document.querySelector(`[data-id="${id}"]`);
+                if (!item) return;
+
+                const text = item.querySelector('.clipboard-item-text').textContent;
+
+                try {
+                    await navigator.clipboard.writeText(text);
+                    const btn = item.querySelector('.btn-copy');
+                    const originalText = btn.textContent;
+                    btn.textContent = 'コピー済み';
+                    btn.style.backgroundColor = '#4caf50';
+                    setTimeout(() => {
+                        btn.textContent = originalText;
+                        btn.style.backgroundColor = '';
+                    }, 1000);
+                } catch (err) {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                    alert('コピーしました');
+                }
+            };
+
+            window.deleteClipboardItem = async (id) => {
+                try {
+                    const response = await safeFetch(`/api/clipboard/${id}`, { method: 'DELETE' });
+                    if (!response.ok) throw new Error('削除に失敗しました。');
+                    fetchClipboard();
+                } catch (error) {
+                    alert(error.message);
+                }
+            };
+
+            clearClipboardBtn.addEventListener('click', async () => {
+                if (!confirm('クリップボードのすべてのアイテムを削除しますか？')) return;
+
+                try {
+                    const response = await safeFetch('/api/clipboard', { method: 'DELETE' });
+                    if (!response.ok) throw new Error('削除に失敗しました。');
+                    fetchClipboard();
+                } catch (error) {
+                    alert(error.message);
+                }
+            });
+
+            // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
             const init = async () => {
                 try {
-                    // /api/info にリクエストを送り、Cookieが有効か（401が返ってこないか）確認
-                    await safeFetch('/api/info');
-                    showMainContent();
+                    // /api/info は認証不要なのでfetchで直接取得
+                    const infoResponse = await fetch('/api/info');
+                    if (infoResponse.ok) {
+                        serverInfo = await infoResponse.json();
+                    }
+
+                    // PINなしモードの場合はPINモーダルをスキップ
+                    if (serverInfo.requiresAuth === false) {
+                        showMainContent();
+                        return;
+                    }
+
+                    // 既存セッションが有効か確認
+                    const testResponse = await fetch('/api/files');
+                    if (testResponse.ok) {
+                        showMainContent();
+                    } else {
+                        showPinModal();
+                    }
                 } catch (error) {
-                    // safeFetchがPINモーダルを表示してくれる
+                    showPinModal();
                 }
             };
             
