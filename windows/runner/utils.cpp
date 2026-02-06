@@ -21,6 +21,36 @@ void CreateAndAttachConsole() {
   }
 }
 
+bool AttachParentConsole() {
+  if (::AttachConsole(ATTACH_PARENT_PROCESS)) {
+    FILE *unused;
+    freopen_s(&unused, "CONOUT$", "w", stdout);
+    freopen_s(&unused, "CONOUT$", "w", stderr);
+    freopen_s(&unused, "CONIN$", "r", stdin);
+    std::ios::sync_with_stdio();
+    FlutterDesktopResyncOutputStreams();
+    return true;
+  }
+  return false;
+}
+
+bool HasCliFlag() {
+  int argc;
+  wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+  if (argv == nullptr) {
+    return false;
+  }
+  bool found = false;
+  for (int i = 1; i < argc; i++) {
+    if (wcscmp(argv[i], L"--cli") == 0) {
+      found = true;
+      break;
+    }
+  }
+  ::LocalFree(argv);
+  return found;
+}
+
 std::vector<std::string> GetCommandLineArguments() {
   // Convert the UTF-16 command line arguments to UTF-8 for the Engine to use.
   int argc;

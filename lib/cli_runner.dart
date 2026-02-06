@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/args.dart';
@@ -10,6 +11,8 @@ import 'server_service.dart';
 class CliRunner {
   final ServerService _serverService;
   final List<String> _args;
+  Timer? _clipboardTimer;
+  int _lastClipboardModified = 0;
 
   CliRunner(this._args) : _serverService = ServerService();
 
@@ -26,7 +29,8 @@ class CliRunner {
           help: '動作モード (normal/download-only)',
           defaultsTo: 'normal',
           allowed: ['normal', 'download-only'])
-      ..addFlag('no-pin', help: 'PIN認証を無効化（信頼できるネットワーク用）', negatable: false)
+      ..addFlag('no-pin',
+          help: 'PIN認証を無効化（信頼できるネットワーク用）', negatable: false)
       ..addFlag('help', abbr: 'h', help: 'ヘルプを表示', negatable: false);
   }
 
@@ -116,18 +120,22 @@ class CliRunner {
       } else {
         stdout.writeln('PIN: 無効（認証なし）');
       }
-      stdout.writeln('モード: ${operationMode == OperationMode.downloadOnly ? "ダウンロード専用" : "通常"}');
+      stdout.writeln(
+          'モード: ${operationMode == OperationMode.downloadOnly ? "ダウンロード専用" : "通常"}');
       stdout.writeln('');
       stdout.writeln('QRコード:');
       _printAsciiQrCode(url);
       stdout.writeln('');
-      stdout.writeln('Ctrl+C で停止');
+      stdout.writeln('q + Enter または Ctrl+C で停止');
 
       // シグナルハンドラを設定
       _setupSignalHandlers();
 
-      // サーバーが停止されるまで待機
-      await _waitForever();
+      // クリップボードのポーリングを開始
+      _startClipboardPolling();
+
+      // stdinからの入力を待機（'q'で終了）
+      await _waitForQuit();
     } catch (e) {
       stderr.writeln('エラー: サーバーの起動に失敗しました: $e');
       exit(1);
@@ -143,8 +151,10 @@ class CliRunner {
     stdout.writeln(parser.usage);
     stdout.writeln('');
     stdout.writeln('例:');
-    stdout.writeln('  localnode --cli --port 8080 --pin 1234 --dir /home/user/share');
-    stdout.writeln('  localnode --cli --mode download-only --no-pin --dir /home/user/share');
+    stdout.writeln(
+        '  localnode --cli --port 8080 --pin 1234 --dir /home/user/share');
+    stdout.writeln(
+        '  localnode --cli --mode download-only --no-pin --dir /home/user/share');
   }
 
   /// QRコードをASCIIアートとして出力
@@ -184,21 +194,72 @@ class CliRunner {
   void _setupSignalHandlers() {
     // SIGINT (Ctrl+C) のハンドリング
     ProcessSignal.sigint.watch().listen((_) async {
-      stdout.writeln('\nシャットダウン中...');
-      await _serverService.stopServer();
-      stdout.writeln('サーバーを停止しました。');
-      exit(0);
+      await _shutdown();
     });
 
-    // SIGTERM のハンドリング（Linux/macOSのみ）
+    // SIGTERM・SIGHUP のハンドリング（Linux/macOSのみ）
     if (!Platform.isWindows) {
       ProcessSignal.sigterm.watch().listen((_) async {
-        stdout.writeln('\nシャットダウン中...');
-        await _serverService.stopServer();
-        stdout.writeln('サーバーを停止しました。');
-        exit(0);
+        await _shutdown();
+      });
+      // ターミナルが閉じられた場合のgraceful shutdown
+      ProcessSignal.sighup.watch().listen((_) async {
+        await _shutdown();
       });
     }
+  }
+
+  /// クリップボードのポーリングを開始
+  void _startClipboardPolling() {
+    _lastClipboardModified = _serverService.clipboardLastModified;
+    _clipboardTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      final currentModified = _serverService.clipboardLastModified;
+      if (currentModified != _lastClipboardModified) {
+        final items = _serverService.clipboardItems;
+        if (items.isNotEmpty) {
+          final latest = items.first;
+          stdout.writeln('');
+          stdout.writeln(
+              '[クリップボード受信] ${latest.createdAt.toLocal().toString().substring(11, 19)}');
+          // 長いテキストは省略して表示
+          final text = latest.text;
+          if (text.length > 200) {
+            stdout.writeln('  ${text.substring(0, 200)}...');
+          } else {
+            stdout.writeln('  $text');
+          }
+        }
+        _lastClipboardModified = currentModified;
+      }
+    });
+  }
+
+  /// stdinからの入力を待機し、'q'で終了
+  Future<void> _waitForQuit() async {
+    try {
+      await for (final line in stdin
+          .transform(const SystemEncoding().decoder)
+          .transform(const LineSplitter())) {
+        if (line.trim().toLowerCase() == 'q') {
+          await _shutdown();
+          return;
+        }
+      }
+      // stdinが閉じられた場合（nohup、ターミナル切断等）はシグナルで停止するまで待機
+      await _waitForever();
+    } catch (_) {
+      // stdin読み取りエラー時もシグナルハンドラに任せる
+      await _waitForever();
+    }
+  }
+
+  /// サーバーを停止して終了
+  Future<void> _shutdown() async {
+    _clipboardTimer?.cancel();
+    stdout.writeln('\nシャットダウン中...');
+    await _serverService.stopServer();
+    stdout.writeln('サーバーを停止しました。');
+    exit(0);
   }
 
   Future<void> _waitForever() async {

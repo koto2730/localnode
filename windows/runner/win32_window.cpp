@@ -150,7 +150,14 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
+  if (headless_) {
+    return true;
+  }
   return ShowWindow(window_handle_, SW_SHOWNORMAL);
+}
+
+void Win32Window::SetHeadless(bool headless) {
+  headless_ = headless;
 }
 
 // static
