@@ -325,6 +325,13 @@ final clipboardNotifierProvider =
     NotifierProvider<ClipboardNotifier, ClipboardState>(ClipboardNotifier.new);
 
 void main(List<String> args) async {
+  // --helpや-hが指定された場合はCLIヘルプを表示
+  if (args.contains('--help') || args.contains('-h')) {
+    final runner = CliRunner(args);
+    await runner.run();
+    return;
+  }
+
   // CLIモードかチェック
   if (CliRunner.isCliMode(args)) {
     // CLIモードではFlutter UIを使わずにサーバーを起動

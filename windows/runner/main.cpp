@@ -7,10 +7,19 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
-  // Attach to console when present (e.g., 'flutter run') or create a
-  // new console when running with a debugger.
-  if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
-    CreateAndAttachConsole();
+  bool cli_mode = HasCliFlag();
+
+  if (cli_mode) {
+    // CLI mode: attach to parent console for stdout/stderr output.
+    if (!AttachParentConsole()) {
+      CreateAndAttachConsole();
+    }
+  } else {
+    // GUI mode: attach to console when present (e.g., 'flutter run') or create
+    // a new console when running with a debugger.
+    if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
+      CreateAndAttachConsole();
+    }
   }
 
   // Initialize COM, so that it is available for use in the library and/or
@@ -31,6 +40,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
+
+  // In CLI mode, hide the window since we only need the Flutter engine.
+  if (cli_mode) {
+    ::ShowWindow(window.GetHandle(), SW_HIDE);
+    window.SetHeadless(true);
+  }
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {
