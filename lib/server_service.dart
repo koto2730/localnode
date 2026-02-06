@@ -143,7 +143,12 @@ class ServerService {
     } else {
       _displayPath = p.join(docDir.path, appName);
     }
-    _fallbackStoragePath = p.join(docDir.path, appName);
+    // iOSではDocumentsディレクトリが既にアプリ固有のため、appNameの付加は不要
+    if (Platform.isIOS) {
+      _fallbackStoragePath = docDir.path;
+    } else {
+      _fallbackStoragePath = p.join(docDir.path, appName);
+    }
 
     if (_fallbackStoragePath != null) {
       final tempDocumentDir = Directory(_fallbackStoragePath!);
