@@ -483,6 +483,23 @@ class ServerService {
     }
   }
 
+  // Android SAF URI から表示用パスを生成するヘルパー
+  String _getAndroidSafDisplayPath(String uri) {
+    // content://com.android.externalstorage.documents/tree/primary%3ADownload%2Ffolder
+    // → Download/folder
+    final decoded = Uri.decodeComponent(uri);
+    final treeIndex = decoded.indexOf('/tree/');
+    if (treeIndex != -1) {
+      var path = decoded.substring(treeIndex + '/tree/'.length);
+      // "primary:" プレフィックスを除去
+      if (path.startsWith('primary:')) {
+        path = path.substring('primary:'.length);
+      }
+      return path;
+    }
+    return uri;
+  }
+
   // iOS向けの表示パスを整形するヘルパー
   String _getIosDisplayPath(String fullPath, String appName, String appDocDirPath) {
     // アプリのデフォルトのドキュメントディレクトリ、またはその直下のアプリ名フォルダの場合
@@ -1200,6 +1217,7 @@ class ServerService {
         final String? uri = await _safPlatform.invokeMethod('requestSafDirectory');
         if (uri != null) {
           _safDirectoryUri = uri;
+          _displayPath = _getAndroidSafDisplayPath(uri);
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('saf_directory_uri', uri);
           print('SAF Directory URI selected and persisted: $uri');
@@ -1254,6 +1272,7 @@ class ServerService {
     final prefs = await SharedPreferences.getInstance();
     _safDirectoryUri = prefs.getString('saf_directory_uri');
     if (_safDirectoryUri != null) {
+      _displayPath = _getAndroidSafDisplayPath(_safDirectoryUri!);
       print('Loaded persisted SAF Directory URI: $_safDirectoryUri');
       // ここでネイティブ側にもURIを渡し、アクセス権を再確認させるなどの処理が必要になる可能性
     }
