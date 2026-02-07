@@ -1321,13 +1321,9 @@ class ServerService {
         // Linux: xdg-openで開く
         await Process.run('xdg-open', [storagePath]);
         return true;
-      } else if (Platform.isAndroid) {
-        // Android: MethodChannel経由でファイルマネージャーを開く
-        final String? uriToOpen = _safDirectoryUri ?? storagePath;
-        await _folderPlatform.invokeMethod('openFolder', {'path': uriToOpen});
-        return true;
-      } else if (Platform.isIOS) {
-        // iOS: 制限があるため、falseを返してダイアログ表示を促す
+      } else if (Platform.isAndroid || Platform.isIOS) {
+        // Android/iOS: SAFやサンドボックスの制限により直接フォルダを開けないため、
+        // falseを返してダイアログ表示を促す
         return false;
       }
     } on PlatformException catch (e) {
