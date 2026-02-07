@@ -1257,6 +1257,29 @@ class ServerService {
       print('Loaded persisted SAF Directory URI: $_safDirectoryUri');
       // ここでネイティブ側にもURIを渡し、アクセス権を再確認させるなどの処理が必要になる可能性
     }
+
+    // iOS/Desktop: 永続化されたディレクトリパスを読み込む
+    if (!Platform.isAndroid) {
+      final savedPath = prefs.getString('selected_directory_path');
+      if (savedPath != null) {
+        final dir = Directory(savedPath);
+        if (await dir.exists()) {
+          _fallbackStoragePath = savedPath;
+          if (Platform.isIOS) {
+            final packageInfo = await PackageInfo.fromPlatform();
+            final docDir = await getApplicationDocumentsDirectory();
+            _displayPath = _getIosDisplayPath(savedPath, packageInfo.appName, docDir.path);
+          } else {
+            _displayPath = savedPath;
+          }
+          print('Loaded persisted directory path: $savedPath');
+        } else {
+          // 保存されたフォルダが存在しない場合は設定をクリア
+          await prefs.remove('selected_directory_path');
+          print('Persisted directory no longer exists, reverted to default: $savedPath');
+        }
+      }
+    }
   }
 
   /// フォルダを開く
