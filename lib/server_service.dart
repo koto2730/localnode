@@ -1194,7 +1194,6 @@ class ServerService {
     _ipAddress = null;
     _port = null;
     _pin = null;
-    _displayPath = null;
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
