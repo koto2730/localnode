@@ -129,7 +129,7 @@ class ServerNotifier extends Notifier<ServerState> {
     state = state.copyWith(
       availableIpAddresses: ips,
       selectedIpAddress: ips.isNotEmpty ? ips.first : null,
-      storagePath: _serverService.documentsPath,
+      storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
 
@@ -192,7 +192,7 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<void> selectSafDirectory() async {
     if (kIsWeb) return;
     await _serverService.selectSafDirectory();
-    state = state.copyWith(storagePath: _serverService.documentsPath);
+    state = state.copyWith(storagePath: _serverService.displayPath ?? _serverService.documentsPath);
   }
 
   Future<void> start(int port) async {
