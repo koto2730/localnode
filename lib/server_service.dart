@@ -87,6 +87,34 @@ class ServerService {
   OperationMode get operationMode => _operationMode;
   AuthMode get authMode => _authMode;
 
+  /// アプリ起動時にデフォルトパスの設定と永続化されたフォルダ選択を復元する
+  Future<void> initializePaths() async {
+    if (kIsWeb) return;
+    final packageInfo = await PackageInfo.fromPlatform();
+    final appName = packageInfo.appName;
+    final docDir = await getApplicationDocumentsDirectory();
+
+    // デフォルトパスを設定
+    if (Platform.isIOS) {
+      _fallbackStoragePath = docDir.path;
+      _displayPath = 'On My iPhone/$appName';
+    } else {
+      _fallbackStoragePath = p.join(docDir.path, appName);
+      _displayPath = p.join(docDir.path, appName);
+    }
+
+    // デフォルトフォルダの作成
+    if (_fallbackStoragePath != null) {
+      final dir = Directory(_fallbackStoragePath!);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+    }
+
+    // 永続化されたフォルダ選択を復元（デフォルトを上書き）
+    await loadPersistedSafUri();
+  }
+
   Future<List<String>> getAvailableIpAddresses() async {
     final addresses = <String>[];
     try {
@@ -137,17 +165,16 @@ class ServerService {
     final appName = packageInfo.appName;
 
     // アプリケーションサンドボックス内のディレクトリをフォールバックとして設定
+    // ユーザーが既にフォルダを選択済みの場合はデフォルト値で上書きしない
     final docDir = await getApplicationDocumentsDirectory();
-    if (Platform.isIOS) {
-      _displayPath = 'On My iPhone/$appName'; // iOSではよりユーザーフレンドリーなパスを表示
-    } else {
-      _displayPath = p.join(docDir.path, appName);
-    }
-    // iOSではDocumentsディレクトリが既にアプリ固有のため、appNameの付加は不要
-    if (Platform.isIOS) {
-      _fallbackStoragePath = docDir.path;
-    } else {
-      _fallbackStoragePath = p.join(docDir.path, appName);
+    if (_fallbackStoragePath == null) {
+      if (Platform.isIOS) {
+        _displayPath = 'On My iPhone/$appName'; // iOSではよりユーザーフレンドリーなパスを表示
+        _fallbackStoragePath = docDir.path;
+      } else {
+        _displayPath = p.join(docDir.path, appName);
+        _fallbackStoragePath = p.join(docDir.path, appName);
+      }
     }
 
     if (_fallbackStoragePath != null) {
@@ -1224,22 +1251,8 @@ class ServerService {
           print('SAF Directory selection cancelled.');
         }
       } else if (Platform.isIOS) {
-        // iOS: file_picker を使用してディレクトリを選択させる
-        final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
-        if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
-          await _ensureDirectoryExists(selectedDirectory);
-          _fallbackStoragePath = selectedDirectory;
-          
-          final packageInfo = await PackageInfo.fromPlatform();
-          final docDir = await getApplicationDocumentsDirectory();
-
-          _displayPath = _getIosDisplayPath(selectedDirectory, packageInfo.appName, docDir.path);
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('selected_directory_path', selectedDirectory);
-          print('iOS directory selected and persisted: $selectedDirectory');
-        } else {
-          print('Directory selection cancelled.');
-        } 
+        // iOSではアプリ内Documentsフォルダ固定のため、フォルダ選択は無効
+        return;
         // Windows, macOS, Linux: file_picker を使用
       } else {
         final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();

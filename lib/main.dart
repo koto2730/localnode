@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -125,6 +126,7 @@ class ServerNotifier extends Notifier<ServerState> {
 
   Future<void> loadIpAddresses() async {
     if (kIsWeb) return; // Webでは実行しない
+    await _serverService.initializePaths();
     final ips = await _serverService.getAvailableIpAddresses();
     state = state.copyWith(
       availableIpAddresses: ips,
@@ -718,17 +720,20 @@ class _HomePageState extends ConsumerState<HomePage> {
 
         if (!kIsWeb) ...[
           const SizedBox(height: 20),
-          ElevatedButton.icon(
-            icon: const Icon(Icons.folder_open),
-            label: const Text('共有フォルダを選択'),
-            onPressed: () async {
-              await notifier.selectSafDirectory();
-            },
-          ),
-          const SizedBox(height: 10),
+          // iOSではフォルダはアプリ内固定のため選択UIを非表示
+          if (!kIsWeb && !Platform.isIOS)
+            ElevatedButton.icon(
+              icon: const Icon(Icons.folder_open),
+              label: const Text('共有フォルダを選択'),
+              onPressed: () async {
+                await notifier.selectSafDirectory();
+              },
+            ),
+          if (!kIsWeb && !Platform.isIOS)
+            const SizedBox(height: 10),
           if (serverState.storagePath != null)
             Text('選択中のフォルダ: ${serverState.storagePath}', textAlign: TextAlign.center),
-          if (serverState.storagePath != null) ...[
+          if (serverState.storagePath != null && !Platform.isIOS) ...[
             const SizedBox(height: 10),
             ElevatedButton.icon(
               icon: const Icon(Icons.launch),
@@ -736,7 +741,6 @@ class _HomePageState extends ConsumerState<HomePage> {
               onPressed: () async {
                 final opened = await notifier.openDownloadsFolder();
                 if (!opened && context.mounted) {
-                  // iOS等で開けない場合はダイアログでパスを表示
                   showDialog(
                     context: context,
                     builder: (context) => AlertDialog(
