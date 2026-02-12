@@ -27,6 +27,7 @@
             width: 100%;
             border-collapse: collapse;
             margin-top: 1.5rem;
+            table-layout: fixed;
         }
         th, td {
             padding: 0.75rem;
@@ -46,17 +47,42 @@
             border-radius: 4px;
             object-fit: cover;
         }
-        .actions { text-align: right; }
+        .fileinfo-col {
+            overflow: hidden;
+        }
+        .fileinfo-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+        .fileinfo-size {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 2px;
+        }
+        .actions {
+            text-align: right;
+            white-space: nowrap;
+            width: 120px;
+        }
         .actions button {
-            margin-left: 0.5rem;
-            padding: 0.3rem 0.6rem;
             border: none;
             border-radius: 4px;
             cursor: pointer;
             color: white;
         }
-        .btn-download { background-color: #34a853; }
-        .btn-delete { background-color: #ea4335; }
+        .btn-download {
+            background-color: #34a853;
+            padding: 0.4rem 0.8rem;
+            font-size: 0.9rem;
+        }
+        .btn-delete {
+            background-color: #999;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.75rem;
+            margin-left: 0.8rem;
+        }
         .upload-form {
             margin-top: 2rem;
             padding: 1.5rem;
@@ -361,8 +387,7 @@
                         <thead>
                             <tr>
                                 <th class="preview-col"></th>
-                                <th>ファイル名</th>
-                                <th>サイズ</th>
+                                <th class="fileinfo-col">ファイル名</th>
                                 <th class="actions">操作</th>
                             </tr>
                         </thead>
@@ -527,7 +552,7 @@
 
                     fileListBody.innerHTML = '';
                     if (files.length === 0) {
-                        fileListBody.innerHTML = '<tr><td colspan="4" style="text-align:center;">ファイルはありません。</td></tr>';
+                        fileListBody.innerHTML = '<tr><td colspan="3" style="text-align:center;">ファイルはありません。</td></tr>';
                         downloadAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                         deleteAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                     } else {
@@ -545,8 +570,10 @@
 
                             row.innerHTML = `
                                 <td class="preview-col">${preview}</td>
-                                <td>${escapeHtml(file.name)}</td>
-                                <td>${sizeMB} MB</td>
+                                <td class="fileinfo-col" title="${escapeHtml(file.name)}">
+                                    <div class="fileinfo-name">${escapeHtml(file.name)}</div>
+                                    <div class="fileinfo-size">${sizeMB} MB</div>
+                                </td>
                                 <td class="actions">
                                     <button class="btn-download" onclick="downloadFile('${file.id}', '${escapeHtml(file.name)}')">DL</button>
                                     ${deleteBtn}
@@ -557,7 +584,7 @@
                     }
                 } catch (error) {
                      if (error.message !== 'Authentication failed.') {
-                        fileListBody.innerHTML = `<tr><td colspan="4" style="text-align:center; color: red;">${error.message}</td></tr>`;
+                        fileListBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color: red;">${error.message}</td></tr>`;
                      }
                 }
             };
