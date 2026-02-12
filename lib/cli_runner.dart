@@ -219,8 +219,9 @@ class CliRunner {
         if (items.isNotEmpty) {
           final latest = items.first;
           stdout.writeln('');
+          final tagLabel = latest.tag != null ? '[${latest.tag}] ' : '';
           stdout.writeln(
-              '[クリップボード受信] ${latest.createdAt.toLocal().toString().substring(11, 19)}');
+              '[クリップボード受信] $tagLabel${latest.createdAt.toLocal().toString().substring(11, 19)}');
           // 長いテキストは省略して表示
           final text = latest.text;
           if (text.length > 200) {

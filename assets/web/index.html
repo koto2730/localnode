@@ -241,9 +241,31 @@
             white-space: pre-wrap;
             margin: 0 0 0.5rem 0;
         }
+        .clipboard-item-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .clipboard-item-tag {
+            font-size: 0.7rem;
+            color: #fff;
+            background-color: #00796b;
+            padding: 1px 6px;
+            border-radius: 3px;
+        }
         .clipboard-item-time {
             font-size: 0.8rem;
             color: #666;
+        }
+        .clipboard-tag-input {
+            width: 100%;
+            padding: 0.4rem 0.75rem;
+            border: 1px solid #b2dfdb;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+            box-sizing: border-box;
         }
         .clipboard-item-actions {
             display: flex;
@@ -403,6 +425,7 @@
                         <h2>📋 クリップボード共有</h2>
                         <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
                     </div>
+                    <input type="text" id="clipboardTagInput" class="clipboard-tag-input" placeholder="送信元の名前（例: iPhone）" maxlength="30">
                     <div class="clipboard-input">
                         <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
                         <button id="sendClipboardBtn">送信</button>
@@ -469,6 +492,7 @@
                     // 全削除ボタンを非表示
                     deleteAllBtn.style.display = 'none';
                     // クリップボード入力エリアを非表示
+                    if (clipboardTagInput) clipboardTagInput.style.display = 'none';
                     const clipInput = document.querySelector('.clipboard-input');
                     if (clipInput) clipInput.style.display = 'none';
                     // 全クリアボタンを非表示
@@ -679,9 +703,27 @@
 
             // === クリップボード共有機能 ===
             const clipboardInput = document.getElementById('clipboardInput');
+            const clipboardTagInput = document.getElementById('clipboardTagInput');
             const sendClipboardBtn = document.getElementById('sendClipboardBtn');
             const clipboardList = document.getElementById('clipboardList');
             const clearClipboardBtn = document.getElementById('clearClipboardBtn');
+
+            // タグのデフォルト値: UserAgentからデバイス名を簡易抽出
+            const getDefaultDeviceName = () => {
+                const ua = navigator.userAgent;
+                if (/iPhone/.test(ua)) return 'iPhone';
+                if (/iPad/.test(ua)) return 'iPad';
+                if (/Android/.test(ua)) return 'Android';
+                if (/Macintosh/.test(ua)) return 'Mac';
+                if (/Windows/.test(ua)) return 'Windows';
+                if (/Linux/.test(ua)) return 'Linux';
+                return '';
+            };
+            // localStorageから復元、なければデバイス名
+            clipboardTagInput.value = localStorage.getItem('clipboardTag') ?? getDefaultDeviceName();
+            clipboardTagInput.addEventListener('change', () => {
+                localStorage.setItem('clipboardTag', clipboardTagInput.value);
+            });
 
             let clipboardLastModified = 0;
             let clipboardPollingInterval = null;
@@ -749,7 +791,10 @@
                     <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
                         <div class="clipboard-item-content">
                             <p class="clipboard-item-text">${escapeHtml(item.text)}</p>
-                            <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
+                            <div class="clipboard-item-meta">
+                                ${item.tag ? `<span class="clipboard-item-tag">${escapeHtml(item.tag)}</span>` : ''}
+                                <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
+                            </div>
                         </div>
                         <div class="clipboard-item-actions">
                             <button class="btn-copy" onclick="copyClipboardItem('${escapeHtml(item.id)}')">コピー</button>
@@ -778,12 +823,13 @@
             const sendClipboardText = async () => {
                 const text = clipboardInput.value.trim();
                 if (!text) return;
+                const tag = clipboardTagInput.value.trim() || undefined;
 
                 try {
                     const response = await safeFetch('/api/clipboard', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text })
+                        body: JSON.stringify({ text, tag })
                     });
 
                     if (!response.ok) {

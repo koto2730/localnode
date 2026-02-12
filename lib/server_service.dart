@@ -29,17 +29,20 @@ enum AuthMode { randomPin, fixedPin, noPin }
 class ClipboardItem {
   final String id;
   final String text;
+  final String? tag;
   final DateTime createdAt;
 
   ClipboardItem({
     required this.id,
     required this.text,
+    this.tag,
     required this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'text': text,
+    'tag': tag,
     'createdAt': createdAt.toUtc().toIso8601String(),
   };
 }
@@ -837,6 +840,8 @@ class ServerService {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
       final text = (params['text'] as String?)?.trim();
+      final rawTag = (params['tag'] as String?)?.trim();
+      final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
 
       if (text == null || text.isEmpty) {
         return Response.badRequest(
@@ -855,6 +860,7 @@ class ServerService {
       final item = ClipboardItem(
         id: _generateClipboardId(),
         text: text,
+        tag: tag,
         createdAt: DateTime.now(),
       );
 
