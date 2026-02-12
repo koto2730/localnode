@@ -658,6 +658,22 @@
 
             let clipboardLastModified = 0;
             let clipboardPollingInterval = null;
+            let serverStartedAt = null;
+
+            // サーバ再起動検知: startedAtが変わったらページをリロード
+            const checkServerHealth = async () => {
+                try {
+                    const res = await fetch('/api/health');
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if (serverStartedAt !== null && data.startedAt !== serverStartedAt) {
+                        window.location.reload();
+                    }
+                    serverStartedAt = data.startedAt;
+                } catch (_) {
+                    // サーバ停止中は無視、次回ポーリングで再試行
+                }
+            };
 
             const startClipboardPolling = () => {
                 fetchClipboard();
@@ -815,6 +831,10 @@
             // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
             const init = async () => {
                 try {
+                    // サーバ起動タイムスタンプを取得してヘルスチェック開始
+                    await checkServerHealth();
+                    setInterval(checkServerHealth, 3000);
+
                     // /api/info は認証不要なのでfetchで直接取得
                     const infoResponse = await fetch('/api/info');
                     if (infoResponse.ok) {
@@ -838,7 +858,7 @@
                     showPinModal();
                 }
             };
-            
+
             init();
         });
     </script>

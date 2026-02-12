@@ -59,6 +59,7 @@ class ServerService {
   final Set<String> _sessions = {};
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
+  int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
   final List<ClipboardItem> _clipboardItems = [];
@@ -140,6 +141,7 @@ class ServerService {
 
   ServerService() {
     _router.post('/api/auth', _authHandler);
+    _router.get('/api/health', _healthHandler);
     _router.get('/api/info', _infoHandler);
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
@@ -315,6 +317,12 @@ class ServerService {
     // shelf ではリクエストコンテキストからIPを取得できないため、
     // デフォルトでは 'unknown' を返す
     return request.headers['x-real-ip'] ?? 'unknown';
+  }
+
+  /// ヘルスチェック: 認証不要。クライアントがサーバ再起動を検知するために使用
+  Response _healthHandler(Request request) {
+    return Response.ok(json.encode({'startedAt': _startedAt}),
+        headers: {'Content-Type': 'application/json'});
   }
 
   Response _infoHandler(Request request) {
@@ -966,7 +974,7 @@ class ServerService {
       final path = request.url.path;
 
       // /api/で始まらないパス、または認証が不要なAPIパスはそのまま通す
-      if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth') {
+      if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth' || path == 'api/health') {
         return innerHandler(request);
       }
 
@@ -1128,6 +1136,7 @@ class ServerService {
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
+    _startedAt = DateTime.now().millisecondsSinceEpoch;
     print('Your PIN is: $_pin');
 
     try {
@@ -1182,6 +1191,7 @@ class ServerService {
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
+    _startedAt = DateTime.now().millisecondsSinceEpoch;
     print('Your PIN is: $_pin'); // デバッグ用
 
     try {
