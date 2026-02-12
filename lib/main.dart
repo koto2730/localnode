@@ -97,17 +97,20 @@ class ClipboardItemData {
   const ClipboardItemData({
     required this.id,
     required this.text,
+    this.tag,
     required this.createdAt,
   });
 
   final String id;
   final String text;
+  final String? tag;
   final DateTime createdAt;
 
   factory ClipboardItemData.fromClipboardItem(ClipboardItem item) {
     return ClipboardItemData(
       id: item.id,
       text: item.text,
+      tag: item.tag,
       createdAt: item.createdAt,
     );
   }
@@ -1144,9 +1147,27 @@ class _ClipboardItemTile extends StatelessWidget {
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(
-        _formatTime(item.createdAt),
-        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+      subtitle: Row(
+        children: [
+          if (item.tag != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: Colors.teal,
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: Text(
+                item.tag!,
+                style: const TextStyle(fontSize: 10, color: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Text(
+            _formatTime(item.createdAt),
+            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+          ),
+        ],
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
