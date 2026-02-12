@@ -27,6 +27,7 @@
             width: 100%;
             border-collapse: collapse;
             margin-top: 1.5rem;
+            table-layout: fixed;
         }
         th, td {
             padding: 0.75rem;
@@ -46,17 +47,42 @@
             border-radius: 4px;
             object-fit: cover;
         }
-        .actions { text-align: right; }
+        .fileinfo-col {
+            overflow: hidden;
+        }
+        .fileinfo-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+        .fileinfo-size {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 2px;
+        }
+        .actions {
+            text-align: right;
+            white-space: nowrap;
+            width: 120px;
+        }
         .actions button {
-            margin-left: 0.5rem;
-            padding: 0.3rem 0.6rem;
             border: none;
             border-radius: 4px;
             cursor: pointer;
             color: white;
         }
-        .btn-download { background-color: #34a853; }
-        .btn-delete { background-color: #ea4335; }
+        .btn-download {
+            background-color: #34a853;
+            padding: 0.4rem 0.8rem;
+            font-size: 0.9rem;
+        }
+        .btn-delete {
+            background-color: #999;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.75rem;
+            margin-left: 0.8rem;
+        }
         .upload-form {
             margin-top: 2rem;
             padding: 1.5rem;
@@ -215,9 +241,31 @@
             white-space: pre-wrap;
             margin: 0 0 0.5rem 0;
         }
+        .clipboard-item-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .clipboard-item-tag {
+            font-size: 0.7rem;
+            color: #fff;
+            background-color: #00796b;
+            padding: 1px 6px;
+            border-radius: 3px;
+        }
         .clipboard-item-time {
             font-size: 0.8rem;
             color: #666;
+        }
+        .clipboard-tag-input {
+            width: 100%;
+            padding: 0.4rem 0.75rem;
+            border: 1px solid #b2dfdb;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+            box-sizing: border-box;
         }
         .clipboard-item-actions {
             display: flex;
@@ -361,8 +409,7 @@
                         <thead>
                             <tr>
                                 <th class="preview-col"></th>
-                                <th>ファイル名</th>
-                                <th>サイズ</th>
+                                <th class="fileinfo-col">ファイル名</th>
                                 <th class="actions">操作</th>
                             </tr>
                         </thead>
@@ -378,6 +425,7 @@
                         <h2>📋 クリップボード共有</h2>
                         <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
                     </div>
+                    <input type="text" id="clipboardTagInput" class="clipboard-tag-input" placeholder="送信元の名前（例: iPhone）" maxlength="30">
                     <div class="clipboard-input">
                         <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
                         <button id="sendClipboardBtn">送信</button>
@@ -444,6 +492,7 @@
                     // 全削除ボタンを非表示
                     deleteAllBtn.style.display = 'none';
                     // クリップボード入力エリアを非表示
+                    if (clipboardTagInput) clipboardTagInput.style.display = 'none';
                     const clipInput = document.querySelector('.clipboard-input');
                     if (clipInput) clipInput.style.display = 'none';
                     // 全クリアボタンを非表示
@@ -527,7 +576,7 @@
 
                     fileListBody.innerHTML = '';
                     if (files.length === 0) {
-                        fileListBody.innerHTML = '<tr><td colspan="4" style="text-align:center;">ファイルはありません。</td></tr>';
+                        fileListBody.innerHTML = '<tr><td colspan="3" style="text-align:center;">ファイルはありません。</td></tr>';
                         downloadAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                         deleteAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
                     } else {
@@ -545,8 +594,10 @@
 
                             row.innerHTML = `
                                 <td class="preview-col">${preview}</td>
-                                <td>${escapeHtml(file.name)}</td>
-                                <td>${sizeMB} MB</td>
+                                <td class="fileinfo-col" title="${escapeHtml(file.name)}">
+                                    <div class="fileinfo-name">${escapeHtml(file.name)}</div>
+                                    <div class="fileinfo-size">${sizeMB} MB</div>
+                                </td>
                                 <td class="actions">
                                     <button class="btn-download" onclick="downloadFile('${file.id}', '${escapeHtml(file.name)}')">DL</button>
                                     ${deleteBtn}
@@ -557,7 +608,7 @@
                     }
                 } catch (error) {
                      if (error.message !== 'Authentication failed.') {
-                        fileListBody.innerHTML = `<tr><td colspan="4" style="text-align:center; color: red;">${error.message}</td></tr>`;
+                        fileListBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color: red;">${error.message}</td></tr>`;
                      }
                 }
             };
@@ -652,12 +703,46 @@
 
             // === クリップボード共有機能 ===
             const clipboardInput = document.getElementById('clipboardInput');
+            const clipboardTagInput = document.getElementById('clipboardTagInput');
             const sendClipboardBtn = document.getElementById('sendClipboardBtn');
             const clipboardList = document.getElementById('clipboardList');
             const clearClipboardBtn = document.getElementById('clearClipboardBtn');
 
+            // タグのデフォルト値: UserAgentからデバイス名を簡易抽出
+            const getDefaultDeviceName = () => {
+                const ua = navigator.userAgent;
+                if (/iPhone/.test(ua)) return 'iPhone';
+                if (/iPad/.test(ua)) return 'iPad';
+                if (/Android/.test(ua)) return 'Android';
+                if (/Macintosh/.test(ua)) return 'Mac';
+                if (/Windows/.test(ua)) return 'Windows';
+                if (/Linux/.test(ua)) return 'Linux';
+                return '';
+            };
+            // localStorageから復元、なければデバイス名
+            clipboardTagInput.value = localStorage.getItem('clipboardTag') ?? getDefaultDeviceName();
+            clipboardTagInput.addEventListener('change', () => {
+                localStorage.setItem('clipboardTag', clipboardTagInput.value);
+            });
+
             let clipboardLastModified = 0;
             let clipboardPollingInterval = null;
+            let serverStartedAt = null;
+
+            // サーバ再起動検知: startedAtが変わったらページをリロード
+            const checkServerHealth = async () => {
+                try {
+                    const res = await fetch('/api/health');
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if (serverStartedAt !== null && data.startedAt !== serverStartedAt) {
+                        window.location.reload();
+                    }
+                    serverStartedAt = data.startedAt;
+                } catch (_) {
+                    // サーバ停止中は無視、次回ポーリングで再試行
+                }
+            };
 
             const startClipboardPolling = () => {
                 fetchClipboard();
@@ -706,7 +791,10 @@
                     <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
                         <div class="clipboard-item-content">
                             <p class="clipboard-item-text">${escapeHtml(item.text)}</p>
-                            <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
+                            <div class="clipboard-item-meta">
+                                ${item.tag ? `<span class="clipboard-item-tag">${escapeHtml(item.tag)}</span>` : ''}
+                                <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
+                            </div>
                         </div>
                         <div class="clipboard-item-actions">
                             <button class="btn-copy" onclick="copyClipboardItem('${escapeHtml(item.id)}')">コピー</button>
@@ -735,12 +823,13 @@
             const sendClipboardText = async () => {
                 const text = clipboardInput.value.trim();
                 if (!text) return;
+                const tag = clipboardTagInput.value.trim() || undefined;
 
                 try {
                     const response = await safeFetch('/api/clipboard', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text })
+                        body: JSON.stringify({ text, tag })
                     });
 
                     if (!response.ok) {
@@ -815,6 +904,10 @@
             // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
             const init = async () => {
                 try {
+                    // サーバ起動タイムスタンプを取得してヘルスチェック開始
+                    await checkServerHealth();
+                    setInterval(checkServerHealth, 3000);
+
                     // /api/info は認証不要なのでfetchで直接取得
                     const infoResponse = await fetch('/api/info');
                     if (infoResponse.ok) {
@@ -838,7 +931,7 @@
                     showPinModal();
                 }
             };
-            
+
             init();
         });
     </script>

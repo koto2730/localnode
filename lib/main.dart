@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -96,17 +97,20 @@ class ClipboardItemData {
   const ClipboardItemData({
     required this.id,
     required this.text,
+    this.tag,
     required this.createdAt,
   });
 
   final String id;
   final String text;
+  final String? tag;
   final DateTime createdAt;
 
   factory ClipboardItemData.fromClipboardItem(ClipboardItem item) {
     return ClipboardItemData(
       id: item.id,
       text: item.text,
+      tag: item.tag,
       createdAt: item.createdAt,
     );
   }
@@ -125,6 +129,7 @@ class ServerNotifier extends Notifier<ServerState> {
 
   Future<void> loadIpAddresses() async {
     if (kIsWeb) return; // Webでは実行しない
+    await _serverService.initializePaths();
     final ips = await _serverService.getAvailableIpAddresses();
     state = state.copyWith(
       availableIpAddresses: ips,
@@ -718,17 +723,20 @@ class _HomePageState extends ConsumerState<HomePage> {
 
         if (!kIsWeb) ...[
           const SizedBox(height: 20),
-          ElevatedButton.icon(
-            icon: const Icon(Icons.folder_open),
-            label: const Text('共有フォルダを選択'),
-            onPressed: () async {
-              await notifier.selectSafDirectory();
-            },
-          ),
-          const SizedBox(height: 10),
+          // iOSではフォルダはアプリ内固定のため選択UIを非表示
+          if (!kIsWeb && !Platform.isIOS)
+            ElevatedButton.icon(
+              icon: const Icon(Icons.folder_open),
+              label: const Text('共有フォルダを選択'),
+              onPressed: () async {
+                await notifier.selectSafDirectory();
+              },
+            ),
+          if (!kIsWeb && !Platform.isIOS)
+            const SizedBox(height: 10),
           if (serverState.storagePath != null)
             Text('選択中のフォルダ: ${serverState.storagePath}', textAlign: TextAlign.center),
-          if (serverState.storagePath != null) ...[
+          if (serverState.storagePath != null && !Platform.isIOS) ...[
             const SizedBox(height: 10),
             ElevatedButton.icon(
               icon: const Icon(Icons.launch),
@@ -736,7 +744,6 @@ class _HomePageState extends ConsumerState<HomePage> {
               onPressed: () async {
                 final opened = await notifier.openDownloadsFolder();
                 if (!opened && context.mounted) {
-                  // iOS等で開けない場合はダイアログでパスを表示
                   showDialog(
                     context: context,
                     builder: (context) => AlertDialog(
@@ -1140,9 +1147,27 @@ class _ClipboardItemTile extends StatelessWidget {
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(
-        _formatTime(item.createdAt),
-        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+      subtitle: Row(
+        children: [
+          if (item.tag != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: Colors.teal,
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: Text(
+                item.tag!,
+                style: const TextStyle(fontSize: 10, color: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Text(
+            _formatTime(item.createdAt),
+            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+          ),
+        ],
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

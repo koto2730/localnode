@@ -29,17 +29,20 @@ enum AuthMode { randomPin, fixedPin, noPin }
 class ClipboardItem {
   final String id;
   final String text;
+  final String? tag;
   final DateTime createdAt;
 
   ClipboardItem({
     required this.id,
     required this.text,
+    this.tag,
     required this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'text': text,
+    'tag': tag,
     'createdAt': createdAt.toUtc().toIso8601String(),
   };
 }
@@ -59,6 +62,7 @@ class ServerService {
   final Set<String> _sessions = {};
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
+  int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
   final List<ClipboardItem> _clipboardItems = [];
@@ -87,6 +91,34 @@ class ServerService {
   OperationMode get operationMode => _operationMode;
   AuthMode get authMode => _authMode;
 
+  /// アプリ起動時にデフォルトパスの設定と永続化されたフォルダ選択を復元する
+  Future<void> initializePaths() async {
+    if (kIsWeb) return;
+    final packageInfo = await PackageInfo.fromPlatform();
+    final appName = packageInfo.appName;
+    final docDir = await getApplicationDocumentsDirectory();
+
+    // デフォルトパスを設定
+    if (Platform.isIOS) {
+      _fallbackStoragePath = docDir.path;
+      _displayPath = 'On My iPhone/$appName';
+    } else {
+      _fallbackStoragePath = p.join(docDir.path, appName);
+      _displayPath = p.join(docDir.path, appName);
+    }
+
+    // デフォルトフォルダの作成
+    if (_fallbackStoragePath != null) {
+      final dir = Directory(_fallbackStoragePath!);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+    }
+
+    // 永続化されたフォルダ選択を復元（デフォルトを上書き）
+    await loadPersistedSafUri();
+  }
+
   Future<List<String>> getAvailableIpAddresses() async {
     final addresses = <String>[];
     try {
@@ -112,6 +144,7 @@ class ServerService {
 
   ServerService() {
     _router.post('/api/auth', _authHandler);
+    _router.get('/api/health', _healthHandler);
     _router.get('/api/info', _infoHandler);
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
@@ -137,17 +170,16 @@ class ServerService {
     final appName = packageInfo.appName;
 
     // アプリケーションサンドボックス内のディレクトリをフォールバックとして設定
+    // ユーザーが既にフォルダを選択済みの場合はデフォルト値で上書きしない
     final docDir = await getApplicationDocumentsDirectory();
-    if (Platform.isIOS) {
-      _displayPath = 'On My iPhone/$appName'; // iOSではよりユーザーフレンドリーなパスを表示
-    } else {
-      _displayPath = p.join(docDir.path, appName);
-    }
-    // iOSではDocumentsディレクトリが既にアプリ固有のため、appNameの付加は不要
-    if (Platform.isIOS) {
-      _fallbackStoragePath = docDir.path;
-    } else {
-      _fallbackStoragePath = p.join(docDir.path, appName);
+    if (_fallbackStoragePath == null) {
+      if (Platform.isIOS) {
+        _displayPath = 'On My iPhone/$appName'; // iOSではよりユーザーフレンドリーなパスを表示
+        _fallbackStoragePath = docDir.path;
+      } else {
+        _displayPath = p.join(docDir.path, appName);
+        _fallbackStoragePath = p.join(docDir.path, appName);
+      }
     }
 
     if (_fallbackStoragePath != null) {
@@ -288,6 +320,12 @@ class ServerService {
     // shelf ではリクエストコンテキストからIPを取得できないため、
     // デフォルトでは 'unknown' を返す
     return request.headers['x-real-ip'] ?? 'unknown';
+  }
+
+  /// ヘルスチェック: 認証不要。クライアントがサーバ再起動を検知するために使用
+  Response _healthHandler(Request request) {
+    return Response.ok(json.encode({'startedAt': _startedAt}),
+        headers: {'Content-Type': 'application/json'});
   }
 
   Response _infoHandler(Request request) {
@@ -802,6 +840,8 @@ class ServerService {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
       final text = (params['text'] as String?)?.trim();
+      final rawTag = (params['tag'] as String?)?.trim();
+      final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
 
       if (text == null || text.isEmpty) {
         return Response.badRequest(
@@ -820,6 +860,7 @@ class ServerService {
       final item = ClipboardItem(
         id: _generateClipboardId(),
         text: text,
+        tag: tag,
         createdAt: DateTime.now(),
       );
 
@@ -939,7 +980,7 @@ class ServerService {
       final path = request.url.path;
 
       // /api/で始まらないパス、または認証が不要なAPIパスはそのまま通す
-      if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth') {
+      if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth' || path == 'api/health') {
         return innerHandler(request);
       }
 
@@ -1101,6 +1142,7 @@ class ServerService {
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
+    _startedAt = DateTime.now().millisecondsSinceEpoch;
     print('Your PIN is: $_pin');
 
     try {
@@ -1155,6 +1197,7 @@ class ServerService {
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
+    _startedAt = DateTime.now().millisecondsSinceEpoch;
     print('Your PIN is: $_pin'); // デバッグ用
 
     try {
@@ -1224,22 +1267,8 @@ class ServerService {
           print('SAF Directory selection cancelled.');
         }
       } else if (Platform.isIOS) {
-        // iOS: file_picker を使用してディレクトリを選択させる
-        final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
-        if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
-          await _ensureDirectoryExists(selectedDirectory);
-          _fallbackStoragePath = selectedDirectory;
-          
-          final packageInfo = await PackageInfo.fromPlatform();
-          final docDir = await getApplicationDocumentsDirectory();
-
-          _displayPath = _getIosDisplayPath(selectedDirectory, packageInfo.appName, docDir.path);
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('selected_directory_path', selectedDirectory);
-          print('iOS directory selected and persisted: $selectedDirectory');
-        } else {
-          print('Directory selection cancelled.');
-        } 
+        // iOSではアプリ内Documentsフォルダ固定のため、フォルダ選択は無効
+        return;
         // Windows, macOS, Linux: file_picker を使用
       } else {
         final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
