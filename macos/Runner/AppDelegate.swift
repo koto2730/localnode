@@ -5,6 +5,11 @@ import Foundation
 @main
 class AppDelegate: FlutterAppDelegate {
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    // CLIモード時はウィンドウを非表示にしているため、falseを返す
+    let args = ProcessInfo.processInfo.arguments
+    if args.contains("--cli") {
+      return false
+    }
     return true
   }
 
