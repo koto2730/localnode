@@ -13,25 +13,31 @@ class CliRunner {
   final List<String> _args;
   Timer? _clipboardTimer;
   int _lastClipboardModified = 0;
+  bool _shuttingDown = false;
 
   CliRunner(this._args) : _serverService = ServerService();
 
   /// コマンドライン引数をパースする
   static ArgParser buildParser() {
     return ArgParser()
-      ..addFlag('cli', help: 'CLIモード（ヘッドレス）で起動', negatable: false)
+      ..addFlag('cli', help: 'Run in CLI (headless) mode', negatable: false)
       ..addOption('port',
-          abbr: 'p', help: 'サーバーのポート番号', defaultsTo: '8080')
-      ..addOption('pin', help: '固定PIN（指定しない場合はランダム生成）')
-      ..addOption('dir', abbr: 'd', help: '共有ディレクトリのパス')
+          abbr: 'p', help: 'Server port number', defaultsTo: '8080')
+      ..addOption('ip', help: 'IP address to advertise (skip auto-detection)')
+      ..addOption('pin', help: 'Fixed PIN (random if not specified)')
+      ..addOption('dir', abbr: 'd', help: 'Shared directory path')
       ..addOption('mode',
           abbr: 'm',
-          help: '動作モード (normal/download-only)',
+          help: 'Operation mode (normal/download-only)',
           defaultsTo: 'normal',
           allowed: ['normal', 'download-only'])
       ..addFlag('no-pin',
-          help: 'PIN認証を無効化（信頼できるネットワーク用）', negatable: false)
-      ..addFlag('help', abbr: 'h', help: 'ヘルプを表示', negatable: false);
+          help: 'Disable PIN authentication', negatable: false)
+      ..addFlag('no-clipboard',
+          help: 'Hide clipboard content from console output', negatable: false)
+      ..addFlag('verbose',
+          abbr: 'v', help: 'Enable verbose request logging', negatable: false)
+      ..addFlag('help', abbr: 'h', help: 'Show help', negatable: false);
   }
 
   /// 引数が--cliを含むかチェック
@@ -47,8 +53,9 @@ class CliRunner {
     try {
       results = parser.parse(_args);
     } catch (e) {
-      stderr.writeln('エラー: 引数のパースに失敗しました: $e');
-      stderr.writeln(parser.usage);
+      stderr.writeln('Error: Failed to parse arguments: $e');
+      stderr.writeln('');
+      _printUsage(parser);
       exit(1);
     }
 
@@ -59,12 +66,15 @@ class CliRunner {
 
     final port = int.tryParse(results['port'] as String);
     if (port == null || port < 1 || port > 65535) {
-      stderr.writeln('エラー: 無効なポート番号です。1〜65535の範囲で指定してください。');
+      stderr.writeln('Error: Invalid port number. Must be between 1 and 65535.');
       exit(1);
     }
 
     final fixedPin = results['pin'] as String?;
     final dir = results['dir'] as String?;
+    final specifiedIp = results['ip'] as String?;
+    final noClipboard = results['no-clipboard'] as bool;
+    final verbose = results['verbose'] as bool;
 
     // モード設定
     final modeStr = results['mode'] as String;
@@ -86,20 +96,25 @@ class CliRunner {
     if (dir != null) {
       final directory = Directory(dir);
       if (!await directory.exists()) {
-        stderr.writeln('エラー: 指定されたディレクトリが存在しません: $dir');
+        stderr.writeln('Error: Directory does not exist: $dir');
         exit(1);
       }
     }
 
-    // IPアドレスの取得
-    final ips = await _serverService.getAvailableIpAddresses();
-    final ipAddress = ips.isNotEmpty ? ips.first : '0.0.0.0';
+    // IPアドレスの決定
+    final String ipAddress;
+    if (specifiedIp != null) {
+      ipAddress = specifiedIp;
+    } else {
+      ipAddress = await _selectIpAddress();
+    }
 
-    stdout.writeln('LocalNode CLIモード');
+    stdout.writeln('');
+    stdout.writeln('LocalNode CLI Server');
     stdout.writeln('=' * 40);
 
     try {
-      // サーバーを起動（固定PINとディレクトリを渡す）
+      // サーバーを起動
       await _serverService.startServerCli(
         ipAddress: ipAddress,
         port: port,
@@ -107,54 +122,95 @@ class CliRunner {
         storagePath: dir,
         operationMode: operationMode,
         authMode: authMode,
+        verboseLogging: verbose,
       );
 
       final url = 'http://$ipAddress:$port';
       final pin = _serverService.pin;
 
-      stdout.writeln('サーバー起動中...');
+      stdout.writeln('Server started.');
       stdout.writeln('');
-      stdout.writeln('URL: $url');
+      stdout.writeln('  URL:  $url');
       if (authMode != AuthMode.noPin) {
-        stdout.writeln('PIN: $pin');
+        stdout.writeln('  PIN:  $pin');
       } else {
-        stdout.writeln('PIN: 無効（認証なし）');
+        stdout.writeln('  PIN:  disabled (no auth)');
       }
       stdout.writeln(
-          'モード: ${operationMode == OperationMode.downloadOnly ? "ダウンロード専用" : "通常"}');
+          '  Mode: ${operationMode == OperationMode.downloadOnly ? "download-only" : "normal"}');
       stdout.writeln('');
-      stdout.writeln('QRコード:');
+
+      // QRコード表示
+      stdout.writeln('QR Code:');
       _printAsciiQrCode(url);
       stdout.writeln('');
-      stdout.writeln('q + Enter または Ctrl+C で停止');
+      stdout.writeln('Press Ctrl+C or type q + Enter to stop.');
+      stdout.writeln('');
 
       // シグナルハンドラを設定
       _setupSignalHandlers();
 
       // クリップボードのポーリングを開始
-      _startClipboardPolling();
+      if (!noClipboard) {
+        _startClipboardPolling();
+      }
 
       // stdinからの入力を待機（'q'で終了）
       await _waitForQuit();
     } catch (e) {
-      stderr.writeln('エラー: サーバーの起動に失敗しました: $e');
+      stderr.writeln('Error: Failed to start server: $e');
       exit(1);
     }
   }
 
+  /// IPアドレスの自動検出・選択
+  Future<String> _selectIpAddress() async {
+    final ips = await _serverService.getAvailableIpAddresses();
+
+    if (ips.isEmpty) return '0.0.0.0';
+    if (ips.length == 1) return ips.first;
+
+    // 複数IPが検出された場合、ターミナルならユーザーに選択させる
+    if (stdin.hasTerminal) {
+      stdout.writeln('Multiple network interfaces detected:');
+      for (int i = 0; i < ips.length; i++) {
+        stdout.writeln('  [${i + 1}] ${ips[i]}');
+      }
+      stdout.write('Select IP address [1-${ips.length}] (default: 1): ');
+
+      try {
+        final input = stdin.readLineSync()?.trim();
+        if (input != null && input.isNotEmpty) {
+          final index = int.tryParse(input);
+          if (index != null && index >= 1 && index <= ips.length) {
+            return ips[index - 1];
+          }
+          stdout.writeln('Invalid selection, using ${ips.first}');
+        }
+      } catch (_) {
+        // stdin読み取りエラー時はデフォルト
+      }
+    }
+
+    return ips.first;
+  }
+
   void _printUsage(ArgParser parser) {
-    stdout.writeln('LocalNode - ローカルファイル共有サーバー');
+    stdout.writeln('LocalNode - Local file & clipboard sharing server');
     stdout.writeln('');
-    stdout.writeln('使用方法: localnode --cli [オプション]');
+    stdout.writeln('Usage: localnode --cli [options]');
     stdout.writeln('');
-    stdout.writeln('オプション:');
+    stdout.writeln('Options:');
     stdout.writeln(parser.usage);
     stdout.writeln('');
-    stdout.writeln('例:');
-    stdout.writeln(
-        '  localnode --cli --port 8080 --pin 1234 --dir /home/user/share');
-    stdout.writeln(
-        '  localnode --cli --mode download-only --no-pin --dir /home/user/share');
+    stdout.writeln('Examples:');
+    stdout.writeln('  localnode --cli');
+    stdout.writeln('  localnode --cli -p 3000 --pin 1234');
+    stdout.writeln('  localnode --cli -d /path/to/share --ip 192.168.1.100');
+    stdout.writeln('  localnode --cli --mode download-only --no-pin');
+    stdout.writeln('  localnode --cli --no-clipboard --verbose');
+    stdout.writeln('');
+    stdout.writeln('To stop the server: Ctrl+C or type q + Enter');
   }
 
   /// QRコードをASCIIアートとして出力
@@ -165,47 +221,64 @@ class CliRunner {
     );
     final qrImage = QrImage(qrCode);
 
-    // 上余白
     stdout.writeln('');
 
-    // QRコードの各行を出力（2行を1行にまとめて縦横比を調整）
-    for (int y = 0; y < qrImage.moduleCount; y += 2) {
-      final buffer = StringBuffer('  '); // 左余白
-      for (int x = 0; x < qrImage.moduleCount; x++) {
-        final top = qrImage.isDark(y, x);
-        final bottom =
-            (y + 1 < qrImage.moduleCount) ? qrImage.isDark(y + 1, x) : false;
-
-        // Unicode ブロック文字を使って2ピクセルを1文字で表現
-        if (top && bottom) {
-          buffer.write('\u2588'); // █ Full block
-        } else if (top && !bottom) {
-          buffer.write('\u2580'); // ▀ Upper half block
-        } else if (!top && bottom) {
-          buffer.write('\u2584'); // ▄ Lower half block
-        } else {
-          buffer.write(' '); // Space
+    if (Platform.isWindows) {
+      // Windows: ASCII文字でQRコード出力（Unicode block文字による表示崩れ防止）
+      for (int y = 0; y < qrImage.moduleCount; y++) {
+        final buffer = StringBuffer('  ');
+        for (int x = 0; x < qrImage.moduleCount; x++) {
+          buffer.write(qrImage.isDark(y, x) ? '##' : '  ');
         }
+        stdout.writeln(buffer.toString());
       }
-      stdout.writeln(buffer.toString());
+    } else {
+      // macOS/Linux: Unicode block文字で2行を1行にまとめて縦横比を調整
+      for (int y = 0; y < qrImage.moduleCount; y += 2) {
+        final buffer = StringBuffer('  ');
+        for (int x = 0; x < qrImage.moduleCount; x++) {
+          final top = qrImage.isDark(y, x);
+          final bottom =
+              (y + 1 < qrImage.moduleCount) ? qrImage.isDark(y + 1, x) : false;
+
+          if (top && bottom) {
+            buffer.write('\u2588'); // █ Full block
+          } else if (top && !bottom) {
+            buffer.write('\u2580'); // ▀ Upper half block
+          } else if (!top && bottom) {
+            buffer.write('\u2584'); // ▄ Lower half block
+          } else {
+            buffer.write(' ');
+          }
+        }
+        stdout.writeln(buffer.toString());
+      }
     }
   }
 
   void _setupSignalHandlers() {
-    // SIGINT (Ctrl+C) のハンドリング
-    ProcessSignal.sigint.watch().listen((_) async {
-      await _shutdown();
-    });
+    // SIGINT (Ctrl+C)
+    try {
+      ProcessSignal.sigint.watch().listen((_) async {
+        await _shutdown();
+      });
+    } catch (_) {
+      // Windows: ProcessSignal.sigint.watch() が未サポートの場合がある
+      // stdinの'q'入力またはプロセス終了に任せる
+    }
 
-    // SIGTERM・SIGHUP のハンドリング（Linux/macOSのみ）
+    // SIGTERM・SIGHUP（macOS/Linuxのみ）
     if (!Platform.isWindows) {
-      ProcessSignal.sigterm.watch().listen((_) async {
-        await _shutdown();
-      });
-      // ターミナルが閉じられた場合のgraceful shutdown
-      ProcessSignal.sighup.watch().listen((_) async {
-        await _shutdown();
-      });
+      try {
+        ProcessSignal.sigterm.watch().listen((_) async {
+          await _shutdown();
+        });
+        ProcessSignal.sighup.watch().listen((_) async {
+          await _shutdown();
+        });
+      } catch (_) {
+        // シグナル監視失敗時は無視
+      }
     }
   }
 
@@ -215,13 +288,14 @@ class CliRunner {
     _clipboardTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       final currentModified = _serverService.clipboardLastModified;
       if (currentModified != _lastClipboardModified) {
+        _lastClipboardModified = currentModified;
         final items = _serverService.clipboardItems;
         if (items.isNotEmpty) {
           final latest = items.first;
           stdout.writeln('');
+          final tagLabel = latest.tag != null ? '[${latest.tag}] ' : '';
           stdout.writeln(
-              '[クリップボード受信] ${latest.createdAt.toLocal().toString().substring(11, 19)}');
-          // 長いテキストは省略して表示
+              '[Clipboard] $tagLabel${latest.createdAt.toLocal().toString().substring(11, 19)}');
           final text = latest.text;
           if (text.length > 200) {
             stdout.writeln('  ${text.substring(0, 200)}...');
@@ -229,7 +303,6 @@ class CliRunner {
             stdout.writeln('  $text');
           }
         }
-        _lastClipboardModified = currentModified;
       }
     });
   }
@@ -237,15 +310,21 @@ class CliRunner {
   /// stdinからの入力を待機し、'q'で終了
   Future<void> _waitForQuit() async {
     try {
+      if (!stdin.hasTerminal) {
+        // 非対話的環境（nohup等）ではシグナルハンドラに任せる
+        await _waitForever();
+        return;
+      }
+
       await for (final line in stdin
-          .transform(const SystemEncoding().decoder)
+          .transform(utf8.decoder)
           .transform(const LineSplitter())) {
         if (line.trim().toLowerCase() == 'q') {
           await _shutdown();
           return;
         }
       }
-      // stdinが閉じられた場合（nohup、ターミナル切断等）はシグナルで停止するまで待機
+      // stdinが閉じられた場合
       await _waitForever();
     } catch (_) {
       // stdin読み取りエラー時もシグナルハンドラに任せる
@@ -255,16 +334,25 @@ class CliRunner {
 
   /// サーバーを停止して終了
   Future<void> _shutdown() async {
+    if (_shuttingDown) return;
+    _shuttingDown = true;
+
     _clipboardTimer?.cancel();
-    stdout.writeln('\nシャットダウン中...');
+
+    // Windowsでコンソール表示崩れを防止
+    if (Platform.isWindows) {
+      stdout.write('\x1B[0m');
+    }
+
+    stdout.writeln('');
+    stdout.writeln('Shutting down...');
     await _serverService.stopServer();
-    stdout.writeln('サーバーを停止しました。');
+    stdout.writeln('Server stopped.');
     exit(0);
   }
 
   Future<void> _waitForever() async {
     final completer = Completer<void>();
-    // 永久に待機（シグナルハンドラで終了）
     await completer.future;
   }
 }

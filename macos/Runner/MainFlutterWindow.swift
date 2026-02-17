@@ -10,6 +10,15 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
+    // CLIモード時はウィンドウを非表示にする
+    let args = ProcessInfo.processInfo.arguments
+    if args.contains("--cli") || args.contains("--help") || args.contains("-h") {
+      self.orderOut(nil)
+      self.setIsVisible(false)
+      // Dockアイコンも非表示
+      NSApp.setActivationPolicy(.prohibited)
+    }
+
     super.awakeFromNib()
   }
 }

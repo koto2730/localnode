@@ -29,17 +29,20 @@ enum AuthMode { randomPin, fixedPin, noPin }
 class ClipboardItem {
   final String id;
   final String text;
+  final String? tag;
   final DateTime createdAt;
 
   ClipboardItem({
     required this.id,
     required this.text,
+    this.tag,
     required this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'text': text,
+    'tag': tag,
     'createdAt': createdAt.toUtc().toIso8601String(),
   };
 }
@@ -59,6 +62,8 @@ class ServerService {
   final Set<String> _sessions = {};
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
+  bool _verboseLogging = false;
+  int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
   final List<ClipboardItem> _clipboardItems = [];
@@ -83,9 +88,42 @@ class ServerService {
   String? get pin => _pin;
   bool get isRunning => _server != null;
   String? get documentsPath => _fallbackStoragePath;
+
+  /// verbose有効時のみ出力するログ
+  void _log(String message) {
+    if (_verboseLogging) print(message);
+  }
   String? get displayPath => _displayPath;
   OperationMode get operationMode => _operationMode;
   AuthMode get authMode => _authMode;
+
+  /// アプリ起動時にデフォルトパスの設定と永続化されたフォルダ選択を復元する
+  Future<void> initializePaths() async {
+    if (kIsWeb) return;
+    final packageInfo = await PackageInfo.fromPlatform();
+    final appName = packageInfo.appName;
+    final docDir = await getApplicationDocumentsDirectory();
+
+    // デフォルトパスを設定
+    if (Platform.isIOS) {
+      _fallbackStoragePath = docDir.path;
+      _displayPath = 'On My iPhone/$appName';
+    } else {
+      _fallbackStoragePath = p.join(docDir.path, appName);
+      _displayPath = p.join(docDir.path, appName);
+    }
+
+    // デフォルトフォルダの作成
+    if (_fallbackStoragePath != null) {
+      final dir = Directory(_fallbackStoragePath!);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+    }
+
+    // 永続化されたフォルダ選択を復元（デフォルトを上書き）
+    await loadPersistedSafUri();
+  }
 
   Future<List<String>> getAvailableIpAddresses() async {
     final addresses = <String>[];
@@ -112,6 +150,7 @@ class ServerService {
 
   ServerService() {
     _router.post('/api/auth', _authHandler);
+    _router.get('/api/health', _healthHandler);
     _router.get('/api/info', _infoHandler);
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
@@ -129,7 +168,7 @@ class ServerService {
 
   Future<void> _init() async {
     if (kIsWeb) {
-      print("Web platform detected. No file system access.");
+      _log("Web platform detected. No file system access.");
       return;
     }
 
@@ -137,17 +176,16 @@ class ServerService {
     final appName = packageInfo.appName;
 
     // アプリケーションサンドボックス内のディレクトリをフォールバックとして設定
+    // ユーザーが既にフォルダを選択済みの場合はデフォルト値で上書きしない
     final docDir = await getApplicationDocumentsDirectory();
-    if (Platform.isIOS) {
-      _displayPath = 'On My iPhone/$appName'; // iOSではよりユーザーフレンドリーなパスを表示
-    } else {
-      _displayPath = p.join(docDir.path, appName);
-    }
-    // iOSではDocumentsディレクトリが既にアプリ固有のため、appNameの付加は不要
-    if (Platform.isIOS) {
-      _fallbackStoragePath = docDir.path;
-    } else {
-      _fallbackStoragePath = p.join(docDir.path, appName);
+    if (_fallbackStoragePath == null) {
+      if (Platform.isIOS) {
+        _displayPath = 'On My iPhone/$appName'; // iOSではよりユーザーフレンドリーなパスを表示
+        _fallbackStoragePath = docDir.path;
+      } else {
+        _displayPath = p.join(docDir.path, appName);
+        _fallbackStoragePath = p.join(docDir.path, appName);
+      }
     }
 
     if (_fallbackStoragePath != null) {
@@ -240,7 +278,7 @@ class ServerService {
         final token = _generateSessionToken();
         _sessions.add(token);
 
-        print('Auth success: Generated token $token. Current sessions: $_sessions');
+        _log('Auth success: Generated token $token. Current sessions: $_sessions');
 
         final cookie = 'localnode_session=$token; Path=/; HttpOnly';
         final headers = {
@@ -254,12 +292,12 @@ class ServerService {
         final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
         _failedAttempts[clientIp] = attempts;
 
-        print('Auth failed from $clientIp. Attempt $attempts of $_maxFailedAttempts');
+        _log('Auth failed from $clientIp. Attempt $attempts of $_maxFailedAttempts');
 
         if (attempts >= _maxFailedAttempts) {
           _lockoutUntil[clientIp] = DateTime.now().add(_lockoutDuration);
           _failedAttempts.remove(clientIp);
-          print('IP $clientIp locked out for ${_lockoutDuration.inMinutes} minutes');
+          _log('IP $clientIp locked out for ${_lockoutDuration.inMinutes} minutes');
           return Response.forbidden(
               json.encode({
                 'error':
@@ -288,6 +326,12 @@ class ServerService {
     // shelf ではリクエストコンテキストからIPを取得できないため、
     // デフォルトでは 'unknown' を返す
     return request.headers['x-real-ip'] ?? 'unknown';
+  }
+
+  /// ヘルスチェック: 認証不要。クライアントがサーバ再起動を検知するために使用
+  Response _healthHandler(Request request) {
+    return Response.ok(json.encode({'startedAt': _startedAt}),
+        headers: {'Content-Type': 'application/json'});
   }
 
   Response _infoHandler(Request request) {
@@ -400,7 +444,7 @@ class ServerService {
     else {
       final directory = Directory(storagePath);
       if (!await directory.exists()) {
-        print('Upload error: storage directory missing -> $storagePath');
+        _log('Upload error: storage directory missing -> $storagePath');
         return Response.internalServerError(body: 'Documents directory not found.');
       }
 
@@ -413,11 +457,11 @@ class ServerService {
           sink.add(chunk);
         }
         await sink.close();
-        print('Upload success: ${p.basename(file.path)} bytes=$totalBytes');
+        _log('Upload success: ${p.basename(file.path)} bytes=$totalBytes');
         return Response.ok('File uploaded successfully: ${p.basename(file.path)}');
       } catch (e, st) {
         await sink.close();
-        print('Upload error: $e\n$st');
+        _log('Upload error: $e\n$st');
         return Response.internalServerError(body: 'Failed to save file: $e');
       }
     }
@@ -599,7 +643,7 @@ class ServerService {
       return Response.ok(thumbnailBytes, headers: {'Content-Type': 'image/jpeg'});
 
     } catch (e) {
-      print('Thumbnail generation error: $e');
+      _log('Thumbnail generation error: $e');
       return Response.internalServerError(body: 'Failed to generate thumbnail.');
     }
   }
@@ -802,6 +846,8 @@ class ServerService {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
       final text = (params['text'] as String?)?.trim();
+      final rawTag = (params['tag'] as String?)?.trim();
+      final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
 
       if (text == null || text.isEmpty) {
         return Response.badRequest(
@@ -820,6 +866,7 @@ class ServerService {
       final item = ClipboardItem(
         id: _generateClipboardId(),
         text: text,
+        tag: tag,
         createdAt: DateTime.now(),
       );
 
@@ -939,7 +986,7 @@ class ServerService {
       final path = request.url.path;
 
       // /api/で始まらないパス、または認証が不要なAPIパスはそのまま通す
-      if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth') {
+      if (!path.startsWith('api/') || path == 'api/info' || path == 'api/auth' || path == 'api/health') {
         return innerHandler(request);
       }
 
@@ -949,7 +996,7 @@ class ServerService {
       }
 
       final cookieHeader = request.headers['cookie'];
-      print('Auth middleware: Received cookie header: $cookieHeader');
+      _log('Auth middleware: Received cookie header: $cookieHeader');
       String? token;
 
       if (cookieHeader != null) {
@@ -966,7 +1013,7 @@ class ServerService {
         }
       }
 
-      print('Auth middleware: Parsed token: $token');
+      _log('Auth middleware: Parsed token: $token');
 
       // トークンを検証
       if (token != null && _sessions.contains(token)) {
@@ -1022,14 +1069,21 @@ class ServerService {
     }
     await _webRootDir!.create(recursive: true);
 
-    // CLIモードでは実行ファイルと同じディレクトリにあるassetsを使用
+    // CLIモードでは実行ファイルのバンドル/ディレクトリからassetsを探索
     final executablePath = Platform.resolvedExecutable;
     final executableDir = p.dirname(executablePath);
 
-    // アセットの探索パス
+    // アセットの探索パス（プラットフォーム別）
     final possiblePaths = [
+      // Linux: <dir>/data/flutter_assets/assets/web/index.html
       p.join(executableDir, 'data', 'flutter_assets', 'assets', 'web', 'index.html'),
+      // macOS .app: Contents/MacOS/../Frameworks/App.framework/Versions/A/Resources/flutter_assets/...
+      p.join(executableDir, '..', 'Frameworks', 'App.framework', 'Versions', 'A', 'Resources', 'flutter_assets', 'assets', 'web', 'index.html'),
+      // macOS .app (alternative)
+      p.join(executableDir, '..', 'Frameworks', 'App.framework', 'Resources', 'flutter_assets', 'assets', 'web', 'index.html'),
+      // Windows/generic: <dir>/assets/web/index.html
       p.join(executableDir, 'assets', 'web', 'index.html'),
+      // Development fallback
       p.join(Directory.current.path, 'assets', 'web', 'index.html'),
     ];
 
@@ -1083,9 +1137,11 @@ class ServerService {
     String? storagePath,
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
+    bool verboseLogging = false,
   }) async {
     if (_server != null) return;
 
+    _verboseLogging = verboseLogging;
     _operationMode = operationMode;
     _authMode = authMode;
 
@@ -1101,7 +1157,7 @@ class ServerService {
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
-    print('Your PIN is: $_pin');
+    _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     try {
       await _initCli(storagePath);
@@ -1118,12 +1174,13 @@ class ServerService {
 
       final cascade = Cascade().add(apiHandler).add(staticHandler);
 
-      final handler =
-          const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
+      // verbose時のみリクエストログ出力、通常は無し
+      final pipeline = const Pipeline();
+      final handler = verboseLogging
+          ? pipeline.addMiddleware(logRequests()).addHandler(cascade.handler)
+          : pipeline.addHandler(cascade.handler);
 
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
-      print('Serving at http://${_server!.address.host}:${_server!.port}');
-      print('Selected IP for display: http://$_ipAddress:$port');
     } catch (e) {
       print('Error starting server: $e');
       await stopServer();
@@ -1155,7 +1212,8 @@ class ServerService {
     _sessions.clear();
     _failedAttempts.clear();
     _lockoutUntil.clear();
-    print('Your PIN is: $_pin'); // デバッグ用
+    _startedAt = DateTime.now().millisecondsSinceEpoch;
+    _log('Your PIN is: $_pin');
 
     try {
       await _init();
@@ -1179,10 +1237,10 @@ class ServerService {
 
       // anyIPv4でリッスンすることで、Tailscale IPなど特定のインターフェースにもアクセス可能
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
-      print('Serving at http://${_server!.address.host}:${_server!.port}');
-      print('Selected IP for display: http://$_ipAddress:$port');
+      _log('Serving at http://${_server!.address.host}:${_server!.port}');
+      _log('Selected IP for display: http://$_ipAddress:$port');
     } catch (e) {
-      print('Error starting server: $e');
+      _log('Error starting server: $e');
       await stopServer(); // Ensure cleanup on partial start
       rethrow;
     }
@@ -1205,7 +1263,7 @@ class ServerService {
     } catch (_) {
       // CLIモードでは無視
     }
-    print('Server stopped.');
+    _log('Server stopped.');
   }
 
   // SAF ディレクトリを選択するメソッド
@@ -1219,27 +1277,13 @@ class ServerService {
           _displayPath = _getAndroidSafDisplayPath(uri);
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('saf_directory_uri', uri);
-          print('SAF Directory URI selected and persisted: $uri');
+          _log('SAF Directory URI selected and persisted: $uri');
         } else {
-          print('SAF Directory selection cancelled.');
+          _log('SAF Directory selection cancelled.');
         }
       } else if (Platform.isIOS) {
-        // iOS: file_picker を使用してディレクトリを選択させる
-        final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
-        if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
-          await _ensureDirectoryExists(selectedDirectory);
-          _fallbackStoragePath = selectedDirectory;
-          
-          final packageInfo = await PackageInfo.fromPlatform();
-          final docDir = await getApplicationDocumentsDirectory();
-
-          _displayPath = _getIosDisplayPath(selectedDirectory, packageInfo.appName, docDir.path);
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('selected_directory_path', selectedDirectory);
-          print('iOS directory selected and persisted: $selectedDirectory');
-        } else {
-          print('Directory selection cancelled.');
-        } 
+        // iOSではアプリ内Documentsフォルダ固定のため、フォルダ選択は無効
+        return;
         // Windows, macOS, Linux: file_picker を使用
       } else {
         final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
@@ -1249,13 +1293,13 @@ class ServerService {
           _displayPath = selectedDirectory;
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('selected_directory_path', selectedDirectory);
-          print('Directory selected and persisted: $selectedDirectory');
+          _log('Directory selected and persisted: $selectedDirectory');
         } else {
-          print('Directory selection cancelled.');
+          _log('Directory selection cancelled.');
         }
       }
     } on PlatformException catch (e) {
-      print("Failed to select directory: '${e.message}'.");
+      _log("Failed to select directory: '${e.message}'.");
     }
   }
 
@@ -1272,7 +1316,7 @@ class ServerService {
     _safDirectoryUri = prefs.getString('saf_directory_uri');
     if (_safDirectoryUri != null) {
       _displayPath = _getAndroidSafDisplayPath(_safDirectoryUri!);
-      print('Loaded persisted SAF Directory URI: $_safDirectoryUri');
+      _log('Loaded persisted SAF Directory URI: $_safDirectoryUri');
       // ここでネイティブ側にもURIを渡し、アクセス権を再確認させるなどの処理が必要になる可能性
     }
 
@@ -1290,11 +1334,11 @@ class ServerService {
           } else {
             _displayPath = savedPath;
           }
-          print('Loaded persisted directory path: $savedPath');
+          _log('Loaded persisted directory path: $savedPath');
         } else {
           // 保存されたフォルダが存在しない場合は設定をクリア
           await prefs.remove('selected_directory_path');
-          print('Persisted directory no longer exists, reverted to default: $savedPath');
+          _log('Persisted directory no longer exists, reverted to default: $savedPath');
         }
       }
     }
@@ -1327,9 +1371,9 @@ class ServerService {
         return false;
       }
     } on PlatformException catch (e) {
-      print('Failed to open folder: ${e.message}');
+      _log('Failed to open folder: ${e.message}');
     } catch (e) {
-      print('Failed to open folder: $e');
+      _log('Failed to open folder: $e');
     }
     return false;
   }
