@@ -3,6 +3,11 @@
 # エラーが発生したら即座に停止するように設定
 set -e
 
+echo "=========================================="
+echo "[CI_SCRIPTS] macos/ci_scripts/ci_post_clone.sh"
+echo "[CI_SCRIPTS] PWD: $(pwd)"
+echo "=========================================="
+
 # 1. Flutter SDKのクローン
 git clone https://github.com/flutter/flutter.git --depth 1 -b stable $HOME/flutter
 export PATH="$PATH:$HOME/flutter/bin"
