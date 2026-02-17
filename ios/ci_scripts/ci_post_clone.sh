@@ -12,14 +12,13 @@ echo "=========================================="
 git clone https://github.com/flutter/flutter.git --depth 1 -b stable $HOME/flutter
 export PATH="$PATH:$HOME/flutter/bin"
 
-# 2. プロジェクトルートに戻ってpub get
-# ci_scripts の中から実行されるので、cd .. でルートに戻る
+# 2. プロジェクトルートに戻ってFlutter設定
+# ci_scripts の中から実行されるので、cd ../.. でルートに戻る
 cd ../..
 flutter precache --ios
 flutter pub get
 
-# 3. CocoaPodsのインストール（Xcode Cloudはbrewが遅い場合があるので、gemを検討）
-# すでに入っている場合はスキップ
+# 3. CocoaPodsのインストール
 if ! command -v pod &> /dev/null; then
     sudo gem install cocoapods
 fi

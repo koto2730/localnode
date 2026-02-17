@@ -12,9 +12,10 @@ echo "=========================================="
 git clone https://github.com/flutter/flutter.git --depth 1 -b stable $HOME/flutter
 export PATH="$PATH:$HOME/flutter/bin"
 
-# 2. プロジェクトルートに戻ってpub get
+# 2. プロジェクトルートに戻ってFlutter設定
 # ci_scripts の中から実行されるので、cd ../.. でルートに戻る
 cd ../..
+flutter config --enable-macos-desktop
 flutter precache --macos
 flutter pub get
 
