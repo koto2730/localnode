@@ -19,6 +19,9 @@ flutter config --enable-macos-desktop
 flutter precache --macos
 flutter pub get
 
+# ephemeral ファイル（FlutterInputs.xcfilelist等）を生成
+flutter build macos --config-only
+
 # 3. CocoaPodsのインストール
 if ! command -v pod &> /dev/null; then
     sudo gem install cocoapods
