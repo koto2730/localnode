@@ -12,6 +12,14 @@ void CreateAndAttachConsole();
 // Returns true if successfully attached.
 bool AttachParentConsole();
 
+// Saves the current console input mode so it can be restored on exit.
+// Call this before the Flutter engine modifies the console state.
+void SaveConsoleInputMode();
+
+// Restores the console input mode saved by SaveConsoleInputMode().
+// Register with atexit() to prevent terminal corruption after exit (#78).
+void RestoreConsoleInputMode();
+
 // Returns true if the command line arguments contain the --cli flag.
 bool HasCliFlag();
 

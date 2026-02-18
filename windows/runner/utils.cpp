@@ -7,6 +7,54 @@
 
 #include <iostream>
 
+// Saved console input mode for restoration on exit (#78).
+static DWORD g_savedConsoleInputMode = 0;
+static bool g_consoleModesSaved = false;
+
+// Configures the Win32 stdin handle and console input mode for CLI use.
+// Dart's dart:io reads via GetStdHandle(STD_INPUT_HANDLE) directly, so
+// freopen_s alone is insufficient for a WIN32-subsystem process.
+static void SetupConsoleInput() {
+  HANDLE hConIn = ::CreateFile(
+      L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE,
+      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hConIn == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  // Update the Win32 stdin handle so Dart's dart:io can read from it (#76).
+  ::SetStdHandle(STD_INPUT_HANDLE, hConIn);
+
+  // Save the original mode before any modification, for restoration on
+  // exit to prevent the terminal from being left in a broken state (#78).
+  DWORD mode = 0;
+  if (::GetConsoleMode(hConIn, &mode)) {
+    g_savedConsoleInputMode = mode;
+    g_consoleModesSaved = true;
+    // ENABLE_PROCESSED_INPUT ensures Ctrl+C generates a CTRL_C_EVENT signal
+    // rather than being delivered as a raw character, allowing Dart's
+    // ProcessSignal.sigint handler to fire reliably (#77).
+    ::SetConsoleMode(hConIn, mode | ENABLE_PROCESSED_INPUT);
+  }
+}
+
+void SaveConsoleInputMode() {
+  HANDLE hIn = ::GetStdHandle(STD_INPUT_HANDLE);
+  if (hIn != INVALID_HANDLE_VALUE && !g_consoleModesSaved) {
+    if (::GetConsoleMode(hIn, &g_savedConsoleInputMode)) {
+      g_consoleModesSaved = true;
+    }
+  }
+}
+
+void RestoreConsoleInputMode() {
+  if (!g_consoleModesSaved) return;
+  HANDLE hIn = ::GetStdHandle(STD_INPUT_HANDLE);
+  if (hIn != INVALID_HANDLE_VALUE) {
+    ::SetConsoleMode(hIn, g_savedConsoleInputMode);
+  }
+}
+
 void CreateAndAttachConsole() {
   if (::AllocConsole()) {
     FILE *unused;
@@ -16,6 +64,8 @@ void CreateAndAttachConsole() {
     if (freopen_s(&unused, "CONOUT$", "w", stderr)) {
       _dup2(_fileno(stdout), 2);
     }
+    freopen_s(&unused, "CONIN$", "r", stdin);
+    SetupConsoleInput();
     std::ios::sync_with_stdio();
     FlutterDesktopResyncOutputStreams();
   }
@@ -27,6 +77,7 @@ bool AttachParentConsole() {
     freopen_s(&unused, "CONOUT$", "w", stdout);
     freopen_s(&unused, "CONOUT$", "w", stderr);
     freopen_s(&unused, "CONIN$", "r", stdin);
+    SetupConsoleInput();
     std::ios::sync_with_stdio();
     FlutterDesktopResyncOutputStreams();
     return true;
