@@ -42,7 +42,8 @@ bool HasCliFlag() {
   }
   bool found = false;
   for (int i = 1; i < argc; i++) {
-    if (wcscmp(argv[i], L"--cli") == 0) {
+    if (wcscmp(argv[i], L"--cli") == 0 || wcscmp(argv[i], L"--help") == 0 ||
+        wcscmp(argv[i], L"-h") == 0) {
       found = true;
       break;
     }

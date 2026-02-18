@@ -68,6 +68,27 @@ static gboolean my_application_local_command_line(GApplication* application, gch
   // Strip out the first argument as it is the binary name.
   self->dart_entrypoint_arguments = g_strdupv(*arguments + 1);
 
+  // Check if running in headless/CLI mode.
+  gboolean is_headless = FALSE;
+  for (gchar** arg = self->dart_entrypoint_arguments; arg != nullptr && *arg != nullptr; arg++) {
+    if (g_strcmp0(*arg, "--cli") == 0 || g_strcmp0(*arg, "--help") == 0 ||
+        g_strcmp0(*arg, "-h") == 0) {
+      is_headless = TRUE;
+      break;
+    }
+  }
+
+  // In GUI mode, verify that a display is available.
+  if (!is_headless) {
+    const gchar* display = g_getenv("DISPLAY");
+    const gchar* wayland_display = g_getenv("WAYLAND_DISPLAY");
+    if (display == nullptr && wayland_display == nullptr) {
+      g_printerr("Error: No display detected. Use --cli flag to run in headless mode.\n");
+      *exit_status = 1;
+      return TRUE;
+    }
+  }
+
   g_autoptr(GError) error = nullptr;
   if (!g_application_register(application, nullptr, &error)) {
      g_warning("Failed to register: %s", error->message);
