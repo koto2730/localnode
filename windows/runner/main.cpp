@@ -11,6 +11,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   if (cli_mode) {
     // CLI mode: attach to parent console for stdout/stderr output.
+    // Register console mode restoration before attaching so it runs on exit,
+    // preventing the terminal from being left in a broken state (#78).
+    atexit(RestoreConsoleInputMode);
     if (!AttachParentConsole()) {
       CreateAndAttachConsole();
     }
