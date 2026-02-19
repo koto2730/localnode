@@ -131,9 +131,13 @@ class ServerNotifier extends Notifier<ServerState> {
     if (kIsWeb) return; // Webでは実行しない
     await _serverService.initializePaths();
     final ips = await _serverService.getAvailableIpAddresses();
+    final current = state.selectedIpAddress;
+    final selected = (current != null && ips.contains(current))
+        ? current
+        : (ips.isNotEmpty ? ips.first : null);
     state = state.copyWith(
       availableIpAddresses: ips,
-      selectedIpAddress: ips.isNotEmpty ? ips.first : null,
+      selectedIpAddress: selected,
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
