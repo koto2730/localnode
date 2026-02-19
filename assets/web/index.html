@@ -491,13 +491,7 @@
                     if (uploadFormEl) uploadFormEl.style.display = 'none';
                     // 全削除ボタンを非表示
                     deleteAllBtn.style.display = 'none';
-                    // クリップボード入力エリアを非表示
-                    if (clipboardTagInput) clipboardTagInput.style.display = 'none';
-                    const clipInput = document.querySelector('.clipboard-input');
-                    if (clipInput) clipInput.style.display = 'none';
-                    // 全クリアボタンを非表示
-                    clearClipboardBtn.style.display = 'none';
-                    // モードインジケータ表示
+                    // モードインジケータ表示（クリップボードは引き続き使用可能）
                     if (modeIndicator) {
                         modeIndicator.style.display = 'block';
                         modeIndicator.innerHTML = '<span style="background:#e3f2fd; color:#1565c0; padding:4px 12px; border-radius:4px; font-size:0.9rem;">ダウンロード専用モード</span>';

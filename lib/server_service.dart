@@ -854,9 +854,6 @@ class ServerService {
 
   /// POST /api/clipboard - テキスト追加
   Future<Response> _postClipboardHandler(Request request) async {
-    final guard = _checkDownloadOnlyMode();
-    if (guard != null) return guard;
-
     try {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
@@ -908,9 +905,6 @@ class ServerService {
 
   /// DELETE /api/clipboard/<id> - 個別アイテム削除
   Response _deleteClipboardItemHandler(Request request, String id) {
-    final guard = _checkDownloadOnlyMode();
-    if (guard != null) return guard;
-
     final index = _clipboardItems.indexWhere((item) => item.id == id);
     if (index == -1) {
       return Response.notFound(
@@ -930,9 +924,6 @@ class ServerService {
 
   /// DELETE /api/clipboard - 全アイテム削除
   Response _clearClipboardHandler(Request request) {
-    final guard = _checkDownloadOnlyMode();
-    if (guard != null) return guard;
-
     final count = _clipboardItems.length;
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
