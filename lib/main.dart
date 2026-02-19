@@ -549,8 +549,8 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
         ],
       ),
-      body: Center(
-        child: SingleChildScrollView(
+      body: SingleChildScrollView(
+        child: Center(
           child: Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
@@ -690,12 +690,14 @@ class _HomePageState extends ConsumerState<HomePage> {
                 counterText: '',
               ),
               keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
               textAlign: TextAlign.center,
               maxLength: 4,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               onChanged: (value) {
                 if (value.length == 4) {
                   notifier.setFixedPin(value);
+                  FocusScope.of(context).unfocus();
                 }
               },
             ),
