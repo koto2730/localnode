@@ -223,36 +223,15 @@ class CliRunner {
 
     stdout.writeln('');
 
-    if (Platform.isWindows) {
-      // Windows: ASCII文字でQRコード出力（Unicode block文字による表示崩れ防止）
-      for (int y = 0; y < qrImage.moduleCount; y++) {
-        final buffer = StringBuffer('  ');
-        for (int x = 0; x < qrImage.moduleCount; x++) {
-          buffer.write(qrImage.isDark(y, x) ? '##' : '  ');
-        }
-        stdout.writeln(buffer.toString());
+    // 全プラットフォーム共通: Unicode全角ブロック文字を使用。
+    // モジュールあたり2文字幅×1行高で、等幅フォントでほぼ正方形になる。
+    // 半ブロック文字(▀/▄)の行間接合で発生する黒線アーティファクトを回避。
+    for (int y = 0; y < qrImage.moduleCount; y++) {
+      final buffer = StringBuffer('  ');
+      for (int x = 0; x < qrImage.moduleCount; x++) {
+        buffer.write(qrImage.isDark(y, x) ? '\u2588\u2588' : '  ');
       }
-    } else {
-      // macOS/Linux: Unicode block文字で2行を1行にまとめて縦横比を調整
-      for (int y = 0; y < qrImage.moduleCount; y += 2) {
-        final buffer = StringBuffer('  ');
-        for (int x = 0; x < qrImage.moduleCount; x++) {
-          final top = qrImage.isDark(y, x);
-          final bottom =
-              (y + 1 < qrImage.moduleCount) ? qrImage.isDark(y + 1, x) : false;
-
-          if (top && bottom) {
-            buffer.write('\u2588'); // █ Full block
-          } else if (top && !bottom) {
-            buffer.write('\u2580'); // ▀ Upper half block
-          } else if (!top && bottom) {
-            buffer.write('\u2584'); // ▄ Lower half block
-          } else {
-            buffer.write(' ');
-          }
-        }
-        stdout.writeln(buffer.toString());
-      }
+      stdout.writeln(buffer.toString());
     }
   }
 

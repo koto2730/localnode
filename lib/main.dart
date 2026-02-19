@@ -131,9 +131,13 @@ class ServerNotifier extends Notifier<ServerState> {
     if (kIsWeb) return; // Webでは実行しない
     await _serverService.initializePaths();
     final ips = await _serverService.getAvailableIpAddresses();
+    final current = state.selectedIpAddress;
+    final selected = (current != null && ips.contains(current))
+        ? current
+        : (ips.isNotEmpty ? ips.first : null);
     state = state.copyWith(
       availableIpAddresses: ips,
-      selectedIpAddress: ips.isNotEmpty ? ips.first : null,
+      selectedIpAddress: selected,
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
@@ -545,8 +549,8 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
         ],
       ),
-      body: Center(
-        child: SingleChildScrollView(
+      body: SingleChildScrollView(
+        child: Center(
           child: Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
@@ -669,6 +673,11 @@ class _HomePageState extends ConsumerState<HomePage> {
           selected: {serverState.authMode},
           onSelectionChanged: (Set<AuthMode> newSelection) {
             notifier.setAuthMode(newSelection.first);
+            // 固定PINモードに戻ったとき、コントローラに残っているPINをstateに同期する
+            if (newSelection.first == AuthMode.fixedPin &&
+                _fixedPinController.text.length == 4) {
+              notifier.setFixedPin(_fixedPinController.text);
+            }
           },
         ),
 
@@ -686,12 +695,14 @@ class _HomePageState extends ConsumerState<HomePage> {
                 counterText: '',
               ),
               keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
               textAlign: TextAlign.center,
               maxLength: 4,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               onChanged: (value) {
                 if (value.length == 4) {
                   notifier.setFixedPin(value);
+                  FocusScope.of(context).unfocus();
                 }
               },
             ),

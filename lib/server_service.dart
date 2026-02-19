@@ -50,6 +50,7 @@ class ClipboardItem {
 class ServerService {
   static const _safPlatform = MethodChannel('com.ictglab.localnode/saf_storage');
   static const _folderPlatform = MethodChannel('com.ictglab.localnode/folder');
+  static const _storagePlatform = MethodChannel('com.ictglab.localnode/storage');
   String? _safDirectoryUri; // 選択されたSAFディレクトリURI
   HttpServer? _server;
   String? _ipAddress;
@@ -108,6 +109,20 @@ class ServerService {
     if (Platform.isIOS) {
       _fallbackStoragePath = docDir.path;
       _displayPath = 'On My iPhone/$appName';
+    } else if (Platform.isMacOS) {
+      // macOS: ユーザーのDownloadsフォルダをデフォルトに使用
+      try {
+        final downloadsPath = await _storagePlatform.invokeMethod<String>('getDownloadsDirectory');
+        if (downloadsPath != null) {
+          _fallbackStoragePath = downloadsPath;
+          _displayPath = downloadsPath;
+        }
+      } catch (_) {}
+      // フォールバック: Downloadsが取得できなかった場合はDocumentsを使用
+      if (_fallbackStoragePath == null) {
+        _fallbackStoragePath = p.join(docDir.path, appName);
+        _displayPath = p.join(docDir.path, appName);
+      }
     } else {
       _fallbackStoragePath = p.join(docDir.path, appName);
       _displayPath = p.join(docDir.path, appName);
@@ -839,9 +854,6 @@ class ServerService {
 
   /// POST /api/clipboard - テキスト追加
   Future<Response> _postClipboardHandler(Request request) async {
-    final guard = _checkDownloadOnlyMode();
-    if (guard != null) return guard;
-
     try {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
@@ -893,9 +905,6 @@ class ServerService {
 
   /// DELETE /api/clipboard/<id> - 個別アイテム削除
   Response _deleteClipboardItemHandler(Request request, String id) {
-    final guard = _checkDownloadOnlyMode();
-    if (guard != null) return guard;
-
     final index = _clipboardItems.indexWhere((item) => item.id == id);
     if (index == -1) {
       return Response.notFound(
@@ -915,9 +924,6 @@ class ServerService {
 
   /// DELETE /api/clipboard - 全アイテム削除
   Response _clearClipboardHandler(Request request) {
-    final guard = _checkDownloadOnlyMode();
-    if (guard != null) return guard;
-
     final count = _clipboardItems.length;
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
