@@ -673,6 +673,11 @@ class _HomePageState extends ConsumerState<HomePage> {
           selected: {serverState.authMode},
           onSelectionChanged: (Set<AuthMode> newSelection) {
             notifier.setAuthMode(newSelection.first);
+            // 固定PINモードに戻ったとき、コントローラに残っているPINをstateに同期する
+            if (newSelection.first == AuthMode.fixedPin &&
+                _fixedPinController.text.length == 4) {
+              notifier.setFixedPin(_fixedPinController.text);
+            }
           },
         ),
 
