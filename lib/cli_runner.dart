@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:args/args.dart';
@@ -61,6 +62,7 @@ class CliRunner {
 
     if (results['help'] as bool) {
       _printUsage(parser);
+      _flushWindowsConsoleInput(); // 余剰入力がシェルに渡るのを防ぐ (#84)
       exit(0);
     }
 
@@ -318,10 +320,7 @@ class CliRunner {
 
     _clipboardTimer?.cancel();
 
-    // Windowsでコンソール表示崩れを防止
-    if (Platform.isWindows) {
-      stdout.write('\x1B[0m');
-    }
+    _restoreWindowsConsoleMode(); // 終了前にコンソールモードを復元 (#84)
 
     stdout.writeln('');
     stdout.writeln('Shutting down...');
@@ -333,5 +332,34 @@ class CliRunner {
   Future<void> _waitForever() async {
     final completer = Completer<void>();
     await completer.future;
+  }
+
+  /// [#84] --help 後の余剰入力（q など）がシェルに流れないよう入力バッファを空にする
+  void _flushWindowsConsoleInput() {
+    if (!Platform.isWindows) return;
+    try {
+      final kernel32 = DynamicLibrary.open('kernel32.dll');
+      final getStdHandle = kernel32.lookupFunction<
+          IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
+      final flushInput = kernel32.lookupFunction<
+          Int32 Function(IntPtr), int Function(int)>('FlushConsoleInputBuffer');
+      flushInput(getStdHandle(0xFFFFFFF6)); // STD_INPUT_HANDLE = (DWORD)(-10)
+    } catch (_) {}
+  }
+
+  /// [#84] 終了前にコンソール入力モードを通常状態に戻す
+  /// Dart の exit() は ExitProcess() 経由のため C++ atexit が保証されない
+  void _restoreWindowsConsoleMode() {
+    if (!Platform.isWindows) return;
+    try {
+      final kernel32 = DynamicLibrary.open('kernel32.dll');
+      final getStdHandle = kernel32.lookupFunction<
+          IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
+      final setMode = kernel32.lookupFunction<
+          Int32 Function(IntPtr, Uint32),
+          int Function(int, int)>('SetConsoleMode');
+      // ENABLE_PROCESSED_INPUT(0x1) | ENABLE_LINE_INPUT(0x2) | ENABLE_ECHO_INPUT(0x4)
+      setMode(getStdHandle(0xFFFFFFF6), 0x0007);
+    } catch (_) {}
   }
 }

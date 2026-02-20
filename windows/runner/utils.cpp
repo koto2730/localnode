@@ -34,7 +34,11 @@ static void SetupConsoleInput() {
     // ENABLE_PROCESSED_INPUT ensures Ctrl+C generates a CTRL_C_EVENT signal
     // rather than being delivered as a raw character, allowing Dart's
     // ProcessSignal.sigint handler to fire reliably (#77).
-    ::SetConsoleMode(hConIn, mode | ENABLE_PROCESSED_INPUT);
+    // Explicitly set ENABLE_ECHO_INPUT and ENABLE_LINE_INPUT in case the
+    // parent shell had modified these flags, ensuring typed characters are
+    // echoed during IP selection prompts (#84).
+    ::SetConsoleMode(hConIn,
+        mode | ENABLE_PROCESSED_INPUT | ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT);
   }
 }
 
