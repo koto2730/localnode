@@ -1224,7 +1224,11 @@ class ServerService {
     try {
       await _init();
       await _deployAssets(); // アセットを展開
-      WakelockPlus.enable();
+      try {
+        WakelockPlus.enable();
+      } catch (_) {
+        // WSL 等の Linux 環境では DBus ScreenSaver サービスが存在しないため無視
+      }
 
       _ipAddress = ipAddress;
       _port = port;
@@ -1306,6 +1310,10 @@ class ServerService {
       }
     } on PlatformException catch (e) {
       _log("Failed to select directory: '${e.message}'.");
+    } catch (e) {
+      // WSL 等の環境では DBus (XDG Desktop Portal) が利用できず、
+      // PlatformException 以外の例外が発生するため汎用的に捕捉する
+      _log("Failed to select directory: $e");
     }
   }
 
