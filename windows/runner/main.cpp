@@ -48,6 +48,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   if (cli_mode) {
     ::ShowWindow(window.GetHandle(), SW_HIDE);
     window.SetHeadless(true);
+    // Restore focus to the parent console after hiding the Flutter window
+    // so IP selection prompts receive keyboard input correctly (#84).
+    HWND hConsole = ::GetConsoleWindow();
+    if (hConsole != nullptr) {
+      ::SetForegroundWindow(hConsole);
+    }
   }
 
   ::MSG msg;
