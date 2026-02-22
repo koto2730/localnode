@@ -1,30 +1,24 @@
 #include "my_application.h"
 
-#include <cstdlib>
+#include <cstdio>
 #include <cstring>
 
 int main(int argc, char** argv) {
-  // If --cli or --help is specified, use offscreen GDK backend to avoid
-  // requiring a display. This fixes headless environments (e.g. WSL,
-  // Raspberry Pi) and prevents a black window in --cli mode (#79, #85).
-  bool is_cli_mode = false;
+  // On Linux the standalone localnode-cli binary handles CLI/headless mode
+  // without any GTK dependency.  Redirect users before GTK is initialised,
+  // because library constructors (GTK, EGL) may run before we can inspect
+  // argv if we let execution continue to my_application_new() (#79, #85).
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--cli") == 0 || strcmp(argv[i], "--help") == 0 ||
         strcmp(argv[i], "-h") == 0) {
-      is_cli_mode = true;
-      setenv("GDK_BACKEND", "offscreen", 0);
-      break;
-    }
-  }
-
-  // In truly headless environments (no DISPLAY, no WAYLAND_DISPLAY), force
-  // software OpenGL so Flutter's EGL initialisation succeeds without a
-  // hardware GPU (e.g. WSL without WSLg) (#85).
-  if (is_cli_mode) {
-    const char* display = getenv("DISPLAY");
-    const char* wayland  = getenv("WAYLAND_DISPLAY");
-    if (display == nullptr && wayland == nullptr) {
-      setenv("LIBGL_ALWAYS_SOFTWARE", "1", 0);
+      puts("CLI mode is not supported by the localnode GUI binary on Linux.\n"
+           "Please use the localnode-cli binary included in this bundle:\n"
+           "\n"
+           "  localnode-cli [options]\n"
+           "  localnode-cli --help\n"
+           "\n"
+           "localnode-cli runs without a display and has no GTK dependency.");
+      return 0;
     }
   }
 
