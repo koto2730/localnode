@@ -55,6 +55,7 @@ dependencies:
   unorm_dart: ^0.2.0
   args: ^2.4.2
   qr: ^3.0.1
+  path: ^1.9.0
 
 dev_dependencies:
   flutter_test:
@@ -98,6 +99,11 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - assets/web/
+
+  fonts:
+    - family: NotoSansCJK
+      fonts:
+        - asset: assets/fonts/NotoSansCJK-Regular.ttc
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/assets-and-images/#resolution-aware

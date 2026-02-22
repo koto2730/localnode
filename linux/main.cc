@@ -1,80 +1,26 @@
 #include "my_application.h"
 
-#include <cstdlib>
+#include <cstdio>
 #include <cstring>
 
-// Registers the bundled fonts/ directory next to the binary with fontconfig
-// so that CJK and other multibyte characters render correctly on minimal
-// Linux systems (e.g. WSL, Raspberry Pi) that lack system CJK fonts (#72).
-// Generates a temporary fonts.conf that prepends the bundled font directory
-// to the system font search path, then sets FONTCONFIG_FILE to point to it.
-// Only runs when FONTCONFIG_FILE is not already set by the user.
-static void setup_bundled_fonts() {
-  if (g_getenv("FONTCONFIG_FILE") != nullptr) {
-    return;  // Respect user-defined fontconfig.
-  }
-
-  gchar* exe_path = g_file_read_link("/proc/self/exe", nullptr);
-  if (exe_path == nullptr) return;
-
-  gchar* exe_dir   = g_path_get_dirname(exe_path);
-  gchar* fonts_dir = g_build_filename(exe_dir, "fonts", nullptr);
-  g_free(exe_path);
-  g_free(exe_dir);
-
-  if (!g_file_test(fonts_dir, G_FILE_TEST_IS_DIR)) {
-    g_free(fonts_dir);
-    return;  // No bundled fonts directory; rely on system fonts.
-  }
-
-  gchar* conf = g_strdup_printf(
-      "<?xml version=\"1.0\"?>\n"
-      "<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n"
-      "<fontconfig>\n"
-      "  <!-- Bundled CJK fonts for systems without system CJK fonts. -->\n"
-      "  <dir>%s</dir>\n"
-      "  <!-- Include system fonts for everything else. -->\n"
-      "  <include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>\n"
-      "</fontconfig>\n",
-      fonts_dir);
-  g_free(fonts_dir);
-
-  gchar* conf_path = g_build_filename(g_get_tmp_dir(),
-                                       "localnode-fonts.conf", nullptr);
-  if (g_file_set_contents(conf_path, conf, -1, nullptr)) {
-    g_setenv("FONTCONFIG_FILE", conf_path, FALSE);
-  }
-  g_free(conf_path);
-  g_free(conf);
-}
-
 int main(int argc, char** argv) {
-  // If --cli or --help is specified, use offscreen GDK backend to avoid
-  // requiring a display. This fixes headless environments (e.g. WSL,
-  // Raspberry Pi) and prevents a black window in --cli mode (#79, #85).
-  bool is_cli_mode = false;
+  // On Linux the standalone localnode-cli binary handles CLI/headless mode
+  // without any GTK dependency.  Redirect users before GTK is initialised,
+  // because library constructors (GTK, EGL) may run before we can inspect
+  // argv if we let execution continue to my_application_new() (#79, #85).
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--cli") == 0 || strcmp(argv[i], "--help") == 0 ||
         strcmp(argv[i], "-h") == 0) {
-      is_cli_mode = true;
-      setenv("GDK_BACKEND", "offscreen", 0);
-      break;
+      puts("CLI mode is not supported by the localnode GUI binary on Linux.\n"
+           "Please use the localnode-cli binary included in this bundle:\n"
+           "\n"
+           "  localnode-cli [options]\n"
+           "  localnode-cli --help\n"
+           "\n"
+           "localnode-cli runs without a display and has no GTK dependency.");
+      return 0;
     }
   }
-
-  // In truly headless environments (no DISPLAY, no WAYLAND_DISPLAY), force
-  // software OpenGL so Flutter's EGL initialisation succeeds without a
-  // hardware GPU (e.g. WSL without WSLg) (#85).
-  if (is_cli_mode) {
-    const char* display = getenv("DISPLAY");
-    const char* wayland  = getenv("WAYLAND_DISPLAY");
-    if (display == nullptr && wayland == nullptr) {
-      setenv("LIBGL_ALWAYS_SOFTWARE", "1", 0);
-    }
-  }
-
-  // Register bundled CJK fonts before GTK/Flutter initialise fontconfig.
-  setup_bundled_fonts();
 
   g_autoptr(MyApplication) app = my_application_new();
   return g_application_run(G_APPLICATION(app), argc, argv);
