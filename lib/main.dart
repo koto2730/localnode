@@ -365,6 +365,7 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
         scaffoldBackgroundColor: Colors.grey[100],
+        fontFamilyFallback: Platform.isLinux ? const ['NotoSansCJK'] : null,
       ),
       home: const HomePage(),
     );
