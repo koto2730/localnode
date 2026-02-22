@@ -152,12 +152,6 @@ jobs:
       - name: Build Linux
         run: flutter build linux --release
 
-      - name: Bundle CJK fonts
-        run: |
-          mkdir -p build/linux/x64/release/bundle/fonts
-          find /usr/share/fonts -name "NotoSansCJK-Regular.ttc" \
-            | head -1 | xargs -I{} cp {} build/linux/x64/release/bundle/fonts/ || true
-
       - name: Create tar.gz archive
         run: tar -czf localnode-linux-x64.tar.gz -C build/linux/x64/release/bundle .
 
@@ -192,12 +186,6 @@ jobs:
 
       - name: Build Linux
         run: flutter build linux --release
-
-      - name: Bundle CJK fonts
-        run: |
-          mkdir -p build/linux/arm64/release/bundle/fonts
-          find /usr/share/fonts -name "NotoSansCJK-Regular.ttc" \
-            | head -1 | xargs -I{} cp {} build/linux/arm64/release/bundle/fonts/ || true
 
       - name: Create tar.gz archive
         run: tar -czf localnode-linux-arm64.tar.gz -C build/linux/arm64/release/bundle .
