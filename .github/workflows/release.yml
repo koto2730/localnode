@@ -152,6 +152,12 @@ jobs:
       - name: Build Linux
         run: flutter build linux --release
 
+      - name: Build localnode-cli (standalone CLI binary, no GTK)
+        run: dart compile exe bin/localnode_cli.dart -o localnode-cli
+
+      - name: Bundle localnode-cli into release directory
+        run: cp localnode-cli build/linux/x64/release/bundle/
+
       - name: Create tar.gz archive
         run: tar -czf localnode-linux-x64.tar.gz -C build/linux/x64/release/bundle .
 
@@ -186,6 +192,12 @@ jobs:
 
       - name: Build Linux
         run: flutter build linux --release
+
+      - name: Build localnode-cli (standalone CLI binary, no GTK)
+        run: dart compile exe bin/localnode_cli.dart -o localnode-cli
+
+      - name: Bundle localnode-cli into release directory
+        run: cp localnode-cli build/linux/arm64/release/bundle/
 
       - name: Create tar.gz archive
         run: tar -czf localnode-linux-arm64.tar.gz -C build/linux/arm64/release/bundle .
