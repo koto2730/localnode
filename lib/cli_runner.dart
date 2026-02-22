@@ -182,6 +182,7 @@ class CliRunner {
 
       try {
         final input = stdin.readLineSync()?.trim();
+        _flushWindowsConsoleInput(); // IP選択後の余剰入力をクリア (#84)
         if (input != null && input.isNotEmpty) {
           final index = int.tryParse(input);
           if (index != null && index >= 1 && index <= ips.length) {
@@ -321,6 +322,7 @@ class CliRunner {
     _clipboardTimer?.cancel();
 
     _restoreWindowsConsoleMode(); // 終了前にコンソールモードを復元 (#84)
+    _flushWindowsConsoleInput(); // 余剰入力（'q'等）がシェルに渡るのを防ぐ (#84)
 
     stdout.writeln('');
     stdout.writeln('Shutting down...');
