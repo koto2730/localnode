@@ -928,7 +928,11 @@ class _HomePageState extends ConsumerState<HomePage> {
         backgroundColor: isRunning ? Colors.redAccent : Colors.lightBlue,
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-        textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        textStyle: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          fontFamilyFallback: Platform.isLinux ? const ['NotoSansCJK'] : null,
+        ),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(30),
         ),
