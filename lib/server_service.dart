@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:math';
 
@@ -647,13 +648,12 @@ class ServerService {
         return Response.internalServerError(body: 'Failed to read image bytes.');
       }
 
-      final image = img.decodeImage(imageBytes);
-      if (image == null) {
-        return Response.internalServerError(body: 'Failed to decode image.');
-      }
-
-      final thumbnail = img.copyResize(image, width: 120);
-      final thumbnailBytes = img.encodeJpg(thumbnail, quality: 85);
+      final thumbnailBytes = await Isolate.run(() {
+        final image = img.decodeImage(imageBytes!);
+        if (image == null) throw Exception('Failed to decode image.');
+        final thumb = img.copyResize(image, width: 120);
+        return Uint8List.fromList(img.encodeJpg(thumb, quality: 85));
+      });
 
       cacheFile.writeAsBytes(thumbnailBytes);
       
