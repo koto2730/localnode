@@ -476,7 +476,7 @@
                 pinModal.style.display = 'none';
                 mainContent.style.display = 'block';
                 fetchFiles();
-                startClipboardPolling();
+                if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
                 applyModeRestrictions();
             };
 
@@ -491,11 +491,17 @@
                     if (uploadFormEl) uploadFormEl.style.display = 'none';
                     // 全削除ボタンを非表示
                     deleteAllBtn.style.display = 'none';
-                    // モードインジケータ表示（クリップボードは引き続き使用可能）
+                    // モードインジケータ表示
                     if (modeIndicator) {
                         modeIndicator.style.display = 'block';
                         modeIndicator.innerHTML = '<span style="background:#e3f2fd; color:#1565c0; padding:4px 12px; border-radius:4px; font-size:0.9rem;">ダウンロード専用モード</span>';
                     }
+                }
+
+                // --no-clipboard 時はクリップボードタブを非表示
+                if (serverInfo.clipboardEnabled === false) {
+                    const clipboardTabBtn = document.querySelector('.tab-btn[data-tab="clipboard"]');
+                    if (clipboardTabBtn) clipboardTabBtn.style.display = 'none';
                 }
             };
 

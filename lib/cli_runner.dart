@@ -125,6 +125,7 @@ class CliRunner {
         operationMode: operationMode,
         authMode: authMode,
         verboseLogging: verbose,
+        clipboardEnabled: !noClipboard,
       );
 
       final url = 'http://$ipAddress:$port';

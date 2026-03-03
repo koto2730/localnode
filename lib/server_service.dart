@@ -64,6 +64,7 @@ class ServerService {
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
   bool _verboseLogging = false;
+  bool _clipboardEnabled = true;
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
@@ -351,11 +352,12 @@ class ServerService {
 
   Response _infoHandler(Request request) {
     final info = {
-      'version': '1.1.0',
+      'version': '1.2.0',
       'name': 'LocalNode Server',
       'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
       'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
       'requiresAuth': _authMode != AuthMode.noPin,
+      'clipboardEnabled': _clipboardEnabled,
     };
     return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
@@ -1144,10 +1146,12 @@ class ServerService {
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     bool verboseLogging = false,
+    bool clipboardEnabled = true,
   }) async {
     if (_server != null) return;
 
     _verboseLogging = verboseLogging;
+    _clipboardEnabled = clipboardEnabled;
     _operationMode = operationMode;
     _authMode = authMode;
 
