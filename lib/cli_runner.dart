@@ -32,6 +32,7 @@ class CliRunner {
           help: 'Operation mode (normal/download-only)',
           defaultsTo: 'normal',
           allowed: ['normal', 'download-only'])
+      ..addOption('name', abbr: 'n', help: 'Server identifier shown in browser tab title', defaultsTo: 'LocalNode')
       ..addFlag('no-pin',
           help: 'Disable PIN authentication', negatable: false)
       ..addFlag('no-clipboard',
@@ -77,6 +78,7 @@ class CliRunner {
     final specifiedIp = results['ip'] as String?;
     final noClipboard = results['no-clipboard'] as bool;
     final verbose = results['verbose'] as bool;
+    final serverName = results['name'] as String;
 
     // モード設定
     final modeStr = results['mode'] as String;
@@ -126,6 +128,7 @@ class CliRunner {
         authMode: authMode,
         verboseLogging: verbose,
         clipboardEnabled: !noClipboard,
+        serverName: serverName,
       );
 
       final url = 'http://$ipAddress:$port';

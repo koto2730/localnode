@@ -66,6 +66,7 @@ class ServerService {
   AuthMode _authMode = AuthMode.randomPin;
   bool _verboseLogging = false;
   bool _clipboardEnabled = true;
+  String _serverName = 'LocalNode';
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
@@ -355,6 +356,7 @@ class ServerService {
     final info = {
       'version': '1.2.0',
       'name': 'LocalNode Server',
+      'serverName': _serverName,
       'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
       'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
       'requiresAuth': _authMode != AuthMode.noPin,
@@ -1147,11 +1149,13 @@ class ServerService {
     AuthMode authMode = AuthMode.randomPin,
     bool verboseLogging = false,
     bool clipboardEnabled = true,
+    String serverName = 'LocalNode',
   }) async {
     if (_server != null) return;
 
     _verboseLogging = verboseLogging;
     _clipboardEnabled = clipboardEnabled;
+    _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
     _operationMode = operationMode;
     _authMode = authMode;
 
@@ -1204,11 +1208,13 @@ class ServerService {
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     String? fixedPin,
+    String serverName = 'LocalNode',
   }) async {
     if (_server != null) return;
 
     _operationMode = operationMode;
     _authMode = authMode;
+    _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
 
     // 認証モードに応じたPIN設定
     switch (authMode) {
