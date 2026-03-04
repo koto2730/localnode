@@ -82,8 +82,8 @@ class ServerService {
   // ブルートフォース保護用
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
-  static const int _maxFailedAttempts = 5;
-  static const Duration _lockoutDuration = Duration(minutes: 5);
+  static const int _maxFailedAttempts = 3;
+  static const Duration _lockoutDuration = Duration(minutes: 10);
 
   final _router = Router();
 
