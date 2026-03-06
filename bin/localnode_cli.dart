@@ -86,6 +86,7 @@ Future<void> main(List<String> args) async {
       downloadOnly: downloadOnly,
       authMode: authMode,
       fixedPin: fixedPin,
+      clipboardEnabled: !noClipboard,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -193,6 +194,13 @@ Future<String> _selectIpAddress() async {
         }
       }
     } catch (_) {}
+  } else {
+    // Non-interactive mode (background launch with &, piped stdin, etc.).
+    // Automatically select the first IP and inform the user via stdout.
+    // Use --ip <address> to specify a different interface (#97).
+    stdout.writeln('Multiple network interfaces detected. '
+        'Running in non-interactive mode; auto-selecting ${addresses.first}.');
+    stdout.writeln('Use --ip <address> to specify a different interface.');
   }
 
   return addresses.first;
@@ -374,6 +382,7 @@ class _CliServer {
   String? _pin;
   _AuthMode _authMode = _AuthMode.randomPin;
   bool _downloadOnly = false;
+  bool _clipboardEnabled = true;
   int _startedAt = 0;
 
   String? _storagePath;
@@ -424,9 +433,11 @@ class _CliServer {
     bool downloadOnly = false,
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
+    bool clipboardEnabled = true,
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
+    _clipboardEnabled = clipboardEnabled;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -695,6 +706,7 @@ class _CliServer {
                   ? 'noPin'
                   : 'randomPin',
           'requiresAuth': _authMode != _AuthMode.noPin,
+          'clipboardEnabled': _clipboardEnabled,
         }),
         headers: {'Content-Type': 'application/json'},
       );

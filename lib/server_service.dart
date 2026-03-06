@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:math';
 
@@ -64,6 +65,8 @@ class ServerService {
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
   bool _verboseLogging = false;
+  bool _clipboardEnabled = true;
+  String _serverName = 'LocalNode';
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
@@ -79,8 +82,8 @@ class ServerService {
   // ブルートフォース保護用
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
-  static const int _maxFailedAttempts = 5;
-  static const Duration _lockoutDuration = Duration(minutes: 5);
+  static const int _maxFailedAttempts = 3;
+  static const Duration _lockoutDuration = Duration(minutes: 10);
 
   final _router = Router();
 
@@ -351,11 +354,13 @@ class ServerService {
 
   Response _infoHandler(Request request) {
     final info = {
-      'version': '1.1.0',
+      'version': '1.2.0',
       'name': 'LocalNode Server',
+      'serverName': _serverName,
       'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
       'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
       'requiresAuth': _authMode != AuthMode.noPin,
+      'clipboardEnabled': _clipboardEnabled,
     };
     return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
@@ -645,13 +650,12 @@ class ServerService {
         return Response.internalServerError(body: 'Failed to read image bytes.');
       }
 
-      final image = img.decodeImage(imageBytes);
-      if (image == null) {
-        return Response.internalServerError(body: 'Failed to decode image.');
-      }
-
-      final thumbnail = img.copyResize(image, width: 120);
-      final thumbnailBytes = img.encodeJpg(thumbnail, quality: 85);
+      final thumbnailBytes = await Isolate.run(() {
+        final image = img.decodeImage(imageBytes!);
+        if (image == null) throw Exception('Failed to decode image.');
+        final thumb = img.copyResize(image, width: 120);
+        return Uint8List.fromList(img.encodeJpg(thumb, quality: 85));
+      });
 
       cacheFile.writeAsBytes(thumbnailBytes);
       
@@ -1144,10 +1148,14 @@ class ServerService {
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     bool verboseLogging = false,
+    bool clipboardEnabled = true,
+    String serverName = 'LocalNode',
   }) async {
     if (_server != null) return;
 
     _verboseLogging = verboseLogging;
+    _clipboardEnabled = clipboardEnabled;
+    _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
     _operationMode = operationMode;
     _authMode = authMode;
 
@@ -1200,11 +1208,13 @@ class ServerService {
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     String? fixedPin,
+    String serverName = 'LocalNode',
   }) async {
     if (_server != null) return;
 
     _operationMode = operationMode;
     _authMode = authMode;
+    _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
 
     // 認証モードに応じたPIN設定
     switch (authMode) {
@@ -1376,9 +1386,10 @@ class ServerService {
         await Process.run('explorer', [storagePath]);
         return true;
       } else if (Platform.isLinux) {
-        // Linux: xdg-openで開く
-        await Process.run('xdg-open', [storagePath]);
-        return true;
+        // Linux: xdg-openで開く。WSL等xdg-openが動作しない環境では
+        // 終了コードが非ゼロになるため、falseを返してパス表示ダイアログに委ねる (#88)
+        final result = await Process.run('xdg-open', [storagePath]);
+        return result.exitCode == 0;
       } else if (Platform.isAndroid || Platform.isIOS) {
         // Android/iOS: SAFやサンドボックスの制限により直接フォルダを開けないため、
         // falseを返してダイアログ表示を促す

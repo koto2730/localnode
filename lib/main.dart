@@ -26,6 +26,7 @@ class ServerState {
     this.operationMode = OperationMode.normal,
     this.authMode = AuthMode.randomPin,
     this.fixedPin,
+    this.serverName = 'LocalNode',
   });
 
   final ServerStatus status;
@@ -38,6 +39,7 @@ class ServerState {
   final OperationMode operationMode;
   final AuthMode authMode;
   final String? fixedPin;
+  final String serverName;
 
   ServerState copyWith({
     ServerStatus? status,
@@ -50,6 +52,7 @@ class ServerState {
     OperationMode? operationMode,
     AuthMode? authMode,
     String? fixedPin,
+    String? serverName,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
@@ -65,6 +68,7 @@ class ServerState {
       operationMode: operationMode ?? this.operationMode,
       authMode: authMode ?? this.authMode,
       fixedPin: clearFixedPin ? null : (fixedPin ?? this.fixedPin),
+      serverName: serverName ?? this.serverName,
     );
   }
 }
@@ -148,6 +152,7 @@ class ServerNotifier extends Notifier<ServerState> {
     final opModeStr = prefs.getString('operation_mode');
     final authModeStr = prefs.getString('auth_mode');
     final savedFixedPin = prefs.getString('fixed_pin');
+    final savedServerName = prefs.getString('server_name') ?? 'LocalNode';
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -162,7 +167,16 @@ class ServerNotifier extends Notifier<ServerState> {
       operationMode: opMode,
       authMode: authMode,
       fixedPin: savedFixedPin,
+      serverName: savedServerName,
     );
+  }
+
+  /// サーバー名を設定して永続化
+  Future<void> setServerName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    final trimmed = name.trim().isEmpty ? 'LocalNode' : name.trim();
+    await prefs.setString('server_name', trimmed);
+    state = state.copyWith(serverName: trimmed);
   }
 
   /// 動作モードを変更して永続化
@@ -222,6 +236,7 @@ class ServerNotifier extends Notifier<ServerState> {
         operationMode: state.operationMode,
         authMode: state.authMode,
         fixedPin: state.fixedPin,
+        serverName: state.serverName,
       );
 
       state = state.copyWith(
@@ -399,23 +414,26 @@ class _HomePageState extends ConsumerState<HomePage> {
   ServerTab _currentTab = ServerTab.connection;
   late final TextEditingController _portController;
   late final TextEditingController _fixedPinController;
+  late final TextEditingController _nameController;
 
   @override
   void initState() {
     super.initState();
     _portController = TextEditingController(text: '8080');
     _fixedPinController = TextEditingController();
+    _nameController = TextEditingController(text: 'LocalNode');
     // Web以外のプラットフォームでのみIPアドレスリストと設定を読み込む
     if (!kIsWeb) {
       Future.microtask(() {
         final notifier = ref.read(serverNotifierProvider.notifier);
         notifier.loadIpAddresses();
         notifier.loadSettings().then((_) {
+          final state = ref.read(serverNotifierProvider);
           // 固定PINが保存されていればコントローラに反映
-          final fixedPin = ref.read(serverNotifierProvider).fixedPin;
-          if (fixedPin != null) {
-            _fixedPinController.text = fixedPin;
+          if (state.fixedPin != null) {
+            _fixedPinController.text = state.fixedPin!;
           }
+          _nameController.text = state.serverName;
         });
       });
     }
@@ -425,6 +443,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   void dispose() {
     _portController.dispose();
     _fixedPinController.dispose();
+    _nameController.dispose();
     super.dispose();
   }
 
@@ -614,6 +633,23 @@ class _HomePageState extends ConsumerState<HomePage> {
         const SizedBox(height: 10),
 
         SizedBox(
+          width: 200,
+          child: TextField(
+            controller: _nameController,
+            decoration: const InputDecoration(
+              labelText: 'サーバー名',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            textAlign: TextAlign.center,
+            onChanged: (value) {
+              notifier.setServerName(value);
+            },
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        SizedBox(
           width: 150,
           child: TextField(
             controller: _portController,
@@ -699,6 +735,8 @@ class _HomePageState extends ConsumerState<HomePage> {
               textInputAction: TextInputAction.done,
               textAlign: TextAlign.center,
               maxLength: 4,
+              obscureText: true,
+              obscuringCharacter: '*',
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               onChanged: (value) {
                 if (value.length == 4) {
@@ -761,7 +799,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                     builder: (context) => AlertDialog(
                       title: const Text('フォルダの場所'),
                       content: Text(
-                        'ファイルアプリで以下の場所を確認してください:\n\n${serverState.storagePath}',
+                        'ファイルマネージャーで以下のパスを開いてください:\n\n${serverState.storagePath}\n\n'
+                        'WSL 環境など xdg-open が利用できない場合は、'
+                        'パスをコピーしてファイルマネージャーのアドレスバーに貼り付けてください。',
                       ),
                       actions: [
                         TextButton(
@@ -928,7 +968,11 @@ class _HomePageState extends ConsumerState<HomePage> {
         backgroundColor: isRunning ? Colors.redAccent : Colors.lightBlue,
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-        textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        textStyle: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          fontFamilyFallback: Platform.isLinux ? const ['NotoSansCJK'] : null,
+        ),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(30),
         ),

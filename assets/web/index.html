@@ -293,8 +293,21 @@
         .btn-delete-clip:hover {
             background-color: #e53935;
         }
+        .section-header-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
         .btn-clear-clip {
             background-color: #ef5350;
+            color: white;
+            padding: 0.4rem 0.8rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .btn-download-clip {
+            background-color: #00796b;
             color: white;
             padding: 0.4rem 0.8rem;
             border: none;
@@ -423,7 +436,10 @@
                 <div class="clipboard-section">
                     <div class="section-header">
                         <h2>📋 クリップボード共有</h2>
-                        <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
+                        <div class="section-header-actions">
+                            <button id="downloadClipboardBtn" class="btn-download-clip" style="display: none;">TXTで保存</button>
+                            <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
+                        </div>
                     </div>
                     <input type="text" id="clipboardTagInput" class="clipboard-tag-input" placeholder="送信元の名前（例: iPhone）" maxlength="30">
                     <div class="clipboard-input">
@@ -476,8 +492,10 @@
                 pinModal.style.display = 'none';
                 mainContent.style.display = 'block';
                 fetchFiles();
-                startClipboardPolling();
+                if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
                 applyModeRestrictions();
+                const name = serverInfo.serverName || 'LocalNode';
+                document.title = name === 'LocalNode' ? 'LocalNode' : `${name}_LocalNode`;
             };
 
             // ダウンロード専用モード時にUI要素を非表示にする
@@ -491,11 +509,17 @@
                     if (uploadFormEl) uploadFormEl.style.display = 'none';
                     // 全削除ボタンを非表示
                     deleteAllBtn.style.display = 'none';
-                    // モードインジケータ表示（クリップボードは引き続き使用可能）
+                    // モードインジケータ表示
                     if (modeIndicator) {
                         modeIndicator.style.display = 'block';
                         modeIndicator.innerHTML = '<span style="background:#e3f2fd; color:#1565c0; padding:4px 12px; border-radius:4px; font-size:0.9rem;">ダウンロード専用モード</span>';
                     }
+                }
+
+                // --no-clipboard 時はクリップボードタブを非表示
+                if (serverInfo.clipboardEnabled === false) {
+                    const clipboardTabBtn = document.querySelector('.tab-btn[data-tab="clipboard"]');
+                    if (clipboardTabBtn) clipboardTabBtn.style.display = 'none';
                 }
             };
 
@@ -701,6 +725,7 @@
             const sendClipboardBtn = document.getElementById('sendClipboardBtn');
             const clipboardList = document.getElementById('clipboardList');
             const clearClipboardBtn = document.getElementById('clearClipboardBtn');
+            const downloadClipboardBtn = document.getElementById('downloadClipboardBtn');
 
             // タグのデフォルト値: UserAgentからデバイス名を簡易抽出
             const getDefaultDeviceName = () => {
@@ -768,7 +793,10 @@
                 }
             };
 
+            let currentClipboardItems = [];
+
             const renderClipboardItems = (items) => {
+                currentClipboardItems = items;
                 const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
 
                 if (items.length === 0) {
@@ -776,10 +804,12 @@
                         ? '<p class="empty-message">クリップボードにアイテムがありません</p>'
                         : '<p class="empty-message">テキストを入力して共有しましょう</p>';
                     clearClipboardBtn.style.display = 'none';
+                    downloadClipboardBtn.style.display = 'none';
                     return;
                 }
 
                 clearClipboardBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
+                downloadClipboardBtn.style.display = 'inline-block';
 
                 clipboardList.innerHTML = items.map(item => `
                     <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
@@ -882,6 +912,20 @@
                     alert(error.message);
                 }
             };
+
+            downloadClipboardBtn.addEventListener('click', () => {
+                const text = currentClipboardItems.map(item => {
+                    const prefix = item.tag ? `[${item.tag}] ` : '';
+                    return `${prefix}${item.text}`;
+                }).join('\n---\n');
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'clipboard.txt';
+                a.click();
+                URL.revokeObjectURL(url);
+            });
 
             clearClipboardBtn.addEventListener('click', async () => {
                 if (!confirm('クリップボードのすべてのアイテムを削除しますか？')) return;
