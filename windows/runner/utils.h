@@ -23,6 +23,11 @@ void RestoreConsoleInputMode();
 // Returns true if the command line arguments contain the --cli flag.
 bool HasCliFlag();
 
+// Injects an Enter key event into the parent console's input buffer so that
+// cmd.exe reprints its prompt at the correct cursor position after the
+// process exits (#96). Register with atexit() in CLI mode.
+void SendEnterToParentConsole();
+
 // Takes a null-terminated wchar_t* encoded in UTF-16 and returns a std::string
 // encoded in UTF-8. Returns an empty std::string on failure.
 std::string Utf8FromUtf16(const wchar_t* utf16_string);

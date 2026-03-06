@@ -14,6 +14,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     // Register console mode restoration before attaching so it runs on exit,
     // preventing the terminal from being left in a broken state (#78).
     atexit(RestoreConsoleInputMode);
+    atexit(SendEnterToParentConsole);  // Reprint prompt after last output (#96)
     if (!AttachParentConsole()) {
       CreateAndAttachConsole();
     }
