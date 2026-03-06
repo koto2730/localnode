@@ -799,7 +799,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                     builder: (context) => AlertDialog(
                       title: const Text('フォルダの場所'),
                       content: Text(
-                        'ファイルアプリで以下の場所を確認してください:\n\n${serverState.storagePath}',
+                        'ファイルマネージャーで以下のパスを開いてください:\n\n${serverState.storagePath}\n\n'
+                        'WSL 環境など xdg-open が利用できない場合は、'
+                        'パスをコピーしてファイルマネージャーのアドレスバーに貼り付けてください。',
                       ),
                       actions: [
                         TextButton(
