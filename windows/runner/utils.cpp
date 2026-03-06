@@ -89,6 +89,36 @@ bool AttachParentConsole() {
   return false;
 }
 
+void SendEnterToParentConsole() {
+  // Open CONIN$ directly so we are not affected by our own STD_INPUT_HANDLE
+  // replacement done in SetupConsoleInput().
+  HANDLE hConIn = ::CreateFile(
+      L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE,
+      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hConIn == INVALID_HANDLE_VALUE) return;
+
+  // Inject a VK_RETURN key-down + key-up pair so that cmd.exe processes it
+  // after we exit and reprints its prompt at the current cursor position
+  // (i.e. right after our last output line) (#96).
+  const WORD scanCode =
+      static_cast<WORD>(::MapVirtualKey(VK_RETURN, MAPVK_VK_TO_VSC));
+  INPUT_RECORD ir[2] = {};
+  ir[0].EventType = KEY_EVENT;
+  ir[0].Event.KeyEvent.bKeyDown = TRUE;
+  ir[0].Event.KeyEvent.wRepeatCount = 1;
+  ir[0].Event.KeyEvent.wVirtualKeyCode = VK_RETURN;
+  ir[0].Event.KeyEvent.wVirtualScanCode = scanCode;
+  ir[0].Event.KeyEvent.uChar.UnicodeChar = L'\r';
+  ir[0].Event.KeyEvent.dwControlKeyState = 0;
+  ir[1] = ir[0];
+  ir[1].Event.KeyEvent.bKeyDown = FALSE;
+
+  DWORD written = 0;
+  ::WriteConsoleInput(hConIn, ir, 2, &written);
+  ::CloseHandle(hConIn);
+}
+
 bool HasCliFlag() {
   int argc;
   wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
