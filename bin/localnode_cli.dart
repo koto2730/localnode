@@ -194,6 +194,13 @@ Future<String> _selectIpAddress() async {
         }
       }
     } catch (_) {}
+  } else {
+    // Non-interactive mode (background launch with &, piped stdin, etc.).
+    // Automatically select the first IP and inform the user via stdout.
+    // Use --ip <address> to specify a different interface (#97).
+    stdout.writeln('Multiple network interfaces detected. '
+        'Running in non-interactive mode; auto-selecting ${addresses.first}.');
+    stdout.writeln('Use --ip <address> to specify a different interface.');
   }
 
   return addresses.first;
