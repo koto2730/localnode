@@ -1386,9 +1386,10 @@ class ServerService {
         await Process.run('explorer', [storagePath]);
         return true;
       } else if (Platform.isLinux) {
-        // Linux: xdg-openで開く
-        await Process.run('xdg-open', [storagePath]);
-        return true;
+        // Linux: xdg-openで開く。WSL等xdg-openが動作しない環境では
+        // 終了コードが非ゼロになるため、falseを返してパス表示ダイアログに委ねる (#88)
+        final result = await Process.run('xdg-open', [storagePath]);
+        return result.exitCode == 0;
       } else if (Platform.isAndroid || Platform.isIOS) {
         // Android/iOS: SAFやサンドボックスの制限により直接フォルダを開けないため、
         // falseを返してダイアログ表示を促す
