@@ -86,6 +86,7 @@ Future<void> main(List<String> args) async {
       downloadOnly: downloadOnly,
       authMode: authMode,
       fixedPin: fixedPin,
+      clipboardEnabled: !noClipboard,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -374,6 +375,7 @@ class _CliServer {
   String? _pin;
   _AuthMode _authMode = _AuthMode.randomPin;
   bool _downloadOnly = false;
+  bool _clipboardEnabled = true;
   int _startedAt = 0;
 
   String? _storagePath;
@@ -424,9 +426,11 @@ class _CliServer {
     bool downloadOnly = false,
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
+    bool clipboardEnabled = true,
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
+    _clipboardEnabled = clipboardEnabled;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -695,6 +699,7 @@ class _CliServer {
                   ? 'noPin'
                   : 'randomPin',
           'requiresAuth': _authMode != _AuthMode.noPin,
+          'clipboardEnabled': _clipboardEnabled,
         }),
         headers: {'Content-Type': 'application/json'},
       );
