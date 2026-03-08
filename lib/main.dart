@@ -27,6 +27,8 @@ class ServerState {
     this.authMode = AuthMode.randomPin,
     this.fixedPin,
     this.serverName = 'LocalNode',
+    this.httpsMode = false,
+    this.httpsPort = 8443,
   });
 
   final ServerStatus status;
@@ -40,6 +42,8 @@ class ServerState {
   final AuthMode authMode;
   final String? fixedPin;
   final String serverName;
+  final bool httpsMode;
+  final int httpsPort;
 
   ServerState copyWith({
     ServerStatus? status,
@@ -53,6 +57,8 @@ class ServerState {
     AuthMode? authMode,
     String? fixedPin,
     String? serverName,
+    bool? httpsMode,
+    int? httpsPort,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
@@ -69,6 +75,8 @@ class ServerState {
       authMode: authMode ?? this.authMode,
       fixedPin: clearFixedPin ? null : (fixedPin ?? this.fixedPin),
       serverName: serverName ?? this.serverName,
+      httpsMode: httpsMode ?? this.httpsMode,
+      httpsPort: httpsPort ?? this.httpsPort,
     );
   }
 }
@@ -237,6 +245,8 @@ class ServerNotifier extends Notifier<ServerState> {
         authMode: state.authMode,
         fixedPin: state.fixedPin,
         serverName: state.serverName,
+        httpsMode: state.httpsMode,
+        httpsPort: state.httpsPort,
       );
 
       state = state.copyWith(
@@ -274,6 +284,13 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<bool> openDownloadsFolder() async {
     if (kIsWeb) return false;
     return await _serverService.openDownloadsFolder();
+  }
+
+  /// QR コードに埋め込む URL。サーバー停止中は null。
+  String? get qrUrl => _serverService.qrUrl;
+
+  void setHttpsMode({required bool enabled, int httpsPort = 8443}) {
+    state = state.copyWith(httpsMode: enabled, httpsPort: httpsPort);
   }
 }
 
@@ -551,9 +568,9 @@ class _HomePageState extends ConsumerState<HomePage> {
 
     // ネイティブプラットフォーム用のUI
     final serverState = ref.watch(serverNotifierProvider);
-    final url = serverState.selectedIpAddress != null && serverState.port != null
-        ? 'http://${serverState.selectedIpAddress}:${serverState.port}'
-        : null;
+    final notifier = ref.read(serverNotifierProvider.notifier);
+    // HTTPS モード時は CA セットアップページ URL、通常時は HTTP URL
+    final url = notifier.qrUrl;
 
     return Scaffold(
       appBar: AppBar(
@@ -662,6 +679,48 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
+        // セキュリティモード (HTTPS) 設定
+        const SizedBox(height: 20),
+        const Text('セキュリティモード', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          title: const Text('HTTPS モード'),
+          subtitle: Text(
+            serverState.httpsMode
+                ? 'HTTPS ポート: ${serverState.httpsPort}  /  セットアップページ: ポート番号'
+                : 'HTTP（通常）モード',
+            style: const TextStyle(fontSize: 12),
+          ),
+          value: serverState.httpsMode,
+          onChanged: (value) {
+            notifier.setHttpsMode(enabled: value, httpsPort: serverState.httpsPort);
+          },
+        ),
+        if (serverState.httpsMode) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            width: 150,
+            child: TextField(
+              decoration: const InputDecoration(
+                labelText: 'HTTPS ポート番号',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              controller: TextEditingController(
+                  text: serverState.httpsPort.toString()),
+              onChanged: (v) {
+                final p = int.tryParse(v);
+                if (p != null && p > 0 && p <= 65535) {
+                  notifier.setHttpsMode(
+                      enabled: true, httpsPort: p);
+                }
+              },
+            ),
+          ),
+        ],
+
         // 動作モード選択
         const SizedBox(height: 20),
         const Text('動作モード', style: TextStyle(fontWeight: FontWeight.bold)),
