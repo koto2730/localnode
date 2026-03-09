@@ -21,6 +21,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
+import 'package:localnode/tls_manager.dart';
 
 // =============================================================================
 // エントリポイント
@@ -63,6 +64,19 @@ Future<void> main(List<String> args) async {
   final downloadOnly = (results['mode'] as String) == 'download-only';
   final noPin = results['no-pin'] as bool;
   final fixedPin = results['pin'] as String?;
+  final httpsMode = results['https'] as bool;
+  final httpsPort = int.tryParse(results['https-port'] as String) ?? 8443;
+
+  if (httpsMode) {
+    final opensslOk = await TlsManager.isOpensslAvailable();
+    if (!opensslOk) {
+      stderr.writeln('Error: --https requires openssl in PATH.');
+      stderr.writeln('Install openssl and retry:');
+      stderr.writeln('  macOS/Linux: brew install openssl  or  apt install openssl');
+      stderr.writeln('  Windows:     winget install openssl  or  Git for Windows includes it');
+      exit(1);
+    }
+  }
 
   final authMode = noPin
       ? _AuthMode.noPin
@@ -87,17 +101,30 @@ Future<void> main(List<String> args) async {
       authMode: authMode,
       fixedPin: fixedPin,
       clipboardEnabled: !noClipboard,
+      httpsMode: httpsMode,
+      httpsPort: httpsPort,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
     exit(1);
   }
 
-  final url = 'http://$ipAddress:$port';
+  // HTTPS モード: QR は HTTP コンパニオン(/setup)を指す
+  final qrUrl = httpsMode
+      ? 'http://$ipAddress:$port/setup'
+      : 'http://$ipAddress:$port';
+  final mainUrl = httpsMode
+      ? 'https://$ipAddress:$httpsPort'
+      : 'http://$ipAddress:$port';
 
   stdout.writeln('Server started.');
   stdout.writeln('');
-  stdout.writeln('  URL:  $url');
+  if (httpsMode) {
+    stdout.writeln('  Setup: $qrUrl  (scan QR to install CA cert)');
+    stdout.writeln('  HTTPS: $mainUrl');
+  } else {
+    stdout.writeln('  URL:  $mainUrl');
+  }
   if (authMode != _AuthMode.noPin) {
     stdout.writeln('  PIN:  ${server.pin}');
   } else {
@@ -106,7 +133,7 @@ Future<void> main(List<String> args) async {
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
   stdout.writeln('');
   stdout.writeln('QR Code:');
-  _printQrCode(url);
+  _printQrCode(qrUrl);
   stdout.writeln('');
   stdout.writeln('Press Ctrl+C or type q + Enter to stop.');
   stdout.writeln('');
@@ -137,6 +164,11 @@ ArgParser _buildParser() {
         help: 'Suppress clipboard output in console', negatable: false)
     ..addFlag('verbose',
         abbr: 'v', help: 'Enable verbose request logging', negatable: false)
+    ..addFlag('https',
+        help: 'Enable HTTPS mode (requires openssl in PATH)', negatable: false)
+    ..addOption('https-port',
+        help: 'HTTPS server port (--port becomes HTTP CA-setup port)',
+        defaultsTo: '8443')
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -426,6 +458,8 @@ class _CliServer {
 
   // --- 起動 ---
 
+  HttpServer? _companionServer;
+
   Future<void> start({
     required String ipAddress,
     required int port,
@@ -434,6 +468,8 @@ class _CliServer {
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
     bool clipboardEnabled = true,
+    bool httpsMode = false,
+    int httpsPort = 8443,
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -465,13 +501,64 @@ class _CliServer {
             .addHandler(cascade.handler)
         : const Pipeline().addHandler(cascade.handler);
 
-    _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
-    _log('Serving at http://$ipAddress:$port');
+    if (httpsMode) {
+      // TLS 証明書ディレクトリ: ストレージパス配下または ~/.localnode/tls
+      final tlsDir = storagePath != null
+          ? Directory(p.join(storagePath, '.tls'))
+          : Directory(p.join(
+              Platform.environment['HOME'] ?? Directory.current.path,
+              '.localnode', 'tls'));
+      final tlsMgr = TlsManager(tlsDir);
+      await tlsMgr.init();
+      final secCtx = await tlsMgr.ensureServerCert(ipAddress);
+      _server = await shelf_io.serve(
+        handler, InternetAddress.anyIPv4, httpsPort,
+        securityContext: secCtx,
+      );
+      _companionServer =
+          await _startCompanionServer(ipAddress, port, httpsPort, tlsMgr);
+      _log('Serving at https://$ipAddress:$httpsPort');
+      _log('CA setup page at http://$ipAddress:$port/setup');
+    } else {
+      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+      _log('Serving at http://$ipAddress:$port');
+    }
+  }
+
+  Future<HttpServer> _startCompanionServer(
+    String ipAddress,
+    int httpPort,
+    int httpsPort,
+    TlsManager tlsMgr,
+  ) async {
+    final handler = (Request request) async {
+      final path = request.url.path;
+      if (path == 'ca.crt') {
+        final bytes = await tlsMgr.caCertDerBytes;
+        return Response.ok(bytes, headers: {
+          'Content-Type': 'application/x-x509-ca-cert',
+          'Content-Disposition': 'attachment; filename="LocalNodeCA.crt"',
+        });
+      }
+      if (path == 'ca.mobileconfig') {
+        final config = await tlsMgr.buildMobileconfig();
+        return Response.ok(config, headers: {
+          'Content-Type': 'application/x-apple-aspen-config',
+          'Content-Disposition': 'attachment; filename="LocalNode.mobileconfig"',
+        });
+      }
+      final html = TlsManager.buildSetupHtml(ipAddress, httpsPort);
+      return Response.ok(html,
+          headers: {'Content-Type': 'text/html; charset=utf-8'});
+    };
+    return await shelf_io.serve(handler, InternetAddress.anyIPv4, httpPort);
   }
 
   Future<void> stop() async {
     await _server?.close(force: true);
     _server = null;
+    await _companionServer?.close(force: true);
+    _companionServer = null;
   }
 
   // --- 初期化 ---
