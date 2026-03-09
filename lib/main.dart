@@ -26,6 +26,9 @@ class ServerState {
     this.operationMode = OperationMode.normal,
     this.authMode = AuthMode.randomPin,
     this.fixedPin,
+    this.serverName = 'LocalNode',
+    this.httpsMode = false,
+    this.httpsPort = 8443,
   });
 
   final ServerStatus status;
@@ -38,6 +41,9 @@ class ServerState {
   final OperationMode operationMode;
   final AuthMode authMode;
   final String? fixedPin;
+  final String serverName;
+  final bool httpsMode;
+  final int httpsPort;
 
   ServerState copyWith({
     ServerStatus? status,
@@ -50,6 +56,9 @@ class ServerState {
     OperationMode? operationMode,
     AuthMode? authMode,
     String? fixedPin,
+    String? serverName,
+    bool? httpsMode,
+    int? httpsPort,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
@@ -65,6 +74,9 @@ class ServerState {
       operationMode: operationMode ?? this.operationMode,
       authMode: authMode ?? this.authMode,
       fixedPin: clearFixedPin ? null : (fixedPin ?? this.fixedPin),
+      serverName: serverName ?? this.serverName,
+      httpsMode: httpsMode ?? this.httpsMode,
+      httpsPort: httpsPort ?? this.httpsPort,
     );
   }
 }
@@ -148,6 +160,7 @@ class ServerNotifier extends Notifier<ServerState> {
     final opModeStr = prefs.getString('operation_mode');
     final authModeStr = prefs.getString('auth_mode');
     final savedFixedPin = prefs.getString('fixed_pin');
+    final savedServerName = prefs.getString('server_name') ?? 'LocalNode';
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -162,7 +175,16 @@ class ServerNotifier extends Notifier<ServerState> {
       operationMode: opMode,
       authMode: authMode,
       fixedPin: savedFixedPin,
+      serverName: savedServerName,
     );
+  }
+
+  /// サーバー名を設定して永続化
+  Future<void> setServerName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    final trimmed = name.trim().isEmpty ? 'LocalNode' : name.trim();
+    await prefs.setString('server_name', trimmed);
+    state = state.copyWith(serverName: trimmed);
   }
 
   /// 動作モードを変更して永続化
@@ -222,6 +244,9 @@ class ServerNotifier extends Notifier<ServerState> {
         operationMode: state.operationMode,
         authMode: state.authMode,
         fixedPin: state.fixedPin,
+        serverName: state.serverName,
+        httpsMode: state.httpsMode,
+        httpsPort: state.httpsPort,
       );
 
       state = state.copyWith(
@@ -259,6 +284,13 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<bool> openDownloadsFolder() async {
     if (kIsWeb) return false;
     return await _serverService.openDownloadsFolder();
+  }
+
+  /// QR コードに埋め込む URL。サーバー停止中は null。
+  String? get qrUrl => _serverService.qrUrl;
+
+  void setHttpsMode({required bool enabled, int httpsPort = 8443}) {
+    state = state.copyWith(httpsMode: enabled, httpsPort: httpsPort);
   }
 }
 
@@ -399,23 +431,26 @@ class _HomePageState extends ConsumerState<HomePage> {
   ServerTab _currentTab = ServerTab.connection;
   late final TextEditingController _portController;
   late final TextEditingController _fixedPinController;
+  late final TextEditingController _nameController;
 
   @override
   void initState() {
     super.initState();
     _portController = TextEditingController(text: '8080');
     _fixedPinController = TextEditingController();
+    _nameController = TextEditingController(text: 'LocalNode');
     // Web以外のプラットフォームでのみIPアドレスリストと設定を読み込む
     if (!kIsWeb) {
       Future.microtask(() {
         final notifier = ref.read(serverNotifierProvider.notifier);
         notifier.loadIpAddresses();
         notifier.loadSettings().then((_) {
+          final state = ref.read(serverNotifierProvider);
           // 固定PINが保存されていればコントローラに反映
-          final fixedPin = ref.read(serverNotifierProvider).fixedPin;
-          if (fixedPin != null) {
-            _fixedPinController.text = fixedPin;
+          if (state.fixedPin != null) {
+            _fixedPinController.text = state.fixedPin!;
           }
+          _nameController.text = state.serverName;
         });
       });
     }
@@ -425,6 +460,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   void dispose() {
     _portController.dispose();
     _fixedPinController.dispose();
+    _nameController.dispose();
     super.dispose();
   }
 
@@ -532,9 +568,9 @@ class _HomePageState extends ConsumerState<HomePage> {
 
     // ネイティブプラットフォーム用のUI
     final serverState = ref.watch(serverNotifierProvider);
-    final url = serverState.selectedIpAddress != null && serverState.port != null
-        ? 'http://${serverState.selectedIpAddress}:${serverState.port}'
-        : null;
+    final notifier = ref.read(serverNotifierProvider.notifier);
+    // HTTPS モード時は CA セットアップページ URL、通常時は HTTP URL
+    final url = notifier.qrUrl;
 
     return Scaffold(
       appBar: AppBar(
@@ -614,6 +650,23 @@ class _HomePageState extends ConsumerState<HomePage> {
         const SizedBox(height: 10),
 
         SizedBox(
+          width: 200,
+          child: TextField(
+            controller: _nameController,
+            decoration: const InputDecoration(
+              labelText: 'サーバー名',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            textAlign: TextAlign.center,
+            onChanged: (value) {
+              notifier.setServerName(value);
+            },
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        SizedBox(
           width: 150,
           child: TextField(
             controller: _portController,
@@ -626,6 +679,48 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
+        // セキュリティモード (HTTPS) 設定
+        const SizedBox(height: 20),
+        const Text('セキュリティモード', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          title: const Text('HTTPS モード'),
+          subtitle: Text(
+            serverState.httpsMode
+                ? 'HTTPS ポート: ${serverState.httpsPort}  /  セットアップページ: ポート番号'
+                : 'HTTP（通常）モード',
+            style: const TextStyle(fontSize: 12),
+          ),
+          value: serverState.httpsMode,
+          onChanged: (value) {
+            notifier.setHttpsMode(enabled: value, httpsPort: serverState.httpsPort);
+          },
+        ),
+        if (serverState.httpsMode) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            width: 150,
+            child: TextField(
+              decoration: const InputDecoration(
+                labelText: 'HTTPS ポート番号',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              controller: TextEditingController(
+                  text: serverState.httpsPort.toString()),
+              onChanged: (v) {
+                final p = int.tryParse(v);
+                if (p != null && p > 0 && p <= 65535) {
+                  notifier.setHttpsMode(
+                      enabled: true, httpsPort: p);
+                }
+              },
+            ),
+          ),
+        ],
+
         // 動作モード選択
         const SizedBox(height: 20),
         const Text('動作モード', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -699,6 +794,8 @@ class _HomePageState extends ConsumerState<HomePage> {
               textInputAction: TextInputAction.done,
               textAlign: TextAlign.center,
               maxLength: 4,
+              obscureText: true,
+              obscuringCharacter: '*',
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               onChanged: (value) {
                 if (value.length == 4) {
@@ -761,7 +858,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                     builder: (context) => AlertDialog(
                       title: const Text('フォルダの場所'),
                       content: Text(
-                        'ファイルアプリで以下の場所を確認してください:\n\n${serverState.storagePath}',
+                        'ファイルマネージャーで以下のパスを開いてください:\n\n${serverState.storagePath}\n\n'
+                        'WSL 環境など xdg-open が利用できない場合は、'
+                        'パスをコピーしてファイルマネージャーのアドレスバーに貼り付けてください。',
                       ),
                       actions: [
                         TextButton(
@@ -928,7 +1027,11 @@ class _HomePageState extends ConsumerState<HomePage> {
         backgroundColor: isRunning ? Colors.redAccent : Colors.lightBlue,
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-        textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        textStyle: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          fontFamilyFallback: Platform.isLinux ? const ['NotoSansCJK'] : null,
+        ),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(30),
         ),

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:math';
 
@@ -18,6 +19,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'tls_manager.dart';
 
 /// 動作モード
 enum OperationMode { normal, downloadOnly }
@@ -53,6 +55,9 @@ class ServerService {
   static const _storagePlatform = MethodChannel('com.ictglab.localnode/storage');
   String? _safDirectoryUri; // 選択されたSAFディレクトリURI
   HttpServer? _server;
+  HttpServer? _companionServer; // HTTPS モード時の HTTP CA 配布サーバー
+  bool _httpsMode = false;
+  int? _httpsPort;
   String? _ipAddress;
   int? _port;
   String? _fallbackStoragePath; // SAFが使えない場合のストレージパス
@@ -64,6 +69,8 @@ class ServerService {
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
   bool _verboseLogging = false;
+  bool _clipboardEnabled = true;
+  String _serverName = 'LocalNode';
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
@@ -79,8 +86,8 @@ class ServerService {
   // ブルートフォース保護用
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
-  static const int _maxFailedAttempts = 5;
-  static const Duration _lockoutDuration = Duration(minutes: 5);
+  static const int _maxFailedAttempts = 3;
+  static const Duration _lockoutDuration = Duration(minutes: 10);
 
   final _router = Router();
 
@@ -88,6 +95,17 @@ class ServerService {
   int? get port => _port;
   String? get pin => _pin;
   bool get isRunning => _server != null;
+  bool get isHttpsMode => _httpsMode;
+  int? get httpsPort => _httpsPort;
+
+  /// QR コードに埋め込む URL。
+  /// HTTPS モード時は CA インストール案内ページ (HTTP)、通常時は HTTP サーバー URL。
+  String? get qrUrl {
+    if (_ipAddress == null || _port == null) return null;
+    return _httpsMode
+        ? 'http://$_ipAddress:$_port/setup'
+        : 'http://$_ipAddress:$_port';
+  }
   String? get documentsPath => _fallbackStoragePath;
 
   /// verbose有効時のみ出力するログ
@@ -351,11 +369,13 @@ class ServerService {
 
   Response _infoHandler(Request request) {
     final info = {
-      'version': '1.1.0',
+      'version': '1.2.0',
       'name': 'LocalNode Server',
+      'serverName': _serverName,
       'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
       'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
       'requiresAuth': _authMode != AuthMode.noPin,
+      'clipboardEnabled': _clipboardEnabled,
     };
     return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
@@ -645,13 +665,12 @@ class ServerService {
         return Response.internalServerError(body: 'Failed to read image bytes.');
       }
 
-      final image = img.decodeImage(imageBytes);
-      if (image == null) {
-        return Response.internalServerError(body: 'Failed to decode image.');
-      }
-
-      final thumbnail = img.copyResize(image, width: 120);
-      final thumbnailBytes = img.encodeJpg(thumbnail, quality: 85);
+      final thumbnailBytes = await Isolate.run(() {
+        final image = img.decodeImage(imageBytes!);
+        if (image == null) throw Exception('Failed to decode image.');
+        final thumb = img.copyResize(image, width: 120);
+        return Uint8List.fromList(img.encodeJpg(thumb, quality: 85));
+      });
 
       cacheFile.writeAsBytes(thumbnailBytes);
       
@@ -1144,10 +1163,16 @@ class ServerService {
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     bool verboseLogging = false,
+    bool clipboardEnabled = true,
+    String serverName = 'LocalNode',
+    bool httpsMode = false,
+    int httpsPort = 8443,
   }) async {
     if (_server != null) return;
 
     _verboseLogging = verboseLogging;
+    _clipboardEnabled = clipboardEnabled;
+    _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
     _operationMode = operationMode;
     _authMode = authMode;
 
@@ -1171,6 +1196,8 @@ class ServerService {
 
       _ipAddress = ipAddress;
       _port = port;
+      _httpsMode = httpsMode;
+      _httpsPort = httpsMode ? httpsPort : null;
 
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
@@ -1186,7 +1213,20 @@ class ServerService {
           ? pipeline.addMiddleware(logRequests()).addHandler(cascade.handler)
           : pipeline.addHandler(cascade.handler);
 
-      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+      if (httpsMode) {
+        final appDir = await getApplicationSupportDirectory();
+        final tlsMgr = TlsManager(Directory(p.join(appDir.path, 'tls')));
+        await tlsMgr.init();
+        final secCtx = await tlsMgr.ensureServerCert(ipAddress);
+        _server = await shelf_io.serve(
+          handler, InternetAddress.anyIPv4, httpsPort,
+          securityContext: secCtx,
+        );
+        _companionServer =
+            await _startCompanionServer(ipAddress, port, httpsPort, tlsMgr);
+      } else {
+        _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+      }
     } catch (e) {
       print('Error starting server: $e');
       await stopServer();
@@ -1200,11 +1240,15 @@ class ServerService {
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     String? fixedPin,
+    String serverName = 'LocalNode',
+    bool httpsMode = false,
+    int httpsPort = 8443,
   }) async {
     if (_server != null) return;
 
     _operationMode = operationMode;
     _authMode = authMode;
+    _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
 
     // 認証モードに応じたPIN設定
     switch (authMode) {
@@ -1232,6 +1276,8 @@ class ServerService {
 
       _ipAddress = ipAddress;
       _port = port;
+      _httpsMode = httpsMode;
+      _httpsPort = httpsMode ? httpsPort : null;
 
       // 展開先の一時ディレクトリを指すように変更
       final staticHandler =
@@ -1245,10 +1291,26 @@ class ServerService {
       final handler =
           const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
 
-      // anyIPv4でリッスンすることで、Tailscale IPなど特定のインターフェースにもアクセス可能
-      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
-      _log('Serving at http://${_server!.address.host}:${_server!.port}');
-      _log('Selected IP for display: http://$_ipAddress:$port');
+      if (httpsMode) {
+        final appDir = await getApplicationSupportDirectory();
+        final tlsMgr = TlsManager(Directory(p.join(appDir.path, 'tls')));
+        await tlsMgr.init();
+        final secCtx = await tlsMgr.ensureServerCert(ipAddress);
+        // anyIPv4でリッスンすることで、Tailscale IPなど特定のインターフェースにもアクセス可能
+        _server = await shelf_io.serve(
+          handler, InternetAddress.anyIPv4, httpsPort,
+          securityContext: secCtx,
+        );
+        _companionServer =
+            await _startCompanionServer(ipAddress, port, httpsPort, tlsMgr);
+        _log('Serving at https://${_server!.address.host}:${_server!.port}');
+        _log('CA setup page at http://$_ipAddress:$port/setup');
+      } else {
+        // anyIPv4でリッスンすることで、Tailscale IPなど特定のインターフェースにもアクセス可能
+        _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+        _log('Serving at http://${_server!.address.host}:${_server!.port}');
+        _log('Selected IP for display: http://$_ipAddress:$port');
+      }
     } catch (e) {
       _log('Error starting server: $e');
       await stopServer(); // Ensure cleanup on partial start
@@ -1259,6 +1321,10 @@ class ServerService {
   Future<void> stopServer() async {
     await _server?.close(force: true);
     _server = null;
+    await _companionServer?.close(force: true);
+    _companionServer = null;
+    _httpsMode = false;
+    _httpsPort = null;
     _ipAddress = null;
     _port = null;
     _pin = null;
@@ -1274,6 +1340,57 @@ class ServerService {
       // CLIモードでは無視
     }
     _log('Server stopped.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // HTTPS コンパニオンサーバー（CA 証明書配布 + セットアップ案内ページ）
+  // ---------------------------------------------------------------------------
+
+  /// HTTP コンパニオンサーバーを起動する。
+  /// - GET /ca.crt          → CA 証明書 (DER)
+  /// - GET /ca.mobileconfig → iOS 用プロファイル
+  /// - その他               → /setup ページ
+  Future<HttpServer> _startCompanionServer(
+    String ipAddress,
+    int httpPort,
+    int httpsPort,
+    TlsManager tlsMgr,
+  ) async {
+    final handler = (Request request) async {
+      final path = request.url.path;
+
+      if (path == 'ca.crt') {
+        final bytes = await tlsMgr.caCertDerBytes;
+        return Response.ok(
+          bytes,
+          headers: {
+            'Content-Type': 'application/x-x509-ca-cert',
+            'Content-Disposition': 'attachment; filename="LocalNodeCA.crt"',
+          },
+        );
+      }
+
+      if (path == 'ca.mobileconfig') {
+        final config = await tlsMgr.buildMobileconfig();
+        return Response.ok(
+          config,
+          headers: {
+            'Content-Type': 'application/x-apple-aspen-config',
+            'Content-Disposition':
+                'attachment; filename="LocalNode.mobileconfig"',
+          },
+        );
+      }
+
+      // /setup およびその他すべてのパス → セットアップ案内ページ
+      final html = TlsManager.buildSetupHtml(ipAddress, httpsPort);
+      return Response.ok(
+        html,
+        headers: {'Content-Type': 'text/html; charset=utf-8'},
+      );
+    };
+
+    return await shelf_io.serve(handler, InternetAddress.anyIPv4, httpPort);
   }
 
   // SAF ディレクトリを選択するメソッド
@@ -1376,9 +1493,10 @@ class ServerService {
         await Process.run('explorer', [storagePath]);
         return true;
       } else if (Platform.isLinux) {
-        // Linux: xdg-openで開く
-        await Process.run('xdg-open', [storagePath]);
-        return true;
+        // Linux: xdg-openで開く。WSL等xdg-openが動作しない環境では
+        // 終了コードが非ゼロになるため、falseを返してパス表示ダイアログに委ねる (#88)
+        final result = await Process.run('xdg-open', [storagePath]);
+        return result.exitCode == 0;
       } else if (Platform.isAndroid || Platform.isIOS) {
         // Android/iOS: SAFやサンドボックスの制限により直接フォルダを開けないため、
         // falseを返してダイアログ表示を促す

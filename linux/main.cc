@@ -4,6 +4,12 @@
 #include <cstring>
 
 int main(int argc, char** argv) {
+  // Suppress "Unable to load from the cursor theme" Gdk warning in WSL/minimal
+  // environments that lack cursor themes (#94).
+  if (!g_getenv("XCURSOR_THEME")) {
+    g_setenv("XCURSOR_THEME", "default", FALSE);
+  }
+
   // On Linux the standalone localnode-cli binary handles CLI/headless mode
   // without any GTK dependency.  Redirect users before GTK is initialised,
   // because library constructors (GTK, EGL) may run before we can inspect

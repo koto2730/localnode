@@ -60,6 +60,15 @@ Run LocalNode as a headless server from the command line (Windows, macOS, Linux)
 localnode --cli [options]
 ```
 
+> **macOS (App Store):** The standalone `localnode` command is not available when installed from the Mac App Store. Use the binary inside the app bundle directly:
+> ```bash
+> /Applications/LocalNode.app/Contents/MacOS/LocalNode --cli [options]
+> ```
+> To simplify repeated use, add an alias to your shell config (`~/.zshrc`):
+> ```bash
+> alias localnode="/Applications/LocalNode.app/Contents/MacOS/LocalNode --cli"
+> ```
+
 **Options:**
 
 | Option | Description |
