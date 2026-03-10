@@ -30,6 +30,7 @@ class TlsManager {
   // ---------------------------------------------------------------------------
   File get _caKeyFile => File(p.join(tlsDir.path, 'ca.key'));
   File get _caCertFile => File(p.join(tlsDir.path, 'ca.crt'));
+  File get _caDerFile => File(p.join(tlsDir.path, 'ca.der'));
   File get _serverKeyFile => File(p.join(tlsDir.path, 'server.key'));
   File get _serverCertFile => File(p.join(tlsDir.path, 'server.crt'));
   File get _serverCsrFile => File(p.join(tlsDir.path, 'server.csr'));
@@ -72,7 +73,19 @@ class TlsManager {
 
   /// CA 証明書のバイト列（DER）を返す。クライアントへの配布に使用。
   Future<List<int>> get caCertDerBytes async =>
-      await _caCertFile.readAsBytes();
+      await _caDerFile.readAsBytes();
+
+  /// CA 証明書の SHA-256 フィンガープリントを返す（例: "AA:BB:CC:..."）。
+  Future<String> caCertFingerprint() async {
+    final result = await Process.run('openssl', [
+      'x509', '-fingerprint', '-sha256', '-noout', '-in', _caCertFile.path,
+    ]);
+    if (result.exitCode != 0) return '';
+    // 出力例: "SHA256 Fingerprint=AA:BB:CC:..."
+    final line = (result.stdout as String).trim();
+    final eq = line.indexOf('=');
+    return eq >= 0 ? line.substring(eq + 1) : line;
+  }
 
   /// iOS 向け .mobileconfig プロファイルの XML 文字列を生成して返す。
   Future<String> buildMobileconfig() async {
@@ -131,13 +144,17 @@ class TlsManager {
   Future<void> _ensureCa() async {
     if (await _caKeyFile.exists() && await _caCertFile.exists()) {
       _caCertPem = await _caCertFile.readAsString();
+      // 旧バージョンで ca.der が生成されていない場合は再生成
+      if (!await _caDerFile.exists()) {
+        await _generateCaDer();
+      }
       return;
     }
 
     // CA 秘密鍵を生成
     await _run('openssl', ['genrsa', '-out', _caKeyFile.path, '2048']);
 
-    // 自己署名 CA 証明書を生成（10年有効）
+    // 自己署名 CA 証明書を生成（PEM 形式、10年有効）
     await _run('openssl', [
       'req', '-new', '-x509',
       '-key', _caKeyFile.path,
@@ -146,7 +163,16 @@ class TlsManager {
       '-subj', '/CN=LocalNode CA/O=LocalNode',
     ]);
 
+    // DER 形式でも保存（クライアント配布・mobileconfig 用）
+    await _generateCaDer();
+
     _caCertPem = await _caCertFile.readAsString();
+  }
+
+  Future<void> _generateCaDer() async {
+    await _run('openssl', [
+      'x509', '-in', _caCertFile.path, '-outform', 'der', '-out', _caDerFile.path,
+    ]);
   }
 
   Future<void> _ensureServerCert(String ipAddress) async {
@@ -200,7 +226,8 @@ class TlsManager {
 
   /// HTTPS セットアップ案内 HTML を生成する。
   /// [ipAddress] はサーバーの IP、[httpsPort] は HTTPS ポート番号。
-  static String buildSetupHtml(String ipAddress, int httpsPort) {
+  /// [fingerprint] は CA 証明書の SHA-256 フィンガープリント（任意）。
+  static String buildSetupHtml(String ipAddress, int httpsPort, {String fingerprint = ''}) {
     final httpsUrl = 'https://$ipAddress:$httpsPort/';
     return '''<!DOCTYPE html>
 <html lang="ja">
@@ -219,11 +246,18 @@ class TlsManager {
     .platform{display:none}
     ol{margin:6px 0;padding-left:20px}
     li{margin:4px 0}
+    .fingerprint{background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:10px 14px;margin:14px 0;font-size:.85em}
+    .fingerprint code{word-break:break-all;font-family:monospace}
   </style>
 </head>
 <body>
   <h1>LocalNode — HTTPS セットアップ</h1>
   <p>LocalNode に安全に接続するには、まず <strong>CA 証明書</strong> をこのデバイスにインストールしてください。</p>
+  ${fingerprint.isNotEmpty ? '''<div class="fingerprint">
+    <strong>CA 証明書フィンガープリント (SHA-256)</strong><br>
+    <code>$fingerprint</code><br>
+    <small>証明書インストール前に、サーバーアプリ上のフィンガープリントと一致することを確認してください。</small>
+  </div>''' : ''}
 
   <div id="ios" class="step platform">
     <h2>iOS の手順</h2>

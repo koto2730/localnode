@@ -1214,6 +1214,10 @@ class ServerService {
           : pipeline.addHandler(cascade.handler);
 
       if (httpsMode) {
+        if (!await TlsManager.isOpensslAvailable()) {
+          throw Exception(
+              'openssl コマンドが見つかりません。HTTPS モードには openssl が必要です。');
+        }
         final appDir = await getApplicationSupportDirectory();
         final tlsMgr = TlsManager(Directory(p.join(appDir.path, 'tls')));
         await tlsMgr.init();
@@ -1292,6 +1296,10 @@ class ServerService {
           const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
 
       if (httpsMode) {
+        if (!await TlsManager.isOpensslAvailable()) {
+          throw Exception(
+              'openssl コマンドが見つかりません。HTTPS モードには openssl が必要です。');
+        }
         final appDir = await getApplicationSupportDirectory();
         final tlsMgr = TlsManager(Directory(p.join(appDir.path, 'tls')));
         await tlsMgr.init();
@@ -1356,6 +1364,11 @@ class ServerService {
     int httpsPort,
     TlsManager tlsMgr,
   ) async {
+    final fingerprint = await tlsMgr.caCertFingerprint();
+    if (fingerprint.isNotEmpty) {
+      _log('CA certificate SHA-256 fingerprint: $fingerprint');
+    }
+
     final handler = (Request request) async {
       final path = request.url.path;
 
@@ -1383,7 +1396,7 @@ class ServerService {
       }
 
       // /setup およびその他すべてのパス → セットアップ案内ページ
-      final html = TlsManager.buildSetupHtml(ipAddress, httpsPort);
+      final html = TlsManager.buildSetupHtml(ipAddress, httpsPort, fingerprint: fingerprint);
       return Response.ok(
         html,
         headers: {'Content-Type': 'text/html; charset=utf-8'},
