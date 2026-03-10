@@ -672,7 +672,7 @@ class ServerService {
         return Uint8List.fromList(img.encodeJpg(thumb, quality: 85));
       });
 
-      cacheFile.writeAsBytes(thumbnailBytes);
+      await cacheFile.writeAsBytes(thumbnailBytes);
       
       return Response.ok(thumbnailBytes, headers: {'Content-Type': 'image/jpeg'});
 
