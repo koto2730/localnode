@@ -180,6 +180,13 @@ class ServerNotifier extends Notifier<ServerState> {
   }
 
   /// サーバー名を設定して永続化
+  /// state のみ更新（SharedPreferences には書かない）。
+  /// TextField の onChanged から呼び出してサーバー起動時に最新名が使われるようにする。
+  void updateServerNameLocal(String name) {
+    final trimmed = name.trim().isEmpty ? 'LocalNode' : name.trim();
+    state = state.copyWith(serverName: trimmed);
+  }
+
   Future<void> setServerName(String name) async {
     final prefs = await SharedPreferences.getInstance();
     final trimmed = name.trim().isEmpty ? 'LocalNode' : name.trim();
@@ -663,6 +670,9 @@ class _HomePageState extends ConsumerState<HomePage> {
               isDense: true,
             ),
             textAlign: TextAlign.center,
+            onChanged: (value) {
+              notifier.updateServerNameLocal(value);
+            },
             onSubmitted: (value) {
               notifier.setServerName(value);
             },
