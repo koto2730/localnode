@@ -77,14 +77,18 @@ class TlsManager {
 
   /// CA 証明書の SHA-256 フィンガープリントを返す（例: "AA:BB:CC:..."）。
   Future<String> caCertFingerprint() async {
-    final result = await Process.run('openssl', [
-      'x509', '-fingerprint', '-sha256', '-noout', '-in', _caCertFile.path,
-    ]);
-    if (result.exitCode != 0) return '';
-    // 出力例: "SHA256 Fingerprint=AA:BB:CC:..."
-    final line = (result.stdout as String).trim();
-    final eq = line.indexOf('=');
-    return eq >= 0 ? line.substring(eq + 1) : line;
+    try {
+      final result = await Process.run('openssl', [
+        'x509', '-fingerprint', '-sha256', '-noout', '-in', _caCertFile.path,
+      ]);
+      if (result.exitCode != 0) return '';
+      // 出力例: "SHA256 Fingerprint=AA:BB:CC:..."
+      final line = (result.stdout as String).trim();
+      final eq = line.indexOf('=');
+      return eq >= 0 ? line.substring(eq + 1) : line;
+    } catch (_) {
+      return '';
+    }
   }
 
   /// iOS 向け .mobileconfig プロファイルの XML 文字列を生成して返す。
@@ -229,6 +233,11 @@ class TlsManager {
   /// [fingerprint] は CA 証明書の SHA-256 フィンガープリント（任意）。
   static String buildSetupHtml(String ipAddress, int httpsPort, {String fingerprint = ''}) {
     final httpsUrl = 'https://$ipAddress:$httpsPort/';
+    final escapedFingerprint = fingerprint
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
     return '''<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -253,9 +262,9 @@ class TlsManager {
 <body>
   <h1>LocalNode — HTTPS セットアップ</h1>
   <p>LocalNode に安全に接続するには、まず <strong>CA 証明書</strong> をこのデバイスにインストールしてください。</p>
-  ${fingerprint.isNotEmpty ? '''<div class="fingerprint">
+  ${escapedFingerprint.isNotEmpty ? '''<div class="fingerprint">
     <strong>CA 証明書フィンガープリント (SHA-256)</strong><br>
-    <code>$fingerprint</code><br>
+    <code>$escapedFingerprint</code><br>
     <small>証明書インストール前に、サーバーアプリ上のフィンガープリントと一致することを確認してください。</small>
   </div>''' : ''}
 
