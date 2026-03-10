@@ -56,7 +56,6 @@ dependencies:
   args: ^2.4.2
   qr: ^3.0.1
   path: ^1.9.0
-  basic_utils: ^5.8.2
 
 dev_dependencies:
   flutter_test:

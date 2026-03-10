@@ -432,6 +432,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _portController;
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
+  late final TextEditingController _httpsPortController;
 
   @override
   void initState() {
@@ -439,6 +440,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _portController = TextEditingController(text: '8080');
     _fixedPinController = TextEditingController();
     _nameController = TextEditingController(text: 'LocalNode');
+    _httpsPortController = TextEditingController(text: '8443');
     // Web以外のプラットフォームでのみIPアドレスリストと設定を読み込む
     if (!kIsWeb) {
       Future.microtask(() {
@@ -451,6 +453,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             _fixedPinController.text = state.fixedPin!;
           }
           _nameController.text = state.serverName;
+          _httpsPortController.text = state.httpsPort.toString();
         });
       });
     }
@@ -461,6 +464,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _portController.dispose();
     _fixedPinController.dispose();
     _nameController.dispose();
+    _httpsPortController.dispose();
     super.dispose();
   }
 
@@ -659,7 +663,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               isDense: true,
             ),
             textAlign: TextAlign.center,
-            onChanged: (value) {
+            onSubmitted: (value) {
               notifier.setServerName(value);
             },
           ),
@@ -708,8 +712,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               ),
               keyboardType: TextInputType.number,
               textAlign: TextAlign.center,
-              controller: TextEditingController(
-                  text: serverState.httpsPort.toString()),
+              controller: _httpsPortController,
               onChanged: (v) {
                 final p = int.tryParse(v);
                 if (p != null && p > 0 && p <= 65535) {
