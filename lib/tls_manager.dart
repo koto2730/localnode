@@ -233,11 +233,7 @@ class TlsManager {
   /// [fingerprint] は CA 証明書の SHA-256 フィンガープリント（任意）。
   static String buildSetupHtml(String ipAddress, int httpsPort, {String fingerprint = ''}) {
     final httpsUrl = 'https://$ipAddress:$httpsPort/';
-    final escapedFingerprint = fingerprint
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;');
+    final escapedFingerprint = const HtmlEscape().convert(fingerprint);
     return '''<!DOCTYPE html>
 <html lang="ja">
 <head>

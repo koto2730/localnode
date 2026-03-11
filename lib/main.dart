@@ -187,6 +187,8 @@ class ServerNotifier extends Notifier<ServerState> {
     state = state.copyWith(serverName: trimmed);
   }
 
+  /// state を更新し、SharedPreferences に永続化する。
+  /// TextField の onSubmitted から呼び出す。
   Future<void> setServerName(String name) async {
     final prefs = await SharedPreferences.getInstance();
     final trimmed = name.trim().isEmpty ? 'LocalNode' : name.trim();
