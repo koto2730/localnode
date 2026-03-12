@@ -64,6 +64,7 @@ Future<void> main(List<String> args) async {
   final downloadOnly = (results['mode'] as String) == 'download-only';
   final noPin = results['no-pin'] as bool;
   final fixedPin = results['pin'] as String?;
+  final serverName = results['name'] as String;
   final httpsMode = results['https'] as bool;
   final httpsPort = int.tryParse(results['https-port'] as String) ?? 8443;
 
@@ -100,6 +101,7 @@ Future<void> main(List<String> args) async {
       downloadOnly: downloadOnly,
       authMode: authMode,
       fixedPin: fixedPin,
+      serverName: serverName,
       clipboardEnabled: !noClipboard,
       httpsMode: httpsMode,
       httpsPort: httpsPort,
@@ -130,6 +132,7 @@ Future<void> main(List<String> args) async {
   } else {
     stdout.writeln('  PIN:  disabled (no auth)');
   }
+  stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
   stdout.writeln('');
   stdout.writeln('QR Code:');
@@ -164,6 +167,8 @@ ArgParser _buildParser() {
         help: 'Suppress clipboard output in console', negatable: false)
     ..addFlag('verbose',
         abbr: 'v', help: 'Enable verbose request logging', negatable: false)
+    ..addOption('name',
+        abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
     ..addFlag('https',
         help: 'Enable HTTPS mode (requires openssl in PATH)', negatable: false)
     ..addOption('https-port',
@@ -186,6 +191,7 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli -d /path/to/share --ip 192.168.1.100');
   stdout.writeln('  localnode-cli --mode download-only --no-pin');
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
+  stdout.writeln('  localnode-cli --name "MyServer"');
   stdout.writeln('');
   stdout.writeln('To stop: Ctrl+C or type q + Enter');
 }
@@ -415,6 +421,7 @@ class _CliServer {
   _AuthMode _authMode = _AuthMode.randomPin;
   bool _downloadOnly = false;
   bool _clipboardEnabled = true;
+  String _serverName = 'LocalNode';
   int _startedAt = 0;
 
   String? _storagePath;
@@ -467,6 +474,7 @@ class _CliServer {
     bool downloadOnly = false,
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
+    String serverName = 'LocalNode',
     bool clipboardEnabled = true,
     bool httpsMode = false,
     int httpsPort = 8443,
@@ -474,6 +482,7 @@ class _CliServer {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
     _clipboardEnabled = clipboardEnabled;
+    _serverName = serverName;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -785,7 +794,7 @@ class _CliServer {
   Response _infoHandler(Request _) => Response.ok(
         json.encode({
           'version': '1.1.2',
-          'name': 'LocalNode Server',
+          'name': _serverName,
           'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
           'authMode': _authMode == _AuthMode.fixedPin
               ? 'fixedPin'
