@@ -809,8 +809,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               textInputAction: TextInputAction.done,
               textAlign: TextAlign.center,
               maxLength: 4,
-              obscureText: true,
-              obscuringCharacter: '*',
+              obscureText: false,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               onChanged: (value) {
                 if (value.length == 4) {
