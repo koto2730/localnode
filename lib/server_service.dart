@@ -1273,7 +1273,7 @@ class ServerService {
       await _init();
       await _deployAssets(); // アセットを展開
       try {
-        WakelockPlus.enable();
+        await WakelockPlus.enable();
       } catch (_) {
         // WSL 等の Linux 環境では DBus ScreenSaver サービスが存在しないため無視
       }
@@ -1343,9 +1343,9 @@ class ServerService {
     _clipboardLastModified = 0;
     // WakelockPlusはCLIモードでは使用されないため、try-catchで囲む
     try {
-      WakelockPlus.disable();
+      await WakelockPlus.disable();
     } catch (_) {
-      // CLIモードでは無視
+      // CLIモードまたはWSL等DBus未対応環境では無視
     }
     _log('Server stopped.');
   }
