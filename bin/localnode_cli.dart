@@ -138,7 +138,9 @@ Future<void> main(List<String> args) async {
   stdout.writeln('QR Code:');
   _printQrCode(qrUrl);
   stdout.writeln('');
-  stdout.writeln('Press Ctrl+C or type q + Enter to stop.');
+  stdout.writeln(Platform.isWindows
+      ? 'Press Ctrl+C to stop.'
+      : 'Press Ctrl+C or type q + Enter to stop.');
   stdout.writeln('');
 
   _setupSignalHandlers(server);
@@ -290,8 +292,8 @@ void _setupSignalHandlers(_CliServer server) {
 
 Future<void> _waitForQuit(_CliServer server) async {
   try {
-    if (!stdin.hasTerminal) {
-      await Completer<void>().future; // シグナル待ち
+    if (Platform.isWindows || !stdin.hasTerminal) {
+      await Completer<void>().future; // Ctrl+C / シグナル待ち
       return;
     }
     await for (final line

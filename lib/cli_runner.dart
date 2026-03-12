@@ -150,7 +150,9 @@ class CliRunner {
       stdout.writeln('QR Code:');
       _printAsciiQrCode(url);
       stdout.writeln('');
-      stdout.writeln('Press Ctrl+C or type q + Enter to stop.');
+      stdout.writeln(Platform.isWindows
+          ? 'Press Ctrl+C to stop.'
+          : 'Press Ctrl+C or type q + Enter to stop.');
       stdout.writeln('');
 
       // シグナルハンドラを設定
@@ -296,7 +298,8 @@ class CliRunner {
   /// stdinからの入力を待機し、'q'で終了
   Future<void> _waitForQuit() async {
     try {
-      if (!stdin.hasTerminal) {
+      if (Platform.isWindows || !stdin.hasTerminal) {
+        // Windows: q+Enter入力は不安定なためCtrl+Cのみサポート
         // 非対話的環境（nohup等）ではシグナルハンドラに任せる
         await _waitForever();
         return;
