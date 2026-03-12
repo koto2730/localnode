@@ -699,18 +699,21 @@ class _HomePageState extends ConsumerState<HomePage> {
         const SizedBox(height: 20),
         const Text('セキュリティモード', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        SwitchListTile(
-          title: const Text('HTTPS モード'),
-          subtitle: Text(
-            serverState.httpsMode
-                ? 'HTTPS ポート: ${serverState.httpsPort}  /  セットアップページ: ポート番号'
-                : 'HTTP（通常）モード',
-            style: const TextStyle(fontSize: 12),
+        SizedBox(
+          width: 300,
+          child: SwitchListTile(
+            title: const Text('HTTPS モード'),
+            subtitle: Text(
+              serverState.httpsMode
+                  ? 'HTTPS ポート: ${serverState.httpsPort}  /  セットアップページ: ポート番号'
+                  : 'HTTP（通常）モード',
+              style: const TextStyle(fontSize: 12),
+            ),
+            value: serverState.httpsMode,
+            onChanged: (value) {
+              notifier.setHttpsMode(enabled: value, httpsPort: serverState.httpsPort);
+            },
           ),
-          value: serverState.httpsMode,
-          onChanged: (value) {
-            notifier.setHttpsMode(enabled: value, httpsPort: serverState.httpsPort);
-          },
         ),
         if (serverState.httpsMode) ...[
           const SizedBox(height: 8),
