@@ -699,8 +699,8 @@ class _HomePageState extends ConsumerState<HomePage> {
         const SizedBox(height: 20),
         const Text('セキュリティモード', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        SizedBox(
-          width: 300,
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 300),
           child: SwitchListTile(
             title: const Text('HTTPS モード'),
             subtitle: Text(
