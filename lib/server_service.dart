@@ -19,7 +19,6 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'tls_manager.dart';
 
 /// 動作モード
 enum OperationMode { normal, downloadOnly }
@@ -55,9 +54,8 @@ class ServerService {
   static const _storagePlatform = MethodChannel('com.ictglab.localnode/storage');
   String? _safDirectoryUri; // 選択されたSAFディレクトリURI
   HttpServer? _server;
-  HttpServer? _companionServer; // HTTPS モード時の HTTP CA 配布サーバー
-  bool _httpsMode = false;
-  int? _httpsPort;
+  String? _httpsCertPath;
+  String? _httpsKeyPath;
   String? _ipAddress;
   int? _port;
   String? _fallbackStoragePath; // SAFが使えない場合のストレージパス
@@ -95,16 +93,13 @@ class ServerService {
   int? get port => _port;
   String? get pin => _pin;
   bool get isRunning => _server != null;
-  bool get isHttpsMode => _httpsMode;
-  int? get httpsPort => _httpsPort;
+  bool get isHttpsMode => _httpsCertPath != null && _httpsKeyPath != null;
 
   /// QR コードに埋め込む URL。
-  /// HTTPS モード時は CA インストール案内ページ (HTTP)、通常時は HTTP サーバー URL。
   String? get qrUrl {
     if (_ipAddress == null || _port == null) return null;
-    return _httpsMode
-        ? 'http://$_ipAddress:$_port/setup'
-        : 'http://$_ipAddress:$_port';
+    final scheme = isHttpsMode ? 'https' : 'http';
+    return '$scheme://$_ipAddress:$_port';
   }
   String? get documentsPath => _fallbackStoragePath;
 
@@ -1165,8 +1160,8 @@ class ServerService {
     bool verboseLogging = false,
     bool clipboardEnabled = true,
     String serverName = 'LocalNode',
-    bool httpsMode = false,
-    int httpsPort = 8443,
+    String? httpsCertPath,
+    String? httpsKeyPath,
   }) async {
     if (_server != null) return;
 
@@ -1196,8 +1191,8 @@ class ServerService {
 
       _ipAddress = ipAddress;
       _port = port;
-      _httpsMode = httpsMode;
-      _httpsPort = httpsMode ? httpsPort : null;
+      _httpsCertPath = httpsCertPath;
+      _httpsKeyPath = httpsKeyPath;
 
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
@@ -1213,21 +1208,14 @@ class ServerService {
           ? pipeline.addMiddleware(logRequests()).addHandler(cascade.handler)
           : pipeline.addHandler(cascade.handler);
 
-      if (httpsMode) {
-        if (!await TlsManager.isOpensslAvailable()) {
-          throw Exception(
-              'openssl コマンドが見つかりません。HTTPS モードには openssl が必要です。');
-        }
-        final appDir = await getApplicationSupportDirectory();
-        final tlsMgr = TlsManager(Directory(p.join(appDir.path, 'tls')));
-        await tlsMgr.init();
-        final secCtx = await tlsMgr.ensureServerCert(ipAddress);
+      if (isHttpsMode) {
+        final secCtx = SecurityContext()
+          ..useCertificateChain(httpsCertPath!)
+          ..usePrivateKey(httpsKeyPath!);
         _server = await shelf_io.serve(
-          handler, InternetAddress.anyIPv4, httpsPort,
+          handler, InternetAddress.anyIPv4, port,
           securityContext: secCtx,
         );
-        _companionServer =
-            await _startCompanionServer(ipAddress, port, httpsPort, tlsMgr);
       } else {
         _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
       }
@@ -1245,8 +1233,8 @@ class ServerService {
     AuthMode authMode = AuthMode.randomPin,
     String? fixedPin,
     String serverName = 'LocalNode',
-    bool httpsMode = false,
-    int httpsPort = 8443,
+    String? httpsCertPath,
+    String? httpsKeyPath,
   }) async {
     if (_server != null) return;
 
@@ -1271,7 +1259,7 @@ class ServerService {
 
     try {
       await _init();
-      await _deployAssets(); // アセットを展開
+      await _deployAssets();
       try {
         await WakelockPlus.enable();
       } catch (_) {
@@ -1280,10 +1268,9 @@ class ServerService {
 
       _ipAddress = ipAddress;
       _port = port;
-      _httpsMode = httpsMode;
-      _httpsPort = httpsMode ? httpsPort : null;
+      _httpsCertPath = httpsCertPath;
+      _httpsKeyPath = httpsKeyPath;
 
-      // 展開先の一時ディレクトリを指すように変更
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
@@ -1295,33 +1282,22 @@ class ServerService {
       final handler =
           const Pipeline().addMiddleware(logRequests()).addHandler(cascade.handler);
 
-      if (httpsMode) {
-        if (!await TlsManager.isOpensslAvailable()) {
-          throw Exception(
-              'openssl コマンドが見つかりません。HTTPS モードには openssl が必要です。');
-        }
-        final appDir = await getApplicationSupportDirectory();
-        final tlsMgr = TlsManager(Directory(p.join(appDir.path, 'tls')));
-        await tlsMgr.init();
-        final secCtx = await tlsMgr.ensureServerCert(ipAddress);
-        // anyIPv4でリッスンすることで、Tailscale IPなど特定のインターフェースにもアクセス可能
+      if (isHttpsMode) {
+        final secCtx = SecurityContext()
+          ..useCertificateChain(httpsCertPath!)
+          ..usePrivateKey(httpsKeyPath!);
         _server = await shelf_io.serve(
-          handler, InternetAddress.anyIPv4, httpsPort,
+          handler, InternetAddress.anyIPv4, port,
           securityContext: secCtx,
         );
-        _companionServer =
-            await _startCompanionServer(ipAddress, port, httpsPort, tlsMgr);
-        _log('Serving at https://${_server!.address.host}:${_server!.port}');
-        _log('CA setup page at http://$_ipAddress:$port/setup');
+        _log('Serving at https://$_ipAddress:${_server!.port}');
       } else {
-        // anyIPv4でリッスンすることで、Tailscale IPなど特定のインターフェースにもアクセス可能
         _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
-        _log('Serving at http://${_server!.address.host}:${_server!.port}');
-        _log('Selected IP for display: http://$_ipAddress:$port');
+        _log('Serving at http://$_ipAddress:${_server!.port}');
       }
     } catch (e) {
       _log('Error starting server: $e');
-      await stopServer(); // Ensure cleanup on partial start
+      await stopServer();
       rethrow;
     }
   }
@@ -1329,10 +1305,8 @@ class ServerService {
   Future<void> stopServer() async {
     await _server?.close(force: true);
     _server = null;
-    await _companionServer?.close(force: true);
-    _companionServer = null;
-    _httpsMode = false;
-    _httpsPort = null;
+    _httpsCertPath = null;
+    _httpsKeyPath = null;
     _ipAddress = null;
     _port = null;
     _pin = null;
@@ -1348,62 +1322,6 @@ class ServerService {
       // CLIモードまたはWSL等DBus未対応環境では無視
     }
     _log('Server stopped.');
-  }
-
-  // ---------------------------------------------------------------------------
-  // HTTPS コンパニオンサーバー（CA 証明書配布 + セットアップ案内ページ）
-  // ---------------------------------------------------------------------------
-
-  /// HTTP コンパニオンサーバーを起動する。
-  /// - GET /ca.crt          → CA 証明書 (DER)
-  /// - GET /ca.mobileconfig → iOS 用プロファイル
-  /// - その他               → /setup ページ
-  Future<HttpServer> _startCompanionServer(
-    String ipAddress,
-    int httpPort,
-    int httpsPort,
-    TlsManager tlsMgr,
-  ) async {
-    final fingerprint = await tlsMgr.caCertFingerprint();
-    if (fingerprint.isNotEmpty) {
-      _log('CA certificate SHA-256 fingerprint: $fingerprint');
-    }
-
-    final handler = (Request request) async {
-      final path = request.url.path;
-
-      if (path == 'ca.crt') {
-        final bytes = await tlsMgr.caCertDerBytes;
-        return Response.ok(
-          bytes,
-          headers: {
-            'Content-Type': 'application/x-x509-ca-cert',
-            'Content-Disposition': 'attachment; filename="LocalNodeCA.crt"',
-          },
-        );
-      }
-
-      if (path == 'ca.mobileconfig') {
-        final config = await tlsMgr.buildMobileconfig();
-        return Response.ok(
-          config,
-          headers: {
-            'Content-Type': 'application/x-apple-aspen-config',
-            'Content-Disposition':
-                'attachment; filename="LocalNode.mobileconfig"',
-          },
-        );
-      }
-
-      // /setup およびその他すべてのパス → セットアップ案内ページ
-      final html = TlsManager.buildSetupHtml(ipAddress, httpsPort, fingerprint: fingerprint);
-      return Response.ok(
-        html,
-        headers: {'Content-Type': 'text/html; charset=utf-8'},
-      );
-    };
-
-    return await shelf_io.serve(handler, InternetAddress.anyIPv4, httpPort);
   }
 
   // SAF ディレクトリを選択するメソッド
