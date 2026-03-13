@@ -39,6 +39,10 @@ class CliRunner {
           help: 'Hide clipboard content from console output', negatable: false)
       ..addFlag('verbose',
           abbr: 'v', help: 'Enable verbose request logging', negatable: false)
+      ..addOption('https-cert',
+          help: 'Path to TLS certificate file (PEM). Enables HTTPS when set with --https-key.')
+      ..addOption('https-key',
+          help: 'Path to TLS private key file (PEM). Enables HTTPS when set with --https-cert.')
       ..addFlag('help', abbr: 'h', help: 'Show help', negatable: false);
   }
 
@@ -79,6 +83,8 @@ class CliRunner {
     final noClipboard = results['no-clipboard'] as bool;
     final verbose = results['verbose'] as bool;
     final serverName = results['name'] as String;
+    final httpsCertPath = results['https-cert'] as String?;
+    final httpsKeyPath = results['https-key'] as String?;
 
     // モード設定
     final modeStr = results['mode'] as String;
@@ -129,9 +135,12 @@ class CliRunner {
         verboseLogging: verbose,
         clipboardEnabled: !noClipboard,
         serverName: serverName,
+        httpsCertPath: httpsCertPath,
+        httpsKeyPath: httpsKeyPath,
       );
 
-      final url = 'http://$ipAddress:$port';
+      final scheme = _serverService.isHttpsMode ? 'https' : 'http';
+      final url = '$scheme://$ipAddress:$port';
       final pin = _serverService.pin;
 
       stdout.writeln('Server started.');
