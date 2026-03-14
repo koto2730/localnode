@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show InternetAddress, Platform;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -30,6 +30,7 @@ class ServerState {
     this.serverName = 'LocalNode',
     this.httpsCertPath,
     this.httpsKeyPath,
+    this.httpsHostname,
   });
 
   final ServerStatus status;
@@ -45,6 +46,7 @@ class ServerState {
   final String serverName;
   final String? httpsCertPath;
   final String? httpsKeyPath;
+  final String? httpsHostname;
 
   bool get httpsMode =>
       httpsCertPath != null && httpsCertPath!.isNotEmpty &&
@@ -64,11 +66,13 @@ class ServerState {
     String? serverName,
     String? httpsCertPath,
     String? httpsKeyPath,
+    String? httpsHostname,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
     bool clearHttpsCertPath = false,
     bool clearHttpsKeyPath = false,
+    bool clearHttpsHostname = false,
   }) {
     return ServerState(
       status: status ?? this.status,
@@ -84,6 +88,7 @@ class ServerState {
       serverName: serverName ?? this.serverName,
       httpsCertPath: clearHttpsCertPath ? null : (httpsCertPath ?? this.httpsCertPath),
       httpsKeyPath: clearHttpsKeyPath ? null : (httpsKeyPath ?? this.httpsKeyPath),
+      httpsHostname: clearHttpsHostname ? null : (httpsHostname ?? this.httpsHostname),
     );
   }
 }
@@ -235,9 +240,22 @@ class ServerNotifier extends Notifier<ServerState> {
     state = state.copyWith(fixedPin: pin);
   }
 
-  void selectIpAddress(String ipAddress) {
-    if (kIsWeb) return; // Webでは実行しない
+  Future<void> selectIpAddress(String ipAddress) async {
+    if (kIsWeb) return;
     state = state.copyWith(selectedIpAddress: ipAddress);
+    // 逆引きDNSでホスト名を自動入力（HTTPSモード時に使用）
+    try {
+      final resolved = await InternetAddress(ipAddress).reverse();
+      final hostname = resolved.host;
+      // IPアドレスと同じ場合は空（ホスト名が取れなかった）
+      if (hostname != ipAddress) {
+        state = state.copyWith(httpsHostname: hostname);
+      } else {
+        state = state.copyWith(clearHttpsHostname: true);
+      }
+    } catch (_) {
+      state = state.copyWith(clearHttpsHostname: true);
+    }
   }
 
   Future<void> selectSafDirectory() async {
@@ -267,6 +285,7 @@ class ServerNotifier extends Notifier<ServerState> {
         serverName: state.serverName,
         httpsCertPath: state.httpsCertPath,
         httpsKeyPath: state.httpsKeyPath,
+        httpsHostname: state.httpsHostname,
       );
 
       state = state.copyWith(
@@ -329,6 +348,13 @@ class ServerNotifier extends Notifier<ServerState> {
       await prefs.setString('https_key_path', path);
       state = state.copyWith(httpsKeyPath: path);
     }
+  }
+
+  void setHttpsHostname(String hostname) {
+    state = state.copyWith(
+      httpsHostname: hostname.isEmpty ? null : hostname,
+      clearHttpsHostname: hostname.isEmpty,
+    );
   }
 }
 
@@ -470,6 +496,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _portController;
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
+  late final TextEditingController _hostnameController;
 
   @override
   void initState() {
@@ -477,6 +504,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _portController = TextEditingController(text: '8080');
     _fixedPinController = TextEditingController();
     _nameController = TextEditingController(text: 'LocalNode');
+    _hostnameController = TextEditingController();
     // Web以外のプラットフォームでのみIPアドレスリストと設定を読み込む
     if (!kIsWeb) {
       Future.microtask(() {
@@ -489,6 +517,9 @@ class _HomePageState extends ConsumerState<HomePage> {
             _fixedPinController.text = state.fixedPin!;
           }
           _nameController.text = state.serverName;
+          if (state.httpsHostname != null) {
+            _hostnameController.text = state.httpsHostname!;
+          }
         });
       });
     }
@@ -499,6 +530,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _portController.dispose();
     _fixedPinController.dispose();
     _nameController.dispose();
+    _hostnameController.dispose();
     super.dispose();
   }
 
@@ -610,6 +642,15 @@ class _HomePageState extends ConsumerState<HomePage> {
     // HTTPS モード時は CA セットアップページ URL、通常時は HTTP URL
     final url = notifier.qrUrl;
 
+    // IP選択時の逆引きDNS結果をホスト名コントローラに反映
+    ref.listen<ServerState>(serverNotifierProvider, (prev, next) {
+      final prevHostname = prev?.httpsHostname;
+      final nextHostname = next.httpsHostname;
+      if (prevHostname != nextHostname) {
+        _hostnameController.text = nextHostname ?? '';
+      }
+    });
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('LocalNode'),
@@ -681,7 +722,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                 .toList(),
             onChanged: (ip) {
               if (ip != null) {
-                notifier.selectIpAddress(ip);
+                notifier.selectIpAddress(ip);  // Future は fire-and-forget で OK
               }
             },
           ),
@@ -740,6 +781,25 @@ class _HomePageState extends ConsumerState<HomePage> {
           value: serverState.httpsKeyPath,
           onChanged: (path) => notifier.setHttpsKeyPath(path),
         ),
+        // HTTPSモード時のみホスト名フィールドを表示
+        if (serverState.httpsMode) ...[
+          const SizedBox(height: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 300),
+            child: TextField(
+              controller: _hostnameController,
+              decoration: const InputDecoration(
+                labelText: 'ホスト名 (QR/URL用, 任意)',
+                hintText: 'mydevice.tailnet.ts.net',
+                border: OutlineInputBorder(),
+                isDense: true,
+                helperText: 'IPを選択すると自動入力。証明書のSANに合わせて設定。',
+                helperMaxLines: 2,
+              ),
+              onChanged: (value) => notifier.setHttpsHostname(value),
+            ),
+          ),
+        ],
 
         // 動作モード選択
         const SizedBox(height: 20),
