@@ -56,6 +56,7 @@ class ServerService {
   HttpServer? _server;
   String? _httpsCertPath;
   String? _httpsKeyPath;
+  String? _httpsHostname;
   String? _ipAddress;
   int? _port;
   String? _fallbackStoragePath; // SAFが使えない場合のストレージパス
@@ -114,11 +115,14 @@ class ServerService {
     }
   }
 
-  /// QR コードに埋め込む URL。
+  /// QR コードに埋め込む URL。HTTPS モードでホスト名が設定されている場合はホスト名を優先する。
   String? get qrUrl {
     if (_ipAddress == null || _port == null) return null;
     final scheme = isHttpsMode ? 'https' : 'http';
-    return '$scheme://$_ipAddress:$_port';
+    final host = (isHttpsMode && _httpsHostname != null && _httpsHostname!.isNotEmpty)
+        ? _httpsHostname!
+        : _ipAddress!;
+    return '$scheme://$host:$_port';
   }
   String? get documentsPath => _fallbackStoragePath;
 
@@ -1214,6 +1218,7 @@ class ServerService {
       _port = port;
       _httpsCertPath = httpsCertPath;
       _httpsKeyPath = httpsKeyPath;
+      _httpsHostname = null; // CLI経由ではホスト名指定なし
 
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
@@ -1256,6 +1261,7 @@ class ServerService {
     String serverName = 'LocalNode',
     String? httpsCertPath,
     String? httpsKeyPath,
+    String? httpsHostname,
   }) async {
     if (_server != null) return;
 
@@ -1330,6 +1336,7 @@ class ServerService {
     _server = null;
     _httpsCertPath = null;
     _httpsKeyPath = null;
+    _httpsHostname = null;
     _ipAddress = null;
     _port = null;
     _pin = null;
