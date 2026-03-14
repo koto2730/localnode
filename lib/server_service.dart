@@ -93,7 +93,8 @@ class ServerService {
   int? get port => _port;
   String? get pin => _pin;
   bool get isRunning => _server != null;
-  bool get isHttpsMode => _httpsCertPath != null && _httpsKeyPath != null;
+  bool get isHttpsMode => _httpsCertPath != null && _httpsCertPath!.isNotEmpty &&
+      _httpsKeyPath != null && _httpsKeyPath!.isNotEmpty;
 
   /// QR コードに埋め込む URL。
   String? get qrUrl {
