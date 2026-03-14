@@ -96,6 +96,24 @@ class ServerService {
   bool get isHttpsMode => _httpsCertPath != null && _httpsCertPath!.isNotEmpty &&
       _httpsKeyPath != null && _httpsKeyPath!.isNotEmpty;
 
+  /// HTTPS 用 cert/key パスを検証する。問題があれば例外を投げる。
+  void _validateHttpsPaths(String? certPath, String? keyPath) {
+    final hasCert = certPath != null && certPath.isNotEmpty;
+    final hasKey = keyPath != null && keyPath.isNotEmpty;
+    if (hasCert != hasKey) {
+      throw ArgumentError(
+          '--https-cert と --https-key は両方指定してください。');
+    }
+    if (hasCert) {
+      if (!File(certPath!).existsSync()) {
+        throw ArgumentError('証明書ファイルが見つかりません: $certPath');
+      }
+      if (!File(keyPath!).existsSync()) {
+        throw ArgumentError('秘密鍵ファイルが見つかりません: $keyPath');
+      }
+    }
+  }
+
   /// QR コードに埋め込む URL。
   String? get qrUrl {
     if (_ipAddress == null || _port == null) return null;
@@ -1166,6 +1184,8 @@ class ServerService {
   }) async {
     if (_server != null) return;
 
+    _validateHttpsPaths(httpsCertPath, httpsKeyPath);
+
     _verboseLogging = verboseLogging;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
@@ -1238,6 +1258,8 @@ class ServerService {
     String? httpsKeyPath,
   }) async {
     if (_server != null) return;
+
+    _validateHttpsPaths(httpsCertPath, httpsKeyPath);
 
     _operationMode = operationMode;
     _authMode = authMode;

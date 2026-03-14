@@ -1084,6 +1084,20 @@ class _HomePageState extends ConsumerState<HomePage> {
               return;
             }
           }
+          // HTTPS cert/key バリデーション
+          final hasCert = serverState.httpsCertPath != null &&
+              serverState.httpsCertPath!.isNotEmpty;
+          final hasKey = serverState.httpsKeyPath != null &&
+              serverState.httpsKeyPath!.isNotEmpty;
+          if (hasCert != hasKey) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('証明書ファイルと秘密鍵ファイルは両方指定してください。'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
           await notifier.start(port);
         }
       },
