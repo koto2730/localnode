@@ -86,6 +86,19 @@ class CliRunner {
     final httpsCertPath = results['https-cert'] as String?;
     final httpsKeyPath = results['https-key'] as String?;
 
+    if ((httpsCertPath == null) != (httpsKeyPath == null)) {
+      stderr.writeln('Error: --https-cert and --https-key must both be specified.');
+      exit(1);
+    }
+    if (httpsCertPath != null && !File(httpsCertPath).existsSync()) {
+      stderr.writeln('Error: cert file not found: $httpsCertPath');
+      exit(1);
+    }
+    if (httpsKeyPath != null && !File(httpsKeyPath).existsSync()) {
+      stderr.writeln('Error: key file not found: $httpsKeyPath');
+      exit(1);
+    }
+
     // モード設定
     final modeStr = results['mode'] as String;
     final operationMode = modeStr == 'download-only'
