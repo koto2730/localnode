@@ -1162,7 +1162,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             );
             return;
           }
-          if (hasCert && !File(serverState.httpsCertPath!).existsSync()) {
+          if (hasCert && !await File(serverState.httpsCertPath!).exists()) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('証明書ファイルが見つかりません: ${serverState.httpsCertPath}'),
@@ -1171,7 +1171,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             );
             return;
           }
-          if (hasKey && !File(serverState.httpsKeyPath!).existsSync()) {
+          if (hasKey && !await File(serverState.httpsKeyPath!).exists()) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('秘密鍵ファイルが見つかりません: ${serverState.httpsKeyPath}'),
