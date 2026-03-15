@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show InternetAddress, Platform;
+import 'dart:io' show File, InternetAddress, Platform;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -497,6 +497,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
   late final TextEditingController _hostnameController;
+  ProviderSubscription<ServerState>? _hostnameSubscription;
 
   @override
   void initState() {
@@ -505,6 +506,17 @@ class _HomePageState extends ConsumerState<HomePage> {
     _fixedPinController = TextEditingController();
     _nameController = TextEditingController(text: 'LocalNode');
     _hostnameController = TextEditingController();
+    // IP選択時の逆引きDNS結果をホスト名コントローラに反映
+    _hostnameSubscription = ref.listenManual<ServerState>(
+      serverNotifierProvider,
+      (prev, next) {
+        final prevHostname = prev?.httpsHostname;
+        final nextHostname = next.httpsHostname;
+        if (prevHostname != nextHostname) {
+          _hostnameController.text = nextHostname ?? '';
+        }
+      },
+    );
     // Web以外のプラットフォームでのみIPアドレスリストと設定を読み込む
     if (!kIsWeb) {
       Future.microtask(() {
@@ -527,6 +539,7 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   @override
   void dispose() {
+    _hostnameSubscription?.close();
     _portController.dispose();
     _fixedPinController.dispose();
     _nameController.dispose();
@@ -639,17 +652,8 @@ class _HomePageState extends ConsumerState<HomePage> {
     // ネイティブプラットフォーム用のUI
     final serverState = ref.watch(serverNotifierProvider);
     final notifier = ref.read(serverNotifierProvider.notifier);
-    // HTTPS モード時は CA セットアップページ URL、通常時は HTTP URL
+    // HTTPS モード時はホスト名（設定あり）またはIPベースの URL、通常時は HTTP URL
     final url = notifier.qrUrl;
-
-    // IP選択時の逆引きDNS結果をホスト名コントローラに反映
-    ref.listen<ServerState>(serverNotifierProvider, (prev, next) {
-      final prevHostname = prev?.httpsHostname;
-      final nextHostname = next.httpsHostname;
-      if (prevHostname != nextHostname) {
-        _hostnameController.text = nextHostname ?? '';
-      }
-    });
 
     return Scaffold(
       appBar: AppBar(
@@ -1153,6 +1157,24 @@ class _HomePageState extends ConsumerState<HomePage> {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('証明書ファイルと秘密鍵ファイルは両方指定してください。'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
+          if (hasCert && !File(serverState.httpsCertPath!).existsSync()) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('証明書ファイルが見つかりません: ${serverState.httpsCertPath}'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
+          if (hasKey && !File(serverState.httpsKeyPath!).existsSync()) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('秘密鍵ファイルが見つかりません: ${serverState.httpsKeyPath}'),
                 backgroundColor: Colors.red,
               ),
             );
