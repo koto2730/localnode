@@ -175,6 +175,7 @@ class ServerNotifier extends Notifier<ServerState> {
     final savedServerName = prefs.getString('server_name') ?? 'LocalNode';
     final savedHttpsCertPath = prefs.getString('https_cert_path');
     final savedHttpsKeyPath = prefs.getString('https_key_path');
+    final savedHttpsHostname = prefs.getString('https_hostname');
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -192,6 +193,7 @@ class ServerNotifier extends Notifier<ServerState> {
       serverName: savedServerName,
       httpsCertPath: savedHttpsCertPath,
       httpsKeyPath: savedHttpsKeyPath,
+      httpsHostname: savedHttpsHostname,
     );
   }
 
@@ -248,13 +250,9 @@ class ServerNotifier extends Notifier<ServerState> {
       final resolved = await InternetAddress(ipAddress).reverse();
       final hostname = resolved.host;
       // IPアドレスと同じ場合は空（ホスト名が取れなかった）
-      if (hostname != ipAddress) {
-        state = state.copyWith(httpsHostname: hostname);
-      } else {
-        state = state.copyWith(clearHttpsHostname: true);
-      }
+      await setHttpsHostname(hostname != ipAddress ? hostname : '');
     } catch (_) {
-      state = state.copyWith(clearHttpsHostname: true);
+      await setHttpsHostname('');
     }
   }
 
@@ -350,11 +348,15 @@ class ServerNotifier extends Notifier<ServerState> {
     }
   }
 
-  void setHttpsHostname(String hostname) {
-    state = state.copyWith(
-      httpsHostname: hostname.isEmpty ? null : hostname,
-      clearHttpsHostname: hostname.isEmpty,
-    );
+  Future<void> setHttpsHostname(String hostname) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (hostname.isEmpty) {
+      await prefs.remove('https_hostname');
+      state = state.copyWith(clearHttpsHostname: true);
+    } else {
+      await prefs.setString('https_hostname', hostname);
+      state = state.copyWith(httpsHostname: hostname);
+    }
   }
 }
 

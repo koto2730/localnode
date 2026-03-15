@@ -241,7 +241,9 @@ class CliRunner {
     stdout.writeln('  localnode --cli --mode download-only --no-pin');
     stdout.writeln('  localnode --cli --no-clipboard --verbose');
     stdout.writeln('');
-    stdout.writeln('To stop the server: Ctrl+C or type q + Enter');
+    stdout.writeln(Platform.isWindows
+        ? 'To stop the server: Ctrl+C'
+        : 'To stop the server: Ctrl+C or type q + Enter');
   }
 
   /// QRコードをASCIIアートとして出力
