@@ -1299,6 +1299,7 @@ class ServerService {
       _port = port;
       _httpsCertPath = httpsCertPath;
       _httpsKeyPath = httpsKeyPath;
+      _httpsHostname = httpsHostname;
 
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
