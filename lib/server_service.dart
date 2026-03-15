@@ -98,18 +98,17 @@ class ServerService {
       _httpsKeyPath != null && _httpsKeyPath!.isNotEmpty;
 
   /// HTTPS 用 cert/key パスを検証する。問題があれば例外を投げる。
-  void _validateHttpsPaths(String? certPath, String? keyPath) {
+  Future<void> _validateHttpsPaths(String? certPath, String? keyPath) async {
     final hasCert = certPath != null && certPath.isNotEmpty;
     final hasKey = keyPath != null && keyPath.isNotEmpty;
     if (hasCert != hasKey) {
-      throw ArgumentError(
-          '--https-cert と --https-key は両方指定してください。');
+      throw ArgumentError('証明書ファイルと秘密鍵ファイルは両方指定してください。');
     }
     if (hasCert) {
-      if (!File(certPath!).existsSync()) {
+      if (!await File(certPath!).exists()) {
         throw ArgumentError('証明書ファイルが見つかりません: $certPath');
       }
-      if (!File(keyPath!).existsSync()) {
+      if (!await File(keyPath!).exists()) {
         throw ArgumentError('秘密鍵ファイルが見つかりません: $keyPath');
       }
     }
@@ -1188,7 +1187,7 @@ class ServerService {
   }) async {
     if (_server != null) return;
 
-    _validateHttpsPaths(httpsCertPath, httpsKeyPath);
+    await _validateHttpsPaths(httpsCertPath, httpsKeyPath);
 
     _verboseLogging = verboseLogging;
     _clipboardEnabled = clipboardEnabled;
@@ -1265,7 +1264,7 @@ class ServerService {
   }) async {
     if (_server != null) return;
 
-    _validateHttpsPaths(httpsCertPath, httpsKeyPath);
+    await _validateHttpsPaths(httpsCertPath, httpsKeyPath);
 
     _operationMode = operationMode;
     _authMode = authMode;
