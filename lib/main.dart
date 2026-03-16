@@ -248,10 +248,12 @@ class ServerNotifier extends Notifier<ServerState> {
     // 逆引きDNSでホスト名を自動入力（HTTPSモード時に使用）
     try {
       final resolved = await InternetAddress(ipAddress).reverse();
+      // DNS応答が返ってきた時点で選択IPが変わっていれば無視（競合防止）
+      if (state.selectedIpAddress != ipAddress) return;
       final hostname = resolved.host;
-      // IPアドレスと同じ場合は空（ホスト名が取れなかった）
       await setHttpsHostname(hostname != ipAddress ? hostname : '');
     } catch (_) {
+      if (state.selectedIpAddress != ipAddress) return;
       await setHttpsHostname('');
     }
   }
@@ -1165,6 +1167,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             return;
           }
           if (hasCert && !await File(serverState.httpsCertPath!).exists()) {
+            if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('証明書ファイルが見つかりません: ${serverState.httpsCertPath}'),
@@ -1174,6 +1177,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             return;
           }
           if (hasKey && !await File(serverState.httpsKeyPath!).exists()) {
+            if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('秘密鍵ファイルが見つかりません: ${serverState.httpsKeyPath}'),
