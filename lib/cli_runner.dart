@@ -39,10 +39,7 @@ class CliRunner {
           help: 'Hide clipboard content from console output', negatable: false)
       ..addFlag('verbose',
           abbr: 'v', help: 'Enable verbose request logging', negatable: false)
-      ..addOption('https-cert',
-          help: 'Path to TLS certificate file (PEM). Enables HTTPS when set with --https-key.')
-      ..addOption('https-key',
-          help: 'Path to TLS private key file (PEM). Enables HTTPS when set with --https-cert.')
+      // TODO(v1.3.0): --https-cert / --https-key (#98)
       ..addFlag('help', abbr: 'h', help: 'Show help', negatable: false);
   }
 
@@ -83,21 +80,9 @@ class CliRunner {
     final noClipboard = results['no-clipboard'] as bool;
     final verbose = results['verbose'] as bool;
     final serverName = results['name'] as String;
-    final httpsCertPath = results['https-cert'] as String?;
-    final httpsKeyPath = results['https-key'] as String?;
-
-    if ((httpsCertPath == null) != (httpsKeyPath == null)) {
-      stderr.writeln('Error: --https-cert and --https-key must both be specified.');
-      exit(1);
-    }
-    if (httpsCertPath != null && !File(httpsCertPath).existsSync()) {
-      stderr.writeln('Error: cert file not found: $httpsCertPath');
-      exit(1);
-    }
-    if (httpsKeyPath != null && !File(httpsKeyPath).existsSync()) {
-      stderr.writeln('Error: key file not found: $httpsKeyPath');
-      exit(1);
-    }
+    // TODO(v1.3.0): HTTPS support (#98)
+    const String? httpsCertPath = null;
+    const String? httpsKeyPath = null;
 
     // モード設定
     final modeStr = results['mode'] as String;
@@ -184,6 +169,9 @@ class CliRunner {
       if (!noClipboard) {
         _startClipboardPolling();
       }
+
+      // Windows: サーバー起動後にstdinバッファを消去してq+Enter等の残留入力を防ぐ (#128)
+      _flushWindowsConsoleInput();
 
       // stdinからの入力を待機（'q'で終了）
       await _waitForQuit();

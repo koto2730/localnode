@@ -769,45 +769,8 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
-        // セキュリティモード (HTTPS) 設定
-        const SizedBox(height: 20),
-        const Text('セキュリティモード (HTTPS)', style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 4),
-        const Text(
-          'cert.pem と key.pem を指定すると HTTPS で起動します。\n証明書は Tailscale (tailscale cert) や Let\'s Encrypt 等で取得してください。',
-          style: TextStyle(fontSize: 11, color: Colors.grey),
-        ),
-        const SizedBox(height: 8),
-        _CertPathField(
-          label: 'cert.pem',
-          value: serverState.httpsCertPath,
-          onChanged: (path) => notifier.setHttpsCertPath(path),
-        ),
-        const SizedBox(height: 8),
-        _CertPathField(
-          label: 'key.pem',
-          value: serverState.httpsKeyPath,
-          onChanged: (path) => notifier.setHttpsKeyPath(path),
-        ),
-        // HTTPSモード時のみホスト名フィールドを表示
-        if (serverState.httpsMode) ...[
-          const SizedBox(height: 8),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 300),
-            child: TextField(
-              controller: _hostnameController,
-              decoration: const InputDecoration(
-                labelText: 'ホスト名 (QR/URL用, 任意)',
-                hintText: 'mydevice.tailnet.ts.net',
-                border: OutlineInputBorder(),
-                isDense: true,
-                helperText: 'IPを選択すると自動入力。証明書のSANに合わせて設定。',
-                helperMaxLines: 2,
-              ),
-              onChanged: (value) => notifier.setHttpsHostname(value),
-            ),
-          ),
-        ],
+        // TODO(v1.3.0): HTTPS support - re-enable when implementation is complete (#98)
+        // セキュリティモード (HTTPS) 設定は v1.3.0 で対応予定
 
         // 動作モード選択
         const SizedBox(height: 20),

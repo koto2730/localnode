@@ -11,6 +11,7 @@ A Flutter application that transforms your phone or computer into a secure, pers
 *   **Access Control:** Configure download-only mode or disable PIN authentication for trusted networks.
 *   **Easy Connection:** Connect quickly using a QR code or by manually entering the displayed IP address.
 *   **IP Address Selection:** Choose which network interface (e.g., Wi-Fi, Tailscale) to use for serving files.
+*   **Custom Server Name:** Set a custom name displayed in the browser tab and page title.
 *   **Custom Shared Folder:** Select any folder on your device as the shared directory.
 *   **CLI Mode:** Run as a headless server from the command line on desktop platforms with full option support.
 *   **Client-only Web App:** The web version of LocalNode functions as a client to access servers running on other platforms.
@@ -75,6 +76,7 @@ localnode --cli [options]
 |--------|-------------|
 | `--port`, `-p` | Server port (default: 8080) |
 | `--ip` | IP address to advertise (skip auto-detection) |
+| `--name`, `-n` | Custom server name (shown in browser tab/title) |
 | `--pin` | Fixed PIN (random if not specified) |
 | `--dir`, `-d` | Shared directory path |
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
@@ -95,14 +97,17 @@ localnode --cli -p 3000 --pin 1234 -d /home/user/share
 # Specify IP address (useful for WSL, VPN, multi-NIC)
 localnode --cli -d /path/to/share --ip 192.168.1.100
 
+# Set a custom server name
+localnode --cli --name "My Server"
+
 # Download-only mode without PIN
 localnode --cli --mode download-only --no-pin
 
-# Hide clipboard output, enable verbose logging
-localnode --cli --no-clipboard --verbose
 ```
 
-To stop the server: **Ctrl+C** or type **q + Enter**.
+To stop the server: **Ctrl+C**.
+
+> **Note (Windows):** On Windows, only Ctrl+C is supported to stop the server.
 
 ## Platform Support
 
