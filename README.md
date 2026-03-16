@@ -6,11 +6,13 @@ A Flutter application that transforms your phone or computer into a secure, pers
 
 *   **Cross-Platform Server:** Turn your iOS, Android, Windows, macOS, or Linux device into a local HTTP file server.
 *   **Web Browser Access:** Access and manage your files from any device with a web browser on the same network. No special client app required.
+*   **HTTPS Support:** Serve over HTTPS by providing your own certificate files (e.g., from Tailscale or Let's Encrypt). Hostname-aware QR code generation included.
 *   **Clipboard Sharing:** Sync text between devices via the clipboard sharing feature. Tag items with labels for easy identification.
 *   **Secure File Sharing:** Upload, download, and manage files with PIN-based authentication.
 *   **Access Control:** Configure download-only mode or disable PIN authentication for trusted networks.
 *   **Easy Connection:** Connect quickly using a QR code or by manually entering the displayed IP address.
 *   **IP Address Selection:** Choose which network interface (e.g., Wi-Fi, Tailscale) to use for serving files.
+*   **Custom Server Name:** Set a custom name displayed in the browser tab and page title.
 *   **Custom Shared Folder:** Select any folder on your device as the shared directory.
 *   **CLI Mode:** Run as a headless server from the command line on desktop platforms with full option support.
 *   **Client-only Web App:** The web version of LocalNode functions as a client to access servers running on other platforms.
@@ -75,11 +77,15 @@ localnode --cli [options]
 |--------|-------------|
 | `--port`, `-p` | Server port (default: 8080) |
 | `--ip` | IP address to advertise (skip auto-detection) |
+| `--name`, `-n` | Custom server name (shown in browser tab/title) |
 | `--pin` | Fixed PIN (random if not specified) |
 | `--dir`, `-d` | Shared directory path |
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--no-pin` | Disable PIN authentication |
 | `--no-clipboard` | Hide clipboard content from console output |
+| `--https-cert` | Path to TLS certificate file (PEM). Enables HTTPS when set with `--https-key` |
+| `--https-key` | Path to TLS private key file (PEM). Enables HTTPS when set with `--https-cert` |
+| `--https-port` | HTTPS server port (default: 8443) |
 | `--verbose`, `-v` | Enable verbose request logging |
 | `--help`, `-h` | Show help |
 
@@ -95,14 +101,19 @@ localnode --cli -p 3000 --pin 1234 -d /home/user/share
 # Specify IP address (useful for WSL, VPN, multi-NIC)
 localnode --cli -d /path/to/share --ip 192.168.1.100
 
+# Set a custom server name
+localnode --cli --name "My Server"
+
 # Download-only mode without PIN
 localnode --cli --mode download-only --no-pin
 
-# Hide clipboard output, enable verbose logging
-localnode --cli --no-clipboard --verbose
+# Start with HTTPS using your own certificate (e.g., from Tailscale)
+localnode --cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem
 ```
 
-To stop the server: **Ctrl+C** or type **q + Enter**.
+To stop the server: **Ctrl+C**.
+
+> **Note (Windows):** On Windows, only Ctrl+C is supported to stop the server.
 
 ## Platform Support
 
@@ -115,6 +126,54 @@ To stop the server: **Ctrl+C** or type **q + Enter**.
 | Linux (x64) | Yes | Yes | GitHub Releases |
 | Linux (ARM64) | Yes | Yes | GitHub Releases |
 | Web | Client-only | - | - |
+
+## HTTPS Setup
+
+LocalNode supports HTTPS when you provide your own certificate and private key files.
+
+### Getting a Certificate
+
+**Tailscale (recommended for Tailscale users)**
+
+```bash
+tailscale cert <your-device-hostname>
+# Generates: <hostname>.crt and <hostname>.key
+```
+
+Then in LocalNode GUI, set the cert and key paths and set the hostname to your Tailscale hostname (e.g., `mydevice.tailnet.ts.net`). The QR code will use that hostname so clients connect via the valid cert.
+
+**Let's Encrypt (if you have a domain)**
+
+```bash
+certbot certonly --standalone -d yourdomain.example.com
+# Cert: /etc/letsencrypt/live/yourdomain.example.com/fullchain.pem
+# Key:  /etc/letsencrypt/live/yourdomain.example.com/privkey.pem
+```
+
+**Self-signed (local testing only)**
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+```
+
+> Note: Self-signed certificates will show a browser warning unless you manually install the CA on each client device.
+
+### GUI Setup
+
+1. In the server settings, set the paths to your `cert.pem` and `key.pem` files.
+2. (Optional) Set the hostname field to match your certificate's domain — the QR code and URL will use this hostname instead of the IP address.
+3. Start the server. It will serve over HTTPS on the configured port (default: 8443).
+
+### CLI Setup
+
+```bash
+localnode --cli --https-cert cert.pem --https-key key.pem
+localnode-cli --https-cert cert.pem --https-key key.pem --https-port 443
+```
+
+Both `--https-cert` and `--https-key` must be specified together.
+
+---
 
 ## Contributing
 
