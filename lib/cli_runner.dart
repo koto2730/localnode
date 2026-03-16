@@ -39,6 +39,10 @@ class CliRunner {
           help: 'Hide clipboard content from console output', negatable: false)
       ..addFlag('verbose',
           abbr: 'v', help: 'Enable verbose request logging', negatable: false)
+      ..addOption('https-cert',
+          help: 'Path to TLS certificate file (PEM). Enables HTTPS when set with --https-key.')
+      ..addOption('https-key',
+          help: 'Path to TLS private key file (PEM). Enables HTTPS when set with --https-cert.')
       ..addFlag('help', abbr: 'h', help: 'Show help', negatable: false);
   }
 
@@ -79,6 +83,21 @@ class CliRunner {
     final noClipboard = results['no-clipboard'] as bool;
     final verbose = results['verbose'] as bool;
     final serverName = results['name'] as String;
+    final httpsCertPath = results['https-cert'] as String?;
+    final httpsKeyPath = results['https-key'] as String?;
+
+    if ((httpsCertPath == null) != (httpsKeyPath == null)) {
+      stderr.writeln('Error: --https-cert and --https-key must both be specified.');
+      exit(1);
+    }
+    if (httpsCertPath != null && !File(httpsCertPath).existsSync()) {
+      stderr.writeln('Error: cert file not found: $httpsCertPath');
+      exit(1);
+    }
+    if (httpsKeyPath != null && !File(httpsKeyPath).existsSync()) {
+      stderr.writeln('Error: key file not found: $httpsKeyPath');
+      exit(1);
+    }
 
     // モード設定
     final modeStr = results['mode'] as String;
@@ -129,9 +148,12 @@ class CliRunner {
         verboseLogging: verbose,
         clipboardEnabled: !noClipboard,
         serverName: serverName,
+        httpsCertPath: httpsCertPath,
+        httpsKeyPath: httpsKeyPath,
       );
 
-      final url = 'http://$ipAddress:$port';
+      final scheme = _serverService.isHttpsMode ? 'https' : 'http';
+      final url = '$scheme://$ipAddress:$port';
       final pin = _serverService.pin;
 
       stdout.writeln('Server started.');
@@ -150,7 +172,9 @@ class CliRunner {
       stdout.writeln('QR Code:');
       _printAsciiQrCode(url);
       stdout.writeln('');
-      stdout.writeln('Press Ctrl+C or type q + Enter to stop.');
+      stdout.writeln(Platform.isWindows
+          ? 'Press Ctrl+C to stop.'
+          : 'Press Ctrl+C or type q + Enter to stop.');
       stdout.writeln('');
 
       // シグナルハンドラを設定
@@ -217,7 +241,9 @@ class CliRunner {
     stdout.writeln('  localnode --cli --mode download-only --no-pin');
     stdout.writeln('  localnode --cli --no-clipboard --verbose');
     stdout.writeln('');
-    stdout.writeln('To stop the server: Ctrl+C or type q + Enter');
+    stdout.writeln(Platform.isWindows
+        ? 'To stop the server: Ctrl+C'
+        : 'To stop the server: Ctrl+C or type q + Enter');
   }
 
   /// QRコードをASCIIアートとして出力
@@ -296,7 +322,8 @@ class CliRunner {
   /// stdinからの入力を待機し、'q'で終了
   Future<void> _waitForQuit() async {
     try {
-      if (!stdin.hasTerminal) {
+      if (Platform.isWindows || !stdin.hasTerminal) {
+        // Windows: q+Enter入力は不安定なためCtrl+Cのみサポート
         // 非対話的環境（nohup等）ではシグナルハンドラに任せる
         await _waitForever();
         return;

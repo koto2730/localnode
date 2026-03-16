@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show File, InternetAddress, Platform;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -27,8 +28,9 @@ class ServerState {
     this.authMode = AuthMode.randomPin,
     this.fixedPin,
     this.serverName = 'LocalNode',
-    this.httpsMode = false,
-    this.httpsPort = 8443,
+    this.httpsCertPath,
+    this.httpsKeyPath,
+    this.httpsHostname,
   });
 
   final ServerStatus status;
@@ -42,8 +44,13 @@ class ServerState {
   final AuthMode authMode;
   final String? fixedPin;
   final String serverName;
-  final bool httpsMode;
-  final int httpsPort;
+  final String? httpsCertPath;
+  final String? httpsKeyPath;
+  final String? httpsHostname;
+
+  bool get httpsMode =>
+      httpsCertPath != null && httpsCertPath!.isNotEmpty &&
+      httpsKeyPath != null && httpsKeyPath!.isNotEmpty;
 
   ServerState copyWith({
     ServerStatus? status,
@@ -57,11 +64,15 @@ class ServerState {
     AuthMode? authMode,
     String? fixedPin,
     String? serverName,
-    bool? httpsMode,
-    int? httpsPort,
+    String? httpsCertPath,
+    String? httpsKeyPath,
+    String? httpsHostname,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
+    bool clearHttpsCertPath = false,
+    bool clearHttpsKeyPath = false,
+    bool clearHttpsHostname = false,
   }) {
     return ServerState(
       status: status ?? this.status,
@@ -75,8 +86,9 @@ class ServerState {
       authMode: authMode ?? this.authMode,
       fixedPin: clearFixedPin ? null : (fixedPin ?? this.fixedPin),
       serverName: serverName ?? this.serverName,
-      httpsMode: httpsMode ?? this.httpsMode,
-      httpsPort: httpsPort ?? this.httpsPort,
+      httpsCertPath: clearHttpsCertPath ? null : (httpsCertPath ?? this.httpsCertPath),
+      httpsKeyPath: clearHttpsKeyPath ? null : (httpsKeyPath ?? this.httpsKeyPath),
+      httpsHostname: clearHttpsHostname ? null : (httpsHostname ?? this.httpsHostname),
     );
   }
 }
@@ -161,6 +173,9 @@ class ServerNotifier extends Notifier<ServerState> {
     final authModeStr = prefs.getString('auth_mode');
     final savedFixedPin = prefs.getString('fixed_pin');
     final savedServerName = prefs.getString('server_name') ?? 'LocalNode';
+    final savedHttpsCertPath = prefs.getString('https_cert_path');
+    final savedHttpsKeyPath = prefs.getString('https_key_path');
+    final savedHttpsHostname = prefs.getString('https_hostname');
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -176,6 +191,9 @@ class ServerNotifier extends Notifier<ServerState> {
       authMode: authMode,
       fixedPin: savedFixedPin,
       serverName: savedServerName,
+      httpsCertPath: savedHttpsCertPath,
+      httpsKeyPath: savedHttpsKeyPath,
+      httpsHostname: savedHttpsHostname,
     );
   }
 
@@ -224,9 +242,20 @@ class ServerNotifier extends Notifier<ServerState> {
     state = state.copyWith(fixedPin: pin);
   }
 
-  void selectIpAddress(String ipAddress) {
-    if (kIsWeb) return; // Webでは実行しない
+  Future<void> selectIpAddress(String ipAddress) async {
+    if (kIsWeb) return;
     state = state.copyWith(selectedIpAddress: ipAddress);
+    // 逆引きDNSでホスト名を自動入力（HTTPSモード時に使用）
+    try {
+      final resolved = await InternetAddress(ipAddress).reverse();
+      // DNS応答が返ってきた時点で選択IPが変わっていれば無視（競合防止）
+      if (state.selectedIpAddress != ipAddress) return;
+      final hostname = resolved.host;
+      await setHttpsHostname(hostname != ipAddress ? hostname : '');
+    } catch (_) {
+      if (state.selectedIpAddress != ipAddress) return;
+      await setHttpsHostname('');
+    }
   }
 
   Future<void> selectSafDirectory() async {
@@ -254,8 +283,9 @@ class ServerNotifier extends Notifier<ServerState> {
         authMode: state.authMode,
         fixedPin: state.fixedPin,
         serverName: state.serverName,
-        httpsMode: state.httpsMode,
-        httpsPort: state.httpsPort,
+        httpsCertPath: state.httpsCertPath,
+        httpsKeyPath: state.httpsKeyPath,
+        httpsHostname: state.httpsHostname,
       );
 
       state = state.copyWith(
@@ -298,8 +328,37 @@ class ServerNotifier extends Notifier<ServerState> {
   /// QR コードに埋め込む URL。サーバー停止中は null。
   String? get qrUrl => _serverService.qrUrl;
 
-  void setHttpsMode({required bool enabled, int httpsPort = 8443}) {
-    state = state.copyWith(httpsMode: enabled, httpsPort: httpsPort);
+  Future<void> setHttpsCertPath(String? path) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (path == null || path.isEmpty) {
+      await prefs.remove('https_cert_path');
+      state = state.copyWith(clearHttpsCertPath: true);
+    } else {
+      await prefs.setString('https_cert_path', path);
+      state = state.copyWith(httpsCertPath: path);
+    }
+  }
+
+  Future<void> setHttpsKeyPath(String? path) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (path == null || path.isEmpty) {
+      await prefs.remove('https_key_path');
+      state = state.copyWith(clearHttpsKeyPath: true);
+    } else {
+      await prefs.setString('https_key_path', path);
+      state = state.copyWith(httpsKeyPath: path);
+    }
+  }
+
+  Future<void> setHttpsHostname(String hostname) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (hostname.isEmpty) {
+      await prefs.remove('https_hostname');
+      state = state.copyWith(clearHttpsHostname: true);
+    } else {
+      await prefs.setString('https_hostname', hostname);
+      state = state.copyWith(httpsHostname: hostname);
+    }
   }
 }
 
@@ -441,7 +500,8 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _portController;
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
-  late final TextEditingController _httpsPortController;
+  late final TextEditingController _hostnameController;
+  ProviderSubscription<ServerState>? _hostnameSubscription;
 
   @override
   void initState() {
@@ -449,7 +509,18 @@ class _HomePageState extends ConsumerState<HomePage> {
     _portController = TextEditingController(text: '8080');
     _fixedPinController = TextEditingController();
     _nameController = TextEditingController(text: 'LocalNode');
-    _httpsPortController = TextEditingController(text: '8443');
+    _hostnameController = TextEditingController();
+    // IP選択時の逆引きDNS結果をホスト名コントローラに反映
+    _hostnameSubscription = ref.listenManual<ServerState>(
+      serverNotifierProvider,
+      (prev, next) {
+        final prevHostname = prev?.httpsHostname;
+        final nextHostname = next.httpsHostname;
+        if (prevHostname != nextHostname) {
+          _hostnameController.text = nextHostname ?? '';
+        }
+      },
+    );
     // Web以外のプラットフォームでのみIPアドレスリストと設定を読み込む
     if (!kIsWeb) {
       Future.microtask(() {
@@ -462,7 +533,9 @@ class _HomePageState extends ConsumerState<HomePage> {
             _fixedPinController.text = state.fixedPin!;
           }
           _nameController.text = state.serverName;
-          _httpsPortController.text = state.httpsPort.toString();
+          if (state.httpsHostname != null) {
+            _hostnameController.text = state.httpsHostname!;
+          }
         });
       });
     }
@@ -470,10 +543,11 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   @override
   void dispose() {
+    _hostnameSubscription?.close();
     _portController.dispose();
     _fixedPinController.dispose();
     _nameController.dispose();
-    _httpsPortController.dispose();
+    _hostnameController.dispose();
     super.dispose();
   }
 
@@ -582,7 +656,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     // ネイティブプラットフォーム用のUI
     final serverState = ref.watch(serverNotifierProvider);
     final notifier = ref.read(serverNotifierProvider.notifier);
-    // HTTPS モード時は CA セットアップページ URL、通常時は HTTP URL
+    // HTTPS モード時はホスト名（設定あり）またはIPベースの URL、通常時は HTTP URL
     final url = notifier.qrUrl;
 
     return Scaffold(
@@ -656,7 +730,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                 .toList(),
             onChanged: (ip) {
               if (ip != null) {
-                notifier.selectIpAddress(ip);
+                notifier.selectIpAddress(ip);  // Future は fire-and-forget で OK
               }
             },
           ),
@@ -697,41 +771,40 @@ class _HomePageState extends ConsumerState<HomePage> {
         ),
         // セキュリティモード (HTTPS) 設定
         const SizedBox(height: 20),
-        const Text('セキュリティモード', style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        SwitchListTile(
-          title: const Text('HTTPS モード'),
-          subtitle: Text(
-            serverState.httpsMode
-                ? 'HTTPS ポート: ${serverState.httpsPort}  /  セットアップページ: ポート番号'
-                : 'HTTP（通常）モード',
-            style: const TextStyle(fontSize: 12),
-          ),
-          value: serverState.httpsMode,
-          onChanged: (value) {
-            notifier.setHttpsMode(enabled: value, httpsPort: serverState.httpsPort);
-          },
+        const Text('セキュリティモード (HTTPS)', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        const Text(
+          'cert.pem と key.pem を指定すると HTTPS で起動します。\n証明書は Tailscale (tailscale cert) や Let\'s Encrypt 等で取得してください。',
+          style: TextStyle(fontSize: 11, color: Colors.grey),
         ),
+        const SizedBox(height: 8),
+        _CertPathField(
+          label: 'cert.pem',
+          value: serverState.httpsCertPath,
+          onChanged: (path) => notifier.setHttpsCertPath(path),
+        ),
+        const SizedBox(height: 8),
+        _CertPathField(
+          label: 'key.pem',
+          value: serverState.httpsKeyPath,
+          onChanged: (path) => notifier.setHttpsKeyPath(path),
+        ),
+        // HTTPSモード時のみホスト名フィールドを表示
         if (serverState.httpsMode) ...[
           const SizedBox(height: 8),
-          SizedBox(
-            width: 150,
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 300),
             child: TextField(
+              controller: _hostnameController,
               decoration: const InputDecoration(
-                labelText: 'HTTPS ポート番号',
+                labelText: 'ホスト名 (QR/URL用, 任意)',
+                hintText: 'mydevice.tailnet.ts.net',
                 border: OutlineInputBorder(),
                 isDense: true,
+                helperText: 'IPを選択すると自動入力。証明書のSANに合わせて設定。',
+                helperMaxLines: 2,
               ),
-              keyboardType: TextInputType.number,
-              textAlign: TextAlign.center,
-              controller: _httpsPortController,
-              onChanged: (v) {
-                final p = int.tryParse(v);
-                if (p != null && p > 0 && p <= 65535) {
-                  notifier.setHttpsMode(
-                      enabled: true, httpsPort: p);
-                }
-              },
+              onChanged: (value) => notifier.setHttpsHostname(value),
             ),
           ),
         ],
@@ -809,8 +882,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               textInputAction: TextInputAction.done,
               textAlign: TextAlign.center,
               maxLength: 4,
-              obscureText: true,
-              obscuringCharacter: '*',
+              obscureText: false,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               onChanged: (value) {
                 if (value.length == 4) {
@@ -1080,6 +1152,40 @@ class _HomePageState extends ConsumerState<HomePage> {
               return;
             }
           }
+          // HTTPS cert/key バリデーション
+          final hasCert = serverState.httpsCertPath != null &&
+              serverState.httpsCertPath!.isNotEmpty;
+          final hasKey = serverState.httpsKeyPath != null &&
+              serverState.httpsKeyPath!.isNotEmpty;
+          if (hasCert != hasKey) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('証明書ファイルと秘密鍵ファイルは両方指定してください。'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
+          if (hasCert && !await File(serverState.httpsCertPath!).exists()) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('証明書ファイルが見つかりません: ${serverState.httpsCertPath}'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
+          if (hasKey && !await File(serverState.httpsKeyPath!).exists()) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('秘密鍵ファイルが見つかりません: ${serverState.httpsKeyPath}'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
           await notifier.start(port);
         }
       },
@@ -1324,5 +1430,60 @@ class _ClipboardItemTile extends StatelessWidget {
     if (diff.inHours < 1) return '${diff.inMinutes}分前';
     if (diff.inDays < 1) return '${diff.inHours}時間前';
     return '${diff.inDays}日前';
+  }
+}
+
+/// cert.pem / key.pem のパスを表示・選択するウィジェット。
+class _CertPathField extends StatelessWidget {
+  const _CertPathField({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String? value;
+  final void Function(String?) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              value != null && value!.isNotEmpty ? value! : '未設定',
+              style: TextStyle(
+                fontSize: 12,
+                color: value != null && value!.isNotEmpty ? null : Colors.grey,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: () async {
+              final result = await FilePicker.platform.pickFiles(
+                type: FileType.any,
+                dialogTitle: '$label を選択',
+              );
+              if (result != null && result.files.single.path != null) {
+                onChanged(result.files.single.path);
+              }
+            },
+            child: Text('$label を選択'),
+          ),
+          if (value != null && value!.isNotEmpty) ...[
+            const SizedBox(width: 4),
+            IconButton(
+              icon: const Icon(Icons.clear, size: 18),
+              onPressed: () => onChanged(null),
+              tooltip: 'クリア',
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }

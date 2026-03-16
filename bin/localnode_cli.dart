@@ -21,7 +21,6 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
-import 'package:localnode/tls_manager.dart';
 
 // =============================================================================
 // エントリポイント
@@ -64,19 +63,23 @@ Future<void> main(List<String> args) async {
   final downloadOnly = (results['mode'] as String) == 'download-only';
   final noPin = results['no-pin'] as bool;
   final fixedPin = results['pin'] as String?;
-  final httpsMode = results['https'] as bool;
-  final httpsPort = int.tryParse(results['https-port'] as String) ?? 8443;
+  final serverName = results['name'] as String;
+  final httpsCertPath = results['https-cert'] as String?;
+  final httpsKeyPath = results['https-key'] as String?;
 
-  if (httpsMode) {
-    final opensslOk = await TlsManager.isOpensslAvailable();
-    if (!opensslOk) {
-      stderr.writeln('Error: --https requires openssl in PATH.');
-      stderr.writeln('Install openssl and retry:');
-      stderr.writeln('  macOS/Linux: brew install openssl  or  apt install openssl');
-      stderr.writeln('  Windows:     winget install openssl  or  Git for Windows includes it');
-      exit(1);
-    }
+  if ((httpsCertPath == null) != (httpsKeyPath == null)) {
+    stderr.writeln('Error: --https-cert and --https-key must both be specified.');
+    exit(1);
   }
+  if (httpsCertPath != null && !File(httpsCertPath).existsSync()) {
+    stderr.writeln('Error: cert file not found: $httpsCertPath');
+    exit(1);
+  }
+  if (httpsKeyPath != null && !File(httpsKeyPath).existsSync()) {
+    stderr.writeln('Error: key file not found: $httpsKeyPath');
+    exit(1);
+  }
+  final httpsMode = httpsCertPath != null;
 
   final authMode = noPin
       ? _AuthMode.noPin
@@ -100,42 +103,36 @@ Future<void> main(List<String> args) async {
       downloadOnly: downloadOnly,
       authMode: authMode,
       fixedPin: fixedPin,
+      serverName: serverName,
       clipboardEnabled: !noClipboard,
-      httpsMode: httpsMode,
-      httpsPort: httpsPort,
+      httpsCertPath: httpsCertPath,
+      httpsKeyPath: httpsKeyPath,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
     exit(1);
   }
 
-  // HTTPS モード: QR は HTTP コンパニオン(/setup)を指す
-  final qrUrl = httpsMode
-      ? 'http://$ipAddress:$port/setup'
-      : 'http://$ipAddress:$port';
-  final mainUrl = httpsMode
-      ? 'https://$ipAddress:$httpsPort'
-      : 'http://$ipAddress:$port';
+  final scheme = httpsMode ? 'https' : 'http';
+  final serverUrl = '$scheme://$ipAddress:$port';
 
   stdout.writeln('Server started.');
   stdout.writeln('');
-  if (httpsMode) {
-    stdout.writeln('  Setup: $qrUrl  (scan QR to install CA cert)');
-    stdout.writeln('  HTTPS: $mainUrl');
-  } else {
-    stdout.writeln('  URL:  $mainUrl');
-  }
+  stdout.writeln('  URL:  $serverUrl');
   if (authMode != _AuthMode.noPin) {
     stdout.writeln('  PIN:  ${server.pin}');
   } else {
     stdout.writeln('  PIN:  disabled (no auth)');
   }
+  stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
   stdout.writeln('');
   stdout.writeln('QR Code:');
-  _printQrCode(qrUrl);
+  _printQrCode(serverUrl);
   stdout.writeln('');
-  stdout.writeln('Press Ctrl+C or type q + Enter to stop.');
+  stdout.writeln(Platform.isWindows
+      ? 'Press Ctrl+C to stop.'
+      : 'Press Ctrl+C or type q + Enter to stop.');
   stdout.writeln('');
 
   _setupSignalHandlers(server);
@@ -164,11 +161,12 @@ ArgParser _buildParser() {
         help: 'Suppress clipboard output in console', negatable: false)
     ..addFlag('verbose',
         abbr: 'v', help: 'Enable verbose request logging', negatable: false)
-    ..addFlag('https',
-        help: 'Enable HTTPS mode (requires openssl in PATH)', negatable: false)
-    ..addOption('https-port',
-        help: 'HTTPS server port (--port becomes HTTP CA-setup port)',
-        defaultsTo: '8443')
+    ..addOption('name',
+        abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
+    ..addOption('https-cert',
+        help: 'Path to TLS certificate file (PEM). Enables HTTPS when set with --https-key.')
+    ..addOption('https-key',
+        help: 'Path to TLS private key file (PEM). Enables HTTPS when set with --https-cert.')
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -186,6 +184,8 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli -d /path/to/share --ip 192.168.1.100');
   stdout.writeln('  localnode-cli --mode download-only --no-pin');
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
+  stdout.writeln('  localnode-cli --name "MyServer"');
+  stdout.writeln('  localnode-cli --https-cert cert.pem --https-key key.pem');
   stdout.writeln('');
   stdout.writeln('To stop: Ctrl+C or type q + Enter');
 }
@@ -284,8 +284,8 @@ void _setupSignalHandlers(_CliServer server) {
 
 Future<void> _waitForQuit(_CliServer server) async {
   try {
-    if (!stdin.hasTerminal) {
-      await Completer<void>().future; // シグナル待ち
+    if (Platform.isWindows || !stdin.hasTerminal) {
+      await Completer<void>().future; // Ctrl+C / シグナル待ち
       return;
     }
     await for (final line
@@ -415,6 +415,7 @@ class _CliServer {
   _AuthMode _authMode = _AuthMode.randomPin;
   bool _downloadOnly = false;
   bool _clipboardEnabled = true;
+  String _serverName = 'LocalNode';
   int _startedAt = 0;
 
   String? _storagePath;
@@ -458,8 +459,6 @@ class _CliServer {
 
   // --- 起動 ---
 
-  HttpServer? _companionServer;
-
   Future<void> start({
     required String ipAddress,
     required int port,
@@ -467,13 +466,15 @@ class _CliServer {
     bool downloadOnly = false,
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
+    String serverName = 'LocalNode',
     bool clipboardEnabled = true,
-    bool httpsMode = false,
-    int httpsPort = 8443,
+    String? httpsCertPath,
+    String? httpsKeyPath,
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
     _clipboardEnabled = clipboardEnabled;
+    _serverName = serverName;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -501,64 +502,24 @@ class _CliServer {
             .addHandler(cascade.handler)
         : const Pipeline().addHandler(cascade.handler);
 
-    if (httpsMode) {
-      // TLS 証明書ディレクトリ: ストレージパス配下または ~/.localnode/tls
-      final tlsDir = storagePath != null
-          ? Directory(p.join(storagePath, '.tls'))
-          : Directory(p.join(
-              Platform.environment['HOME'] ?? Directory.current.path,
-              '.localnode', 'tls'));
-      final tlsMgr = TlsManager(tlsDir);
-      await tlsMgr.init();
-      final secCtx = await tlsMgr.ensureServerCert(ipAddress);
+    if (httpsCertPath != null && httpsKeyPath != null) {
+      final secCtx = SecurityContext()
+        ..useCertificateChain(httpsCertPath)
+        ..usePrivateKey(httpsKeyPath);
       _server = await shelf_io.serve(
-        handler, InternetAddress.anyIPv4, httpsPort,
+        handler, InternetAddress.anyIPv4, port,
         securityContext: secCtx,
       );
-      _companionServer =
-          await _startCompanionServer(ipAddress, port, httpsPort, tlsMgr);
-      _log('Serving at https://$ipAddress:$httpsPort');
-      _log('CA setup page at http://$ipAddress:$port/setup');
+      _log('Serving at https://$ipAddress:$port');
     } else {
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
       _log('Serving at http://$ipAddress:$port');
     }
   }
 
-  Future<HttpServer> _startCompanionServer(
-    String ipAddress,
-    int httpPort,
-    int httpsPort,
-    TlsManager tlsMgr,
-  ) async {
-    final handler = (Request request) async {
-      final path = request.url.path;
-      if (path == 'ca.crt') {
-        final bytes = await tlsMgr.caCertDerBytes;
-        return Response.ok(bytes, headers: {
-          'Content-Type': 'application/x-x509-ca-cert',
-          'Content-Disposition': 'attachment; filename="LocalNodeCA.crt"',
-        });
-      }
-      if (path == 'ca.mobileconfig') {
-        final config = await tlsMgr.buildMobileconfig();
-        return Response.ok(config, headers: {
-          'Content-Type': 'application/x-apple-aspen-config',
-          'Content-Disposition': 'attachment; filename="LocalNode.mobileconfig"',
-        });
-      }
-      final html = TlsManager.buildSetupHtml(ipAddress, httpsPort);
-      return Response.ok(html,
-          headers: {'Content-Type': 'text/html; charset=utf-8'});
-    };
-    return await shelf_io.serve(handler, InternetAddress.anyIPv4, httpPort);
-  }
-
   Future<void> stop() async {
     await _server?.close(force: true);
     _server = null;
-    await _companionServer?.close(force: true);
-    _companionServer = null;
   }
 
   // --- 初期化 ---
@@ -785,7 +746,7 @@ class _CliServer {
   Response _infoHandler(Request _) => Response.ok(
         json.encode({
           'version': '1.1.2',
-          'name': 'LocalNode Server',
+          'name': _serverName,
           'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
           'authMode': _authMode == _AuthMode.fixedPin
               ? 'fixedPin'
