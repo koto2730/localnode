@@ -64,22 +64,10 @@ Future<void> main(List<String> args) async {
   final noPin = results['no-pin'] as bool;
   final fixedPin = results['pin'] as String?;
   final serverName = results['name'] as String;
-  final httpsCertPath = results['https-cert'] as String?;
-  final httpsKeyPath = results['https-key'] as String?;
-
-  if ((httpsCertPath == null) != (httpsKeyPath == null)) {
-    stderr.writeln('Error: --https-cert and --https-key must both be specified.');
-    exit(1);
-  }
-  if (httpsCertPath != null && !File(httpsCertPath).existsSync()) {
-    stderr.writeln('Error: cert file not found: $httpsCertPath');
-    exit(1);
-  }
-  if (httpsKeyPath != null && !File(httpsKeyPath).existsSync()) {
-    stderr.writeln('Error: key file not found: $httpsKeyPath');
-    exit(1);
-  }
-  final httpsMode = httpsCertPath != null;
+  // TODO(v1.3.0): HTTPS support (#98)
+  const String? httpsCertPath = null;
+  const String? httpsKeyPath = null;
+  const bool httpsMode = false;
 
   final authMode = noPin
       ? _AuthMode.noPin
@@ -137,6 +125,8 @@ Future<void> main(List<String> args) async {
 
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
+  // Windows: サーバー起動後にstdinバッファを消去してq+Enter等の残留入力を防ぐ (#128)
+  _flushWindowsConsoleInput();
   await _waitForQuit(server);
 }
 
@@ -163,10 +153,7 @@ ArgParser _buildParser() {
         abbr: 'v', help: 'Enable verbose request logging', negatable: false)
     ..addOption('name',
         abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
-    ..addOption('https-cert',
-        help: 'Path to TLS certificate file (PEM). Enables HTTPS when set with --https-key.')
-    ..addOption('https-key',
-        help: 'Path to TLS private key file (PEM). Enables HTTPS when set with --https-cert.')
+    // TODO(v1.3.0): --https-cert / --https-key (#98)
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -185,7 +172,6 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --mode download-only --no-pin');
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
   stdout.writeln('  localnode-cli --name "MyServer"');
-  stdout.writeln('  localnode-cli --https-cert cert.pem --https-key key.pem');
   stdout.writeln('');
   stdout.writeln('To stop: Ctrl+C or type q + Enter');
 }
