@@ -157,9 +157,7 @@ class CliRunner {
       stdout.writeln('QR Code:');
       _printAsciiQrCode(url);
       stdout.writeln('');
-      stdout.writeln(Platform.isWindows
-          ? 'Press Ctrl+C to stop.'
-          : 'Press Ctrl+C or type q + Enter to stop.');
+      stdout.writeln('Press Ctrl+C to stop.');
       stdout.writeln('');
 
       // シグナルハンドラを設定
@@ -170,10 +168,6 @@ class CliRunner {
         _startClipboardPolling();
       }
 
-      // Windows: サーバー起動後にstdinバッファを消去してq+Enter等の残留入力を防ぐ (#128)
-      _flushWindowsConsoleInput();
-
-      // stdinからの入力を待機（'q'で終了）
       await _waitForQuit();
     } catch (e) {
       stderr.writeln('Error: Failed to start server: $e');
@@ -229,9 +223,7 @@ class CliRunner {
     stdout.writeln('  localnode --cli --mode download-only --no-pin');
     stdout.writeln('  localnode --cli --no-clipboard --verbose');
     stdout.writeln('');
-    stdout.writeln(Platform.isWindows
-        ? 'To stop the server: Ctrl+C'
-        : 'To stop the server: Ctrl+C or type q + Enter');
+    stdout.writeln('To stop the server: Ctrl+C');
   }
 
   /// QRコードをASCIIアートとして出力
@@ -307,30 +299,12 @@ class CliRunner {
     });
   }
 
-  /// stdinからの入力を待機し、'q'で終了
+  /// Drain stdin silently on all platforms to prevent buffered input
+  /// from leaking to the parent shell after exit.
+  /// Ctrl+C (SIGINT) is handled by the signal handler and is unaffected.
   Future<void> _waitForQuit() async {
-    try {
-      if (Platform.isWindows || !stdin.hasTerminal) {
-        // Windows: q+Enter入力は不安定なためCtrl+Cのみサポート
-        // 非対話的環境（nohup等）ではシグナルハンドラに任せる
-        await _waitForever();
-        return;
-      }
-
-      await for (final line in stdin
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())) {
-        if (line.trim().toLowerCase() == 'q') {
-          await _shutdown();
-          return;
-        }
-      }
-      // stdinが閉じられた場合
-      await _waitForever();
-    } catch (_) {
-      // stdin読み取りエラー時もシグナルハンドラに任せる
-      await _waitForever();
-    }
+    stdin.listen((_) {});
+    await _waitForever();
   }
 
   /// サーバーを停止して終了
