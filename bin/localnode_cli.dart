@@ -118,15 +118,11 @@ Future<void> main(List<String> args) async {
   stdout.writeln('QR Code:');
   _printQrCode(serverUrl);
   stdout.writeln('');
-  stdout.writeln(Platform.isWindows
-      ? 'Press Ctrl+C to stop.'
-      : 'Press Ctrl+C or type q + Enter to stop.');
+  stdout.writeln('Press Ctrl+C to stop.');
   stdout.writeln('');
 
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
-  // Windows: サーバー起動後にstdinバッファを消去してq+Enter等の残留入力を防ぐ (#128)
-  if (Platform.isWindows) _flushWindowsConsoleInput();
   await _waitForQuit(server);
 }
 
@@ -173,7 +169,7 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
   stdout.writeln('  localnode-cli --name "MyServer"');
   stdout.writeln('');
-  stdout.writeln('To stop: Ctrl+C or type q + Enter');
+  stdout.writeln('To stop: Ctrl+C');
 }
 
 // =============================================================================
@@ -250,18 +246,6 @@ void _printQrCode(String data) {
 
 bool _shuttingDown = false;
 
-/// [#128] Windows: 余剰入力（'q'等）がシェルに渡るのを防ぐ
-void _flushWindowsConsoleInput() {
-  if (!Platform.isWindows) return;
-  try {
-    final kernel32 = DynamicLibrary.open('kernel32.dll');
-    final getStdHandle = kernel32.lookupFunction<
-        IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
-    final flushInput = kernel32.lookupFunction<
-        Int32 Function(IntPtr), int Function(int)>('FlushConsoleInputBuffer');
-    flushInput(getStdHandle(0xFFFFFFF6)); // STD_INPUT_HANDLE = (DWORD)(-10)
-  } catch (_) {}
-}
 
 void _setupSignalHandlers(_CliServer server) {
   try {
@@ -282,22 +266,11 @@ void _setupSignalHandlers(_CliServer server) {
 }
 
 Future<void> _waitForQuit(_CliServer server) async {
-  try {
-    if (Platform.isWindows || !stdin.hasTerminal) {
-      await Completer<void>().future; // Ctrl+C / シグナル待ち
-      return;
-    }
-    await for (final line
-        in stdin.transform(utf8.decoder).transform(const LineSplitter())) {
-      if (line.trim().toLowerCase() == 'q') {
-        await _shutdown(server);
-        return;
-      }
-    }
-    await Completer<void>().future;
-  } catch (_) {
-    await Completer<void>().future;
-  }
+  // Drain stdin silently on all platforms to prevent buffered input
+  // from leaking to the parent shell after exit. Ctrl+C (SIGINT) is
+  // handled by the signal handler and is unaffected by stdin draining.
+  stdin.listen((_) {});
+  await Completer<void>().future;
 }
 
 Future<void> _shutdown(_CliServer server) async {
