@@ -13,6 +13,7 @@ class CliRunner {
   final ServerService _serverService;
   final List<String> _args;
   Timer? _clipboardTimer;
+  StreamSubscription<List<int>>? _stdinDrainSub;
   int _lastClipboardModified = 0;
   bool _shuttingDown = false;
 
@@ -299,11 +300,14 @@ class CliRunner {
     });
   }
 
-  /// Drain stdin silently on all platforms to prevent buffered input
-  /// from leaking to the parent shell after exit.
+  /// Drain stdin silently to prevent buffered input from leaking to the parent
+  /// shell after exit. Only drains when running in an interactive TTY to avoid
+  /// consuming piped input streams unnecessarily.
   /// Ctrl+C (SIGINT) is handled by the signal handler and is unaffected.
   Future<void> _waitForQuit() async {
-    stdin.listen((_) {});
+    if (stdin.hasTerminal) {
+      _stdinDrainSub = stdin.listen((_) {}, onError: (_) {});
+    }
     await _waitForever();
   }
 
@@ -313,6 +317,7 @@ class CliRunner {
     _shuttingDown = true;
 
     _clipboardTimer?.cancel();
+    _stdinDrainSub?.cancel();
 
     _restoreWindowsConsoleMode(); // 終了前にコンソールモードを復元 (#84)
     _flushWindowsConsoleInput(); // 余剰入力（'q'等）がシェルに渡るのを防ぐ (#84)
