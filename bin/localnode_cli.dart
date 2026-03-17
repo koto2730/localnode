@@ -126,7 +126,7 @@ Future<void> main(List<String> args) async {
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
   // Windows: サーバー起動後にstdinバッファを消去してq+Enter等の残留入力を防ぐ (#128)
-  _flushWindowsConsoleInput();
+  if (Platform.isWindows) _flushWindowsConsoleInput();
   await _waitForQuit(server);
 }
 
@@ -249,6 +249,19 @@ void _printQrCode(String data) {
 // =============================================================================
 
 bool _shuttingDown = false;
+
+/// [#128] Windows: 余剰入力（'q'等）がシェルに渡るのを防ぐ
+void _flushWindowsConsoleInput() {
+  if (!Platform.isWindows) return;
+  try {
+    final kernel32 = DynamicLibrary.open('kernel32.dll');
+    final getStdHandle = kernel32.lookupFunction<
+        IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
+    final flushInput = kernel32.lookupFunction<
+        Int32 Function(IntPtr), int Function(int)>('FlushConsoleInputBuffer');
+    flushInput(getStdHandle(0xFFFFFFF6)); // STD_INPUT_HANDLE = (DWORD)(-10)
+  } catch (_) {}
+}
 
 void _setupSignalHandlers(_CliServer server) {
   try {
