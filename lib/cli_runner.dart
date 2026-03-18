@@ -301,11 +301,15 @@ class CliRunner {
   }
 
   /// Drain stdin silently to prevent buffered input from leaking to the parent
-  /// shell after exit. Only drains when running in an interactive TTY to avoid
-  /// consuming piped input streams unnecessarily.
+  /// shell after exit. On Windows, stdin is always drained because
+  /// [stdin.hasTerminal] is unreliable there (note: this may consume piped
+  /// input on Windows). On other platforms, draining is skipped for
+  /// non-interactive (piped) stdin to avoid unnecessary CPU usage.
   /// Ctrl+C (SIGINT) is handled by the signal handler and is unaffected.
   Future<void> _waitForQuit() async {
-    if (stdin.hasTerminal) {
+    // Always drain on Windows (hasTerminal is unreliable there).
+    // On other platforms, only drain for interactive TTYs to avoid consuming piped input.
+    if (Platform.isWindows || stdin.hasTerminal) {
       _stdinDrainSub = stdin.listen((_) {}, onError: (_) {});
     }
     await _waitForever();
