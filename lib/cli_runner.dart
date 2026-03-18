@@ -305,7 +305,9 @@ class CliRunner {
   /// consuming piped input streams unnecessarily.
   /// Ctrl+C (SIGINT) is handled by the signal handler and is unaffected.
   Future<void> _waitForQuit() async {
-    if (stdin.hasTerminal) {
+    // Always drain on Windows (hasTerminal is unreliable there).
+    // On other platforms, only drain for interactive TTYs to avoid consuming piped input.
+    if (Platform.isWindows || stdin.hasTerminal) {
       _stdinDrainSub = stdin.listen((_) {}, onError: (_) {});
     }
     await _waitForever();
