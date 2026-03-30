@@ -673,41 +673,38 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
         ],
       ),
-      body: SingleChildScrollView(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: <Widget>[
-                // サーバー稼働時：タブ切り替え
-                if (serverState.status == ServerStatus.running) ...[
-                  _buildTabSelector(),
-                  const SizedBox(height: 16),
-                  if (_currentTab == ServerTab.connection && url != null)
-                    _buildConnectionInfo(context, url, serverState.pin, serverState.storagePath),
-                  if (_currentTab == ServerTab.clipboard)
-                    _buildClipboardSection(context),
+      body: Scrollbar(
+        child: SingleChildScrollView(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 88.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  // サーバー稼働時：タブ切り替え
+                  if (serverState.status == ServerStatus.running) ...[
+                    _buildTabSelector(),
+                    const SizedBox(height: 16),
+                    if (_currentTab == ServerTab.connection && url != null)
+                      _buildConnectionInfo(context, url, serverState.pin, serverState.storagePath),
+                    if (_currentTab == ServerTab.clipboard)
+                      _buildClipboardSection(context),
+                  ],
+
+                  if (serverState.status == ServerStatus.stopped)
+                    _buildStoppedView(context),
+
+                  if (serverState.status == ServerStatus.error)
+                    Text('エラー: ${serverState.errorMessage}',
+                        style: const TextStyle(fontSize: 16, color: Colors.red)),
                 ],
-
-                if (serverState.status == ServerStatus.stopped)
-                  _buildStoppedView(context),
-
-                if (serverState.status == ServerStatus.error)
-                  Text('エラー: ${serverState.errorMessage}',
-                      style: const TextStyle(fontSize: 16, color: Colors.red)),
-
-                const SizedBox(height: 40),
-
-                // Start/Stopボタン
-                _buildControlButton(context, ref, serverState),
-
-                const SizedBox(height: 20),
-              ],
+              ),
             ),
           ),
         ),
       ),
+      floatingActionButton: _buildControlButton(context, ref, serverState),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
 
@@ -741,7 +738,7 @@ class _HomePageState extends ConsumerState<HomePage> {
           child: TextField(
             controller: _nameController,
             decoration: const InputDecoration(
-              labelText: 'サーバー名',
+              labelText: 'サイト名',
               border: OutlineInputBorder(),
               isDense: true,
             ),
