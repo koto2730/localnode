@@ -360,6 +360,21 @@ class ServerNotifier extends Notifier<ServerState> {
       state = state.copyWith(httpsHostname: hostname);
     }
   }
+
+  /// すべての保存済み設定を初期化する (#147)
+  Future<void> resetAllSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('server_name');
+    await prefs.remove('operation_mode');
+    await prefs.remove('auth_mode');
+    await prefs.remove('fixed_pin');
+    await prefs.remove('https_cert_path');
+    await prefs.remove('https_key_path');
+    await prefs.remove('https_hostname');
+    await prefs.remove('saf_directory_uri');
+    await prefs.remove('selected_directory_path');
+    await loadSettings();
+  }
 }
 
 // クリップボードNotifierの定義
@@ -501,6 +516,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
   late final TextEditingController _hostnameController;
+  final ScrollController _scrollController = ScrollController();
   ProviderSubscription<ServerState>? _hostnameSubscription;
 
   @override
@@ -548,6 +564,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _fixedPinController.dispose();
     _nameController.dispose();
     _hostnameController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -674,7 +691,9 @@ class _HomePageState extends ConsumerState<HomePage> {
         ],
       ),
       body: Scrollbar(
+        controller: _scrollController,
         child: SingleChildScrollView(
+          controller: _scrollController,
           child: Center(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 88.0),
@@ -922,6 +941,35 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
           ],
         ],
+
+        // 設定リセットボタン (#147)
+        const SizedBox(height: 32),
+        TextButton.icon(
+        icon: const Icon(Icons.restart_alt, color: Colors.grey),
+        label: const Text('設定を初期化', style: TextStyle(color: Colors.grey)),
+        onPressed: () async {
+          final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('設定を初期化'),
+              content: const Text('すべての保存済み設定をリセットします。よろしいですか？'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('キャンセル'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('リセット', style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            ),
+          );
+          if (confirmed == true) {
+            await notifier.resetAllSettings();
+          }
+        },
+      ),
       ],
     );
   }
