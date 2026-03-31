@@ -169,6 +169,13 @@ class CliRunner {
         _startClipboardPolling();
       }
 
+      // Windows: disable echo/line-input to prevent typed chars from appearing (#139)
+      // and flush residual keystrokes to prevent prompt mid-screen (#129).
+      if (Platform.isWindows) {
+        _setWindowsConsoleRawMode();
+        _flushWindowsConsoleInput();
+      }
+
       await _waitForQuit();
     } catch (e) {
       stderr.writeln('Error: Failed to start server: $e');
@@ -300,16 +307,14 @@ class CliRunner {
     });
   }
 
-  /// Drain stdin silently to prevent buffered input from leaking to the parent
-  /// shell after exit. On Windows, stdin is always drained because
-  /// [stdin.hasTerminal] is unreliable there (note: this may consume piped
-  /// input on Windows). On other platforms, draining is skipped for
-  /// non-interactive (piped) stdin to avoid unnecessary CPU usage.
+  /// Wait for Ctrl+C (SIGINT) to shut down the server.
+  /// On Windows, avoid calling stdin.listen() as it causes PowerShell to treat
+  /// the process as background and show the prompt immediately (#140).
+  /// On other platforms, drain stdin silently to prevent buffered input from
+  /// leaking to the parent shell after exit.
   /// Ctrl+C (SIGINT) is handled by the signal handler and is unaffected.
   Future<void> _waitForQuit() async {
-    // Always drain on Windows (hasTerminal is unreliable there).
-    // On other platforms, only drain for interactive TTYs to avoid consuming piped input.
-    if (Platform.isWindows || stdin.hasTerminal) {
+    if (!Platform.isWindows && stdin.hasTerminal) {
       _stdinDrainSub = stdin.listen((_) {}, onError: (_) {});
     }
     await _waitForever();
@@ -348,6 +353,23 @@ class CliRunner {
       final flushInput = kernel32.lookupFunction<
           Int32 Function(IntPtr), int Function(int)>('FlushConsoleInputBuffer');
       flushInput(getStdHandle(0xFFFFFFF6)); // STD_INPUT_HANDLE = (DWORD)(-10)
+    } catch (_) {}
+  }
+
+  /// Disable echo and line-input so typed characters don't appear on screen
+  /// while the server is running (#139). ENABLE_PROCESSED_INPUT (0x1) is kept
+  /// so that Ctrl+C continues to work.
+  void _setWindowsConsoleRawMode() {
+    if (!Platform.isWindows) return;
+    try {
+      final kernel32 = DynamicLibrary.open('kernel32.dll');
+      final getStdHandle = kernel32.lookupFunction<
+          IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
+      final setMode = kernel32.lookupFunction<
+          Int32 Function(IntPtr, Uint32),
+          int Function(int, int)>('SetConsoleMode');
+      // ENABLE_PROCESSED_INPUT (0x1) only: disables ENABLE_LINE_INPUT and ENABLE_ECHO_INPUT
+      setMode(getStdHandle(0xFFFFFFF6), 0x0001);
     } catch (_) {}
   }
 
