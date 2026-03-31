@@ -169,6 +169,9 @@ class CliRunner {
         _startClipboardPolling();
       }
 
+      // Windows: flush residual keystrokes to prevent prompt appearing mid-screen (#129)
+      if (Platform.isWindows) _flushWindowsConsoleInput();
+
       await _waitForQuit();
     } catch (e) {
       stderr.writeln('Error: Failed to start server: $e');
@@ -300,16 +303,14 @@ class CliRunner {
     });
   }
 
-  /// Drain stdin silently to prevent buffered input from leaking to the parent
-  /// shell after exit. On Windows, stdin is always drained because
-  /// [stdin.hasTerminal] is unreliable there (note: this may consume piped
-  /// input on Windows). On other platforms, draining is skipped for
-  /// non-interactive (piped) stdin to avoid unnecessary CPU usage.
+  /// Wait for Ctrl+C (SIGINT) to shut down the server.
+  /// On Windows, avoid calling stdin.listen() as it causes PowerShell to treat
+  /// the process as background and show the prompt immediately (#140).
+  /// On other platforms, drain stdin silently to prevent buffered input from
+  /// leaking to the parent shell after exit.
   /// Ctrl+C (SIGINT) is handled by the signal handler and is unaffected.
   Future<void> _waitForQuit() async {
-    // Always drain on Windows (hasTerminal is unreliable there).
-    // On other platforms, only drain for interactive TTYs to avoid consuming piped input.
-    if (Platform.isWindows || stdin.hasTerminal) {
+    if (!Platform.isWindows && stdin.hasTerminal) {
       _stdinDrainSub = stdin.listen((_) {}, onError: (_) {});
     }
     await _waitForever();

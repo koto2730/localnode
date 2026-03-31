@@ -123,6 +123,9 @@ Future<void> main(List<String> args) async {
 
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
+  // Windows: flush any residual keystrokes so they don't appear as a prompt
+  // mid-screen after the startup messages are printed (#129).
+  if (Platform.isWindows) _flushWindowsInput();
   await _waitForQuit(server);
 }
 
@@ -266,10 +269,13 @@ void _setupSignalHandlers(_CliServer server) {
 }
 
 Future<void> _waitForQuit(_CliServer server) async {
-  // Drain stdin silently on all platforms to prevent buffered input
-  // from leaking to the parent shell after exit. Ctrl+C (SIGINT) is
-  // handled by the signal handler and is unaffected by stdin draining.
-  stdin.listen((_) {});
+  // On Windows, avoid calling stdin.listen() as it causes PowerShell to treat
+  // the process as background and show the prompt immediately (#140).
+  // On other platforms, drain stdin silently to prevent buffered input from
+  // leaking to the parent shell after exit.
+  if (!Platform.isWindows) {
+    if (stdin.hasTerminal) stdin.listen((_) {}, onError: (_) {});
+  }
   await Completer<void>().future;
 }
 
