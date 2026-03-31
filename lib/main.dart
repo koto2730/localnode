@@ -516,6 +516,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
   late final TextEditingController _hostnameController;
+  final ScrollController _scrollController = ScrollController();
   ProviderSubscription<ServerState>? _hostnameSubscription;
 
   @override
@@ -563,6 +564,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _fixedPinController.dispose();
     _nameController.dispose();
     _hostnameController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -689,7 +691,9 @@ class _HomePageState extends ConsumerState<HomePage> {
         ],
       ),
       body: Scrollbar(
+        controller: _scrollController,
         child: SingleChildScrollView(
+          controller: _scrollController,
           child: Center(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 88.0),
