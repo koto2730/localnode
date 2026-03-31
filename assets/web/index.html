@@ -495,7 +495,8 @@
                 if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
                 applyModeRestrictions();
                 const name = serverInfo.serverName || 'LocalNode';
-                document.title = name === 'LocalNode' ? 'LocalNode' : `${name}_LocalNode`;
+                document.title = name;
+                document.querySelector('#main-content h1').textContent = name;
             };
 
             // ダウンロード専用モード時にUI要素を非表示にする
