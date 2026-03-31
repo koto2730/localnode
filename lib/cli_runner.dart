@@ -169,8 +169,12 @@ class CliRunner {
         _startClipboardPolling();
       }
 
-      // Windows: flush residual keystrokes to prevent prompt appearing mid-screen (#129)
-      if (Platform.isWindows) _flushWindowsConsoleInput();
+      // Windows: disable echo/line-input to prevent typed chars from appearing (#139)
+      // and flush residual keystrokes to prevent prompt mid-screen (#129).
+      if (Platform.isWindows) {
+        _setWindowsConsoleRawMode();
+        _flushWindowsConsoleInput();
+      }
 
       await _waitForQuit();
     } catch (e) {
@@ -349,6 +353,23 @@ class CliRunner {
       final flushInput = kernel32.lookupFunction<
           Int32 Function(IntPtr), int Function(int)>('FlushConsoleInputBuffer');
       flushInput(getStdHandle(0xFFFFFFF6)); // STD_INPUT_HANDLE = (DWORD)(-10)
+    } catch (_) {}
+  }
+
+  /// Disable echo and line-input so typed characters don't appear on screen
+  /// while the server is running (#139). ENABLE_PROCESSED_INPUT (0x1) is kept
+  /// so that Ctrl+C continues to work.
+  void _setWindowsConsoleRawMode() {
+    if (!Platform.isWindows) return;
+    try {
+      final kernel32 = DynamicLibrary.open('kernel32.dll');
+      final getStdHandle = kernel32.lookupFunction<
+          IntPtr Function(Uint32), int Function(int)>('GetStdHandle');
+      final setMode = kernel32.lookupFunction<
+          Int32 Function(IntPtr, Uint32),
+          int Function(int, int)>('SetConsoleMode');
+      // ENABLE_PROCESSED_INPUT (0x1) only: disables ENABLE_LINE_INPUT and ENABLE_ECHO_INPUT
+      setMode(getStdHandle(0xFFFFFFF6), 0x0001);
     } catch (_) {}
   }
 

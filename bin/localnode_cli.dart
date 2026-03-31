@@ -123,9 +123,12 @@ Future<void> main(List<String> args) async {
 
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
-  // Windows: flush any residual keystrokes so they don't appear as a prompt
-  // mid-screen after the startup messages are printed (#129).
-  if (Platform.isWindows) _flushWindowsInput();
+  // Windows: disable echo/line-input to prevent typed chars from appearing (#139)
+  // and flush residual keystrokes to prevent prompt mid-screen (#129).
+  if (Platform.isWindows) {
+    _setWindowsConsoleRawMode();
+    _flushWindowsInput();
+  }
   await _waitForQuit(server);
 }
 
@@ -343,6 +346,22 @@ void _restoreWindowsConsoleMode() {
     final setMode = kernel32.lookupFunction<Int32 Function(IntPtr, Uint32),
         int Function(int, int)>('SetConsoleMode');
     setMode(getHandle(0xFFFFFFF6), 0x0007);
+  } catch (_) {}
+}
+
+/// Disable echo and line-input so typed characters don't appear on screen
+/// while the server is running (#139). ENABLE_PROCESSED_INPUT (0x1) is kept
+/// so that Ctrl+C continues to work.
+void _setWindowsConsoleRawMode() {
+  if (!Platform.isWindows) return;
+  try {
+    final kernel32 = DynamicLibrary.open('kernel32.dll');
+    final getHandle = kernel32.lookupFunction<IntPtr Function(Uint32),
+        int Function(int)>('GetStdHandle');
+    final setMode = kernel32.lookupFunction<Int32 Function(IntPtr, Uint32),
+        int Function(int, int)>('SetConsoleMode');
+    // ENABLE_PROCESSED_INPUT (0x1) only: disables ENABLE_LINE_INPUT and ENABLE_ECHO_INPUT
+    setMode(getHandle(0xFFFFFFF6), 0x0001);
   } catch (_) {}
 }
 
