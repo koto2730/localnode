@@ -199,7 +199,7 @@ Future<String> _selectIpAddress() async {
   if (addresses.isEmpty) return '0.0.0.0';
   if (addresses.length == 1) return addresses.first;
 
-  if (stdin.hasTerminal) {
+  if (stdin.hasTerminal && _isInteractiveForeground()) {
     stdout.writeln('Multiple network interfaces detected:');
     for (int i = 0; i < addresses.length; i++) {
       stdout.writeln('  [${i + 1}] ${addresses[i]}');
@@ -324,6 +324,26 @@ void _startClipboardPolling(_CliServer server) {
 // =============================================================================
 // Windows コンソール制御（FFI）
 // =============================================================================
+
+/// Returns true if the process is in the foreground process group of its
+/// controlling terminal. On Linux/macOS this detects background launch with &,
+/// which causes stdin.hasTerminal to still return true but makes readLineSync
+/// trigger SIGTTIN, stopping the process (#130).
+/// Always returns true on Windows (not applicable).
+bool _isInteractiveForeground() {
+  if (Platform.isWindows) return true;
+  try {
+    final libc = DynamicLibrary.open(
+        Platform.isMacOS ? 'libSystem.dylib' : 'libc.so.6');
+    final tcgetpgrp = libc.lookupFunction<Int32 Function(Int32),
+        int Function(int)>('tcgetpgrp');
+    final getpgrp = libc.lookupFunction<Int32 Function(),
+        int Function()>('getpgrp');
+    return tcgetpgrp(0) == getpgrp();
+  } catch (_) {
+    return true;
+  }
+}
 
 void _flushWindowsInput() {
   if (!Platform.isWindows) return;

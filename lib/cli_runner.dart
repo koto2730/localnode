@@ -190,8 +190,8 @@ class CliRunner {
     if (ips.isEmpty) return '0.0.0.0';
     if (ips.length == 1) return ips.first;
 
-    // 複数IPが検出された場合、ターミナルならユーザーに選択させる
-    if (stdin.hasTerminal) {
+    // 複数IPが検出された場合、フォアグラウンドのターミナルならユーザーに選択させる
+    if (stdin.hasTerminal && _isInteractiveForeground()) {
       stdout.writeln('Multiple network interfaces detected:');
       for (int i = 0; i < ips.length; i++) {
         stdout.writeln('  [${i + 1}] ${ips[i]}');
@@ -341,6 +341,23 @@ class CliRunner {
   Future<void> _waitForever() async {
     final completer = Completer<void>();
     await completer.future;
+  }
+
+  /// Returns true if the process is in the foreground process group of its
+  /// controlling terminal. Detects background launch with & on Linux/macOS (#130).
+  bool _isInteractiveForeground() {
+    if (Platform.isWindows) return true;
+    try {
+      final libc = DynamicLibrary.open(
+          Platform.isMacOS ? 'libSystem.dylib' : 'libc.so.6');
+      final tcgetpgrp = libc.lookupFunction<Int32 Function(Int32),
+          int Function(int)>('tcgetpgrp');
+      final getpgrp = libc.lookupFunction<Int32 Function(),
+          int Function()>('getpgrp');
+      return tcgetpgrp(0) == getpgrp();
+    } catch (_) {
+      return true;
+    }
   }
 
   /// [#84] --help 後の余剰入力（q など）がシェルに流れないよう入力バッファを空にする

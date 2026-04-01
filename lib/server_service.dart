@@ -1439,7 +1439,7 @@ class ServerService {
   /// フォルダを開く
   /// iOSでは制限があるため、パス表示ダイアログを返す（戻り値がfalseの場合）
   Future<bool> openDownloadsFolder() async {
-    final storagePath = _fallbackStoragePath;
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null) {
       return false;
     }
