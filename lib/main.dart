@@ -28,6 +28,7 @@ class ServerState {
     this.authMode = AuthMode.randomPin,
     this.fixedPin,
     this.serverName = 'LocalNode',
+    this.httpsEnabled = false,
     this.httpsCertPath,
     this.httpsKeyPath,
     this.httpsHostname,
@@ -44,6 +45,7 @@ class ServerState {
   final AuthMode authMode;
   final String? fixedPin;
   final String serverName;
+  final bool httpsEnabled;
   final String? httpsCertPath;
   final String? httpsKeyPath;
   final String? httpsHostname;
@@ -64,6 +66,7 @@ class ServerState {
     AuthMode? authMode,
     String? fixedPin,
     String? serverName,
+    bool? httpsEnabled,
     String? httpsCertPath,
     String? httpsKeyPath,
     String? httpsHostname,
@@ -86,6 +89,7 @@ class ServerState {
       authMode: authMode ?? this.authMode,
       fixedPin: clearFixedPin ? null : (fixedPin ?? this.fixedPin),
       serverName: serverName ?? this.serverName,
+      httpsEnabled: httpsEnabled ?? this.httpsEnabled,
       httpsCertPath: clearHttpsCertPath ? null : (httpsCertPath ?? this.httpsCertPath),
       httpsKeyPath: clearHttpsKeyPath ? null : (httpsKeyPath ?? this.httpsKeyPath),
       httpsHostname: clearHttpsHostname ? null : (httpsHostname ?? this.httpsHostname),
@@ -173,9 +177,11 @@ class ServerNotifier extends Notifier<ServerState> {
     final authModeStr = prefs.getString('auth_mode');
     final savedFixedPin = prefs.getString('fixed_pin');
     final savedServerName = prefs.getString('server_name') ?? 'LocalNode';
-    final savedHttpsCertPath = prefs.getString('https_cert_path');
-    final savedHttpsKeyPath = prefs.getString('https_key_path');
-    final savedHttpsHostname = prefs.getString('https_hostname');
+    final savedHttpsEnabled = prefs.getBool('https_enabled') ?? false;
+    // cert/key は https_enabled が true の場合のみ読み込む (#141)
+    final savedHttpsCertPath = savedHttpsEnabled ? prefs.getString('https_cert_path') : null;
+    final savedHttpsKeyPath = savedHttpsEnabled ? prefs.getString('https_key_path') : null;
+    final savedHttpsHostname = savedHttpsEnabled ? prefs.getString('https_hostname') : null;
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -191,6 +197,7 @@ class ServerNotifier extends Notifier<ServerState> {
       authMode: authMode,
       fixedPin: savedFixedPin,
       serverName: savedServerName,
+      httpsEnabled: savedHttpsEnabled,
       httpsCertPath: savedHttpsCertPath,
       httpsKeyPath: savedHttpsKeyPath,
       httpsHostname: savedHttpsHostname,
@@ -245,7 +252,8 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<void> selectIpAddress(String ipAddress) async {
     if (kIsWeb) return;
     state = state.copyWith(selectedIpAddress: ipAddress);
-    // 逆引きDNSでホスト名を自動入力（HTTPSモード時に使用）
+    // 逆引きDNSでホスト名を自動入力（HTTPSモード時、フィールドが空の時のみ）(#133)
+    if (state.httpsHostname != null && state.httpsHostname!.isNotEmpty) return;
     try {
       final resolved = await InternetAddress(ipAddress).reverse();
       // DNS応答が返ってきた時点で選択IPが変わっていれば無視（競合防止）
@@ -328,6 +336,12 @@ class ServerNotifier extends Notifier<ServerState> {
   /// QR コードに埋め込む URL。サーバー停止中は null。
   String? get qrUrl => _serverService.qrUrl;
 
+  Future<void> setHttpsEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('https_enabled', enabled);
+    state = state.copyWith(httpsEnabled: enabled);
+  }
+
   Future<void> setHttpsCertPath(String? path) async {
     final prefs = await SharedPreferences.getInstance();
     if (path == null || path.isEmpty) {
@@ -368,6 +382,7 @@ class ServerNotifier extends Notifier<ServerState> {
     await prefs.remove('operation_mode');
     await prefs.remove('auth_mode');
     await prefs.remove('fixed_pin');
+    await prefs.remove('https_enabled');
     await prefs.remove('https_cert_path');
     await prefs.remove('https_key_path');
     await prefs.remove('https_hostname');
@@ -785,8 +800,64 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
-        // TODO(v1.3.0): HTTPS support - re-enable when implementation is complete (#98)
-        // セキュリティモード (HTTPS) 設定は v1.3.0 で対応予定
+        // SSL/TLS 設定
+        const SizedBox(height: 10),
+        SwitchListTile(
+          title: const Text('SSL/TLS (HTTPS) モード'),
+          value: serverState.httpsEnabled,
+          onChanged: (value) {
+            notifier.setHttpsEnabled(value);
+          },
+          contentPadding: EdgeInsets.zero,
+        ),
+        if (serverState.httpsEnabled) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              const SizedBox(width: 8),
+              const Text('証明書 (cert.pem):',
+                  style: TextStyle(fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          _CertPathField(
+            label: 'cert.pem',
+            value: serverState.httpsCertPath,
+            onChanged: (path) => notifier.setHttpsCertPath(path),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const SizedBox(width: 8),
+              const Text('秘密鍵 (key.pem):',
+                  style: TextStyle(fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          _CertPathField(
+            label: 'key.pem',
+            value: serverState.httpsKeyPath,
+            onChanged: (path) => notifier.setHttpsKeyPath(path),
+          ),
+          if (serverState.httpsMode) ...[
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 400),
+              child: TextField(
+                controller: _hostnameController,
+                decoration: const InputDecoration(
+                  labelText: 'ホスト名 (任意)',
+                  hintText: 'example.local',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (value) {
+                  notifier.setHttpsHostname(value);
+                },
+              ),
+            ),
+          ],
+        ],
 
         // 動作モード選択
         const SizedBox(height: 20),
