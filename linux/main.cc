@@ -3,12 +3,19 @@
 #include <cstdio>
 #include <cstring>
 
+// Suppress "Unable to load from the cursor theme" Gdk-Message in WSL/minimal
+// environments that lack cursor themes (#94, #131).
+static void suppress_gdk_cursor_warning(const gchar* log_domain,
+                                        GLogLevelFlags log_level,
+                                        const gchar* message,
+                                        gpointer user_data) {
+  if (message && strstr(message, "cursor theme")) return;
+  g_log_default_handler(log_domain, log_level, message, user_data);
+}
+
 int main(int argc, char** argv) {
-  // Suppress "Unable to load from the cursor theme" Gdk warning in WSL/minimal
-  // environments that lack cursor themes (#94).
-  if (!g_getenv("XCURSOR_THEME")) {
-    g_setenv("XCURSOR_THEME", "default", FALSE);
-  }
+  g_log_set_handler("Gdk", G_LOG_LEVEL_MESSAGE,
+                    suppress_gdk_cursor_warning, nullptr);
 
   // On Linux the standalone localnode-cli binary handles CLI/headless mode
   // without any GTK dependency.  Redirect users before GTK is initialised,

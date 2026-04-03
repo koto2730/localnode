@@ -123,6 +123,12 @@ Future<void> main(List<String> args) async {
 
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
+  // Windows: disable echo/line-input to prevent typed chars from appearing (#139)
+  // and flush residual keystrokes to prevent prompt mid-screen (#129).
+  if (Platform.isWindows) {
+    _setWindowsConsoleRawMode();
+    _flushWindowsInput();
+  }
   await _waitForQuit(server);
 }
 
@@ -193,7 +199,7 @@ Future<String> _selectIpAddress() async {
   if (addresses.isEmpty) return '0.0.0.0';
   if (addresses.length == 1) return addresses.first;
 
-  if (stdin.hasTerminal) {
+  if (stdin.hasTerminal && _isInteractiveForeground()) {
     stdout.writeln('Multiple network interfaces detected:');
     for (int i = 0; i < addresses.length; i++) {
       stdout.writeln('  [${i + 1}] ${addresses[i]}');
@@ -266,10 +272,13 @@ void _setupSignalHandlers(_CliServer server) {
 }
 
 Future<void> _waitForQuit(_CliServer server) async {
-  // Drain stdin silently on all platforms to prevent buffered input
-  // from leaking to the parent shell after exit. Ctrl+C (SIGINT) is
-  // handled by the signal handler and is unaffected by stdin draining.
-  stdin.listen((_) {});
+  // On Windows, avoid calling stdin.listen() as it causes PowerShell to treat
+  // the process as background and show the prompt immediately (#140).
+  // On other platforms, drain stdin silently to prevent buffered input from
+  // leaking to the parent shell after exit.
+  if (!Platform.isWindows) {
+    if (stdin.hasTerminal) stdin.listen((_) {}, onError: (_) {});
+  }
   await Completer<void>().future;
 }
 
@@ -316,6 +325,26 @@ void _startClipboardPolling(_CliServer server) {
 // Windows コンソール制御（FFI）
 // =============================================================================
 
+/// Returns true if the process is in the foreground process group of its
+/// controlling terminal. On Linux/macOS this detects background launch with &,
+/// which causes stdin.hasTerminal to still return true but makes readLineSync
+/// trigger SIGTTIN, stopping the process (#130).
+/// Always returns true on Windows (not applicable).
+bool _isInteractiveForeground() {
+  if (Platform.isWindows) return true;
+  try {
+    final libc = DynamicLibrary.open(
+        Platform.isMacOS ? 'libSystem.dylib' : 'libc.so.6');
+    final tcgetpgrp = libc.lookupFunction<Int32 Function(Int32),
+        int Function(int)>('tcgetpgrp');
+    final getpgrp = libc.lookupFunction<Int32 Function(),
+        int Function()>('getpgrp');
+    return tcgetpgrp(0) == getpgrp();
+  } catch (_) {
+    return true;
+  }
+}
+
 void _flushWindowsInput() {
   if (!Platform.isWindows) return;
   try {
@@ -337,6 +366,22 @@ void _restoreWindowsConsoleMode() {
     final setMode = kernel32.lookupFunction<Int32 Function(IntPtr, Uint32),
         int Function(int, int)>('SetConsoleMode');
     setMode(getHandle(0xFFFFFFF6), 0x0007);
+  } catch (_) {}
+}
+
+/// Disable echo and line-input so typed characters don't appear on screen
+/// while the server is running (#139). ENABLE_PROCESSED_INPUT (0x1) is kept
+/// so that Ctrl+C continues to work.
+void _setWindowsConsoleRawMode() {
+  if (!Platform.isWindows) return;
+  try {
+    final kernel32 = DynamicLibrary.open('kernel32.dll');
+    final getHandle = kernel32.lookupFunction<IntPtr Function(Uint32),
+        int Function(int)>('GetStdHandle');
+    final setMode = kernel32.lookupFunction<Int32 Function(IntPtr, Uint32),
+        int Function(int, int)>('SetConsoleMode');
+    // ENABLE_PROCESSED_INPUT (0x1) only: disables ENABLE_LINE_INPUT and ENABLE_ECHO_INPUT
+    setMode(getHandle(0xFFFFFFF6), 0x0001);
   } catch (_) {}
 }
 

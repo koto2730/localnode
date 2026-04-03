@@ -1395,6 +1395,14 @@ class ServerService {
     }
   }
 
+  /// 選択フォルダの in-memory 状態をリセットし、デフォルトパスを再設定する
+  Future<void> resetDirectoryState() async {
+    _safDirectoryUri = null;
+    _fallbackStoragePath = null;
+    _displayPath = null;
+    await initializePaths();
+  }
+
   Future<void> _ensureDirectoryExists(String path) async {
     final dir = Directory(path);
     if (!await dir.exists()) {
@@ -1439,7 +1447,7 @@ class ServerService {
   /// フォルダを開く
   /// iOSでは制限があるため、パス表示ダイアログを返す（戻り値がfalseの場合）
   Future<bool> openDownloadsFolder() async {
-    final storagePath = _fallbackStoragePath;
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null) {
       return false;
     }

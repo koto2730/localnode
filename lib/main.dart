@@ -28,6 +28,7 @@ class ServerState {
     this.authMode = AuthMode.randomPin,
     this.fixedPin,
     this.serverName = 'LocalNode',
+    this.httpsEnabled = false,
     this.httpsCertPath,
     this.httpsKeyPath,
     this.httpsHostname,
@@ -44,13 +45,16 @@ class ServerState {
   final AuthMode authMode;
   final String? fixedPin;
   final String serverName;
+  final bool httpsEnabled;
   final String? httpsCertPath;
   final String? httpsKeyPath;
   final String? httpsHostname;
 
   bool get httpsMode =>
-      httpsCertPath != null && httpsCertPath!.isNotEmpty &&
-      httpsKeyPath != null && httpsKeyPath!.isNotEmpty;
+      httpsCertPath != null &&
+      httpsCertPath!.isNotEmpty &&
+      httpsKeyPath != null &&
+      httpsKeyPath!.isNotEmpty;
 
   ServerState copyWith({
     ServerStatus? status,
@@ -64,6 +68,7 @@ class ServerState {
     AuthMode? authMode,
     String? fixedPin,
     String? serverName,
+    bool? httpsEnabled,
     String? httpsCertPath,
     String? httpsKeyPath,
     String? httpsHostname,
@@ -80,15 +85,20 @@ class ServerState {
       selectedIpAddress: selectedIpAddress ?? this.selectedIpAddress,
       pin: clearPin ? null : (pin ?? this.pin),
       port: port ?? this.port,
-      errorMessage: clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
+      errorMessage:
+          clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
       storagePath: storagePath ?? this.storagePath,
       operationMode: operationMode ?? this.operationMode,
       authMode: authMode ?? this.authMode,
       fixedPin: clearFixedPin ? null : (fixedPin ?? this.fixedPin),
       serverName: serverName ?? this.serverName,
-      httpsCertPath: clearHttpsCertPath ? null : (httpsCertPath ?? this.httpsCertPath),
-      httpsKeyPath: clearHttpsKeyPath ? null : (httpsKeyPath ?? this.httpsKeyPath),
-      httpsHostname: clearHttpsHostname ? null : (httpsHostname ?? this.httpsHostname),
+      httpsEnabled: httpsEnabled ?? this.httpsEnabled,
+      httpsCertPath:
+          clearHttpsCertPath ? null : (httpsCertPath ?? this.httpsCertPath),
+      httpsKeyPath:
+          clearHttpsKeyPath ? null : (httpsKeyPath ?? this.httpsKeyPath),
+      httpsHostname:
+          clearHttpsHostname ? null : (httpsHostname ?? this.httpsHostname),
     );
   }
 }
@@ -173,9 +183,14 @@ class ServerNotifier extends Notifier<ServerState> {
     final authModeStr = prefs.getString('auth_mode');
     final savedFixedPin = prefs.getString('fixed_pin');
     final savedServerName = prefs.getString('server_name') ?? 'LocalNode';
-    final savedHttpsCertPath = prefs.getString('https_cert_path');
-    final savedHttpsKeyPath = prefs.getString('https_key_path');
-    final savedHttpsHostname = prefs.getString('https_hostname');
+    final savedHttpsEnabled = prefs.getBool('https_enabled') ?? false;
+    // cert/key は https_enabled が true の場合のみ読み込む (#141)
+    final savedHttpsCertPath =
+        savedHttpsEnabled ? prefs.getString('https_cert_path') : null;
+    final savedHttpsKeyPath =
+        savedHttpsEnabled ? prefs.getString('https_key_path') : null;
+    final savedHttpsHostname =
+        savedHttpsEnabled ? prefs.getString('https_hostname') : null;
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -191,6 +206,7 @@ class ServerNotifier extends Notifier<ServerState> {
       authMode: authMode,
       fixedPin: savedFixedPin,
       serverName: savedServerName,
+      httpsEnabled: savedHttpsEnabled,
       httpsCertPath: savedHttpsCertPath,
       httpsKeyPath: savedHttpsKeyPath,
       httpsHostname: savedHttpsHostname,
@@ -225,8 +241,13 @@ class ServerNotifier extends Notifier<ServerState> {
   /// 認証モードを変更して永続化
   Future<void> setAuthMode(AuthMode mode) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('auth_mode',
-        mode == AuthMode.fixedPin ? 'fixedPin' : mode == AuthMode.noPin ? 'noPin' : 'randomPin');
+    await prefs.setString(
+        'auth_mode',
+        mode == AuthMode.fixedPin
+            ? 'fixedPin'
+            : mode == AuthMode.noPin
+                ? 'noPin'
+                : 'randomPin');
     if (mode != AuthMode.fixedPin) {
       await prefs.remove('fixed_pin');
       state = state.copyWith(authMode: mode, clearFixedPin: true);
@@ -245,7 +266,8 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<void> selectIpAddress(String ipAddress) async {
     if (kIsWeb) return;
     state = state.copyWith(selectedIpAddress: ipAddress);
-    // 逆引きDNSでホスト名を自動入力（HTTPSモード時に使用）
+    // 逆引きDNSでホスト名を自動入力（HTTPSモード時、フィールドが空の時のみ）(#133)
+    if (state.httpsHostname != null && state.httpsHostname!.isNotEmpty) return;
     try {
       final resolved = await InternetAddress(ipAddress).reverse();
       // DNS応答が返ってきた時点で選択IPが変わっていれば無視（競合防止）
@@ -261,7 +283,9 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<void> selectSafDirectory() async {
     if (kIsWeb) return;
     await _serverService.selectSafDirectory();
-    state = state.copyWith(storagePath: _serverService.displayPath ?? _serverService.documentsPath);
+    state = state.copyWith(
+        storagePath:
+            _serverService.displayPath ?? _serverService.documentsPath);
   }
 
   Future<void> start(int port) async {
@@ -328,6 +352,25 @@ class ServerNotifier extends Notifier<ServerState> {
   /// QR コードに埋め込む URL。サーバー停止中は null。
   String? get qrUrl => _serverService.qrUrl;
 
+  Future<void> setHttpsEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('https_enabled', enabled);
+    if (!enabled) {
+      // 無効化時は cert/key/hostname を state と prefs からクリアする
+      await prefs.remove('https_cert_path');
+      await prefs.remove('https_key_path');
+      await prefs.remove('https_hostname');
+      state = state.copyWith(
+        httpsEnabled: false,
+        clearHttpsCertPath: true,
+        clearHttpsKeyPath: true,
+        clearHttpsHostname: true,
+      );
+    } else {
+      state = state.copyWith(httpsEnabled: true);
+    }
+  }
+
   Future<void> setHttpsCertPath(String? path) async {
     final prefs = await SharedPreferences.getInstance();
     if (path == null || path.isEmpty) {
@@ -359,6 +402,28 @@ class ServerNotifier extends Notifier<ServerState> {
       await prefs.setString('https_hostname', hostname);
       state = state.copyWith(httpsHostname: hostname);
     }
+  }
+
+  /// すべての保存済み設定を初期化する (#147)
+  Future<void> resetAllSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('server_name');
+    await prefs.remove('operation_mode');
+    await prefs.remove('auth_mode');
+    await prefs.remove('fixed_pin');
+    await prefs.remove('https_enabled');
+    await prefs.remove('https_cert_path');
+    await prefs.remove('https_key_path');
+    await prefs.remove('https_hostname');
+    await prefs.remove('saf_directory_uri');
+    await prefs.remove('selected_directory_path');
+    // ServerService の in-memory フォルダ状態もリセットしデフォルトに戻す
+    await _serverService.resetDirectoryState();
+    await loadSettings();
+    // フォルダパスを state に反映
+    state = state.copyWith(
+      storagePath: _serverService.displayPath ?? _serverService.documentsPath,
+    );
   }
 }
 
@@ -475,14 +540,14 @@ class MyApp extends StatelessWidget {
 // 表示モードを定義するenum
 enum DisplayMode {
   pinAndQrVisible, // PINとQRコードを表示 (デフォルト)
-  allVisible,      // すべて表示
-  qrOnlyVisible,   // QRコードのみ表示
+  allVisible, // すべて表示
+  qrOnlyVisible, // QRコードのみ表示
 }
 
 // サーバー稼働時のタブを定義するenum
 enum ServerTab {
   connection, // 接続情報
-  clipboard,  // クリップボード共有
+  clipboard, // クリップボード共有
 }
 
 class HomePage extends ConsumerStatefulWidget {
@@ -501,6 +566,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
   late final TextEditingController _hostnameController;
+  final ScrollController _scrollController = ScrollController();
   ProviderSubscription<ServerState>? _hostnameSubscription;
 
   @override
@@ -548,6 +614,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _fixedPinController.dispose();
     _nameController.dispose();
     _hostnameController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -575,7 +642,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         return Icons.security; // QRのみ
     }
   }
-  
+
   String _getDisplayModeTooltip() {
     switch (_displayMode) {
       case DisplayMode.pinAndQrVisible:
@@ -634,7 +701,8 @@ class _HomePageState extends ConsumerState<HomePage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.cloud_done_outlined, size: 80, color: Colors.blueAccent),
+                Icon(Icons.cloud_done_outlined,
+                    size: 80, color: Colors.blueAccent),
                 SizedBox(height: 20),
                 Text(
                   'Web Client Mode',
@@ -673,41 +741,42 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
         ],
       ),
-      body: SingleChildScrollView(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: <Widget>[
-                // サーバー稼働時：タブ切り替え
-                if (serverState.status == ServerStatus.running) ...[
-                  _buildTabSelector(),
-                  const SizedBox(height: 16),
-                  if (_currentTab == ServerTab.connection && url != null)
-                    _buildConnectionInfo(context, url, serverState.pin, serverState.storagePath),
-                  if (_currentTab == ServerTab.clipboard)
-                    _buildClipboardSection(context),
+      body: Scrollbar(
+        controller: _scrollController,
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 88.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  // サーバー稼働時：タブ切り替え
+                  if (serverState.status == ServerStatus.running) ...[
+                    _buildTabSelector(),
+                    const SizedBox(height: 16),
+                    if (_currentTab == ServerTab.connection && url != null)
+                      _buildConnectionInfo(context, url, serverState.pin,
+                          serverState.storagePath),
+                    if (_currentTab == ServerTab.clipboard)
+                      _buildClipboardSection(context),
+                  ],
+
+                  if (serverState.status == ServerStatus.stopped)
+                    _buildStoppedView(context),
+
+                  if (serverState.status == ServerStatus.error)
+                    Text('エラー: ${serverState.errorMessage}',
+                        style:
+                            const TextStyle(fontSize: 16, color: Colors.red)),
                 ],
-
-                if (serverState.status == ServerStatus.stopped)
-                  _buildStoppedView(context),
-
-                if (serverState.status == ServerStatus.error)
-                  Text('エラー: ${serverState.errorMessage}',
-                      style: const TextStyle(fontSize: 16, color: Colors.red)),
-
-                const SizedBox(height: 40),
-
-                // Start/Stopボタン
-                _buildControlButton(context, ref, serverState),
-
-                const SizedBox(height: 20),
-              ],
+              ),
             ),
           ),
         ),
       ),
+      floatingActionButton: _buildControlButton(context, ref, serverState),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
 
@@ -720,9 +789,10 @@ class _HomePageState extends ConsumerState<HomePage> {
         const Text('サーバーは停止しています',
             style: TextStyle(fontSize: 18, color: Colors.grey)),
         const SizedBox(height: 20),
-        
+
         // IPアドレス選択ドロップダウン
-        if (serverState.availableIpAddresses.isNotEmpty && serverState.selectedIpAddress != null)
+        if (serverState.availableIpAddresses.isNotEmpty &&
+            serverState.selectedIpAddress != null)
           DropdownButton<String>(
             value: serverState.selectedIpAddress,
             items: serverState.availableIpAddresses
@@ -730,7 +800,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                 .toList(),
             onChanged: (ip) {
               if (ip != null) {
-                notifier.selectIpAddress(ip);  // Future は fire-and-forget で OK
+                notifier.selectIpAddress(ip); // Future は fire-and-forget で OK
               }
             },
           ),
@@ -741,7 +811,7 @@ class _HomePageState extends ConsumerState<HomePage> {
           child: TextField(
             controller: _nameController,
             decoration: const InputDecoration(
-              labelText: 'サーバー名',
+              labelText: 'サイト名',
               border: OutlineInputBorder(),
               isDense: true,
             ),
@@ -769,8 +839,62 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
-        // TODO(v1.3.0): HTTPS support - re-enable when implementation is complete (#98)
-        // セキュリティモード (HTTPS) 設定は v1.3.0 で対応予定
+        // SSL/TLS 設定
+        const SizedBox(height: 10),
+        SwitchListTile(
+          title: const Text('SSL/TLS (HTTPS) モード'),
+          value: serverState.httpsEnabled,
+          onChanged: (value) {
+            notifier.setHttpsEnabled(value);
+          },
+          contentPadding: EdgeInsets.zero,
+        ),
+        if (serverState.httpsEnabled) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              const SizedBox(width: 8),
+              const Text('証明書 (cert.pem):', style: TextStyle(fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          _CertPathField(
+            label: 'cert.pem',
+            value: serverState.httpsCertPath,
+            onChanged: (path) => notifier.setHttpsCertPath(path),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const SizedBox(width: 8),
+              const Text('秘密鍵 (key.pem):', style: TextStyle(fontSize: 13)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          _CertPathField(
+            label: 'key.pem',
+            value: serverState.httpsKeyPath,
+            onChanged: (path) => notifier.setHttpsKeyPath(path),
+          ),
+          if (serverState.httpsMode) ...[
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 400),
+              child: TextField(
+                controller: _hostnameController,
+                decoration: const InputDecoration(
+                  labelText: 'ホスト名 (任意)',
+                  hintText: 'example.local',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (value) {
+                  notifier.setHttpsHostname(value);
+                },
+              ),
+            ),
+          ],
+        ],
 
         // 動作モード選択
         const SizedBox(height: 20),
@@ -891,10 +1015,10 @@ class _HomePageState extends ConsumerState<HomePage> {
                 await notifier.selectSafDirectory();
               },
             ),
-          if (!kIsWeb && !Platform.isIOS)
-            const SizedBox(height: 10),
+          if (!kIsWeb && !Platform.isIOS) const SizedBox(height: 10),
           if (serverState.storagePath != null)
-            Text('選択中のフォルダ: ${serverState.storagePath}', textAlign: TextAlign.center),
+            Text('選択中のフォルダ: ${serverState.storagePath}',
+                textAlign: TextAlign.center),
           if (serverState.storagePath != null && !Platform.isIOS) ...[
             const SizedBox(height: 10),
             ElevatedButton.icon(
@@ -925,15 +1049,47 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
           ],
         ],
+
+        // 設定リセットボタン (#147)
+        const SizedBox(height: 32),
+        TextButton.icon(
+          icon: const Icon(Icons.restart_alt, color: Colors.grey),
+          label: const Text('設定を初期化', style: TextStyle(color: Colors.grey)),
+          onPressed: () async {
+            final confirmed = await showDialog<bool>(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('設定を初期化'),
+                content: const Text('すべての保存済み設定をリセットします。よろしいですか？'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('キャンセル'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child:
+                        const Text('リセット', style: TextStyle(color: Colors.red)),
+                  ),
+                ],
+              ),
+            );
+            if (confirmed == true) {
+              await notifier.resetAllSettings();
+            }
+          },
+        ),
       ],
     );
   }
 
-  Widget _buildConnectionInfo(BuildContext context, String url, String? pin, String? storagePath) {
+  Widget _buildConnectionInfo(
+      BuildContext context, String url, String? pin, String? storagePath) {
     final serverState = ref.watch(serverNotifierProvider);
     // モードに応じて表示/非表示を決定
     final bool showPin = serverState.authMode != AuthMode.noPin &&
-        (_displayMode == DisplayMode.pinAndQrVisible || _displayMode == DisplayMode.allVisible);
+        (_displayMode == DisplayMode.pinAndQrVisible ||
+            _displayMode == DisplayMode.allVisible);
     final bool showDetails = _displayMode == DisplayMode.allVisible;
 
     return Column(
@@ -945,14 +1101,17 @@ class _HomePageState extends ConsumerState<HomePage> {
             child: Card(
               color: Colors.blue[50],
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(Icons.download, color: Colors.blue[700]),
                     const SizedBox(width: 8),
                     Text('ダウンロード専用モード',
-                        style: TextStyle(color: Colors.blue[700], fontWeight: FontWeight.bold)),
+                        style: TextStyle(
+                            color: Colors.blue[700],
+                            fontWeight: FontWeight.bold)),
                   ],
                 ),
               ),
@@ -964,14 +1123,17 @@ class _HomePageState extends ConsumerState<HomePage> {
             child: Card(
               color: Colors.orange[50],
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(Icons.lock_open, color: Colors.orange[700]),
                     const SizedBox(width: 8),
                     Text('PIN認証無し',
-                        style: TextStyle(color: Colors.orange[700], fontWeight: FontWeight.bold)),
+                        style: TextStyle(
+                            color: Colors.orange[700],
+                            fontWeight: FontWeight.bold)),
                   ],
                 ),
               ),
@@ -985,47 +1147,49 @@ class _HomePageState extends ConsumerState<HomePage> {
             opacity: showPin && pin != null ? 1.0 : 0.0,
             duration: const Duration(milliseconds: 200),
             child: pin != null
-              ? Card(
-                  color: Colors.amber[100],
-                  elevation: 2,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  child: Center(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.pin, color: Colors.grey[850]),
-                          const SizedBox(width: 12),
-                          Text(
-                            'PIN: $pin',
-                            style: TextStyle(
-                              fontSize: 26,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 6,
-                              color: Colors.grey[850],
-                              fontFamily: 'monospace',
+                ? Card(
+                    color: Colors.amber[100],
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.pin, color: Colors.grey[850]),
+                            const SizedBox(width: 12),
+                            Text(
+                              'PIN: $pin',
+                              style: TextStyle(
+                                fontSize: 26,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 6,
+                                color: Colors.grey[850],
+                                fontFamily: 'monospace',
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                )
-              : const SizedBox.shrink(), // pinがnullの場合は何も表示しない
+                  )
+                : const SizedBox.shrink(), // pinがnullの場合は何も表示しない
           ),
         ),
-        
+
         const SizedBox(height: 25),
-        
+
         const Text(
           '以下のQRコードまたはアドレスにアクセスしてください',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 16),
         ),
         const SizedBox(height: 20),
-        
+
         // QRコード
         Container(
           padding: const EdgeInsets.all(10),
@@ -1057,18 +1221,20 @@ class _HomePageState extends ConsumerState<HomePage> {
             duration: const Duration(milliseconds: 200),
             child: SelectableText(
               url,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blue),
+              style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue),
             ),
           ),
         ),
         const SizedBox(height: 30),
-
-
       ],
     );
   }
 
-  Widget _buildControlButton(BuildContext context, WidgetRef ref, ServerState serverState) {
+  Widget _buildControlButton(
+      BuildContext context, WidgetRef ref, ServerState serverState) {
     final bool isRunning = serverState.status == ServerStatus.running;
 
     return ElevatedButton.icon(
