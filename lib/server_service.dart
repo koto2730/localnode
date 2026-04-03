@@ -1395,6 +1395,14 @@ class ServerService {
     }
   }
 
+  /// 選択フォルダの in-memory 状態をリセットし、デフォルトパスを再設定する
+  Future<void> resetDirectoryState() async {
+    _safDirectoryUri = null;
+    _fallbackStoragePath = null;
+    _displayPath = null;
+    await initializePaths();
+  }
+
   Future<void> _ensureDirectoryExists(String path) async {
     final dir = Directory(path);
     if (!await dir.exists()) {
