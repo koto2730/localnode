@@ -839,60 +839,62 @@ class _HomePageState extends ConsumerState<HomePage> {
             textAlign: TextAlign.center,
           ),
         ),
-        // SSL/TLS 設定
-        const SizedBox(height: 10),
-        SwitchListTile(
-          title: const Text('SSL/TLS (HTTPS) モード'),
-          value: serverState.httpsEnabled,
-          onChanged: (value) {
-            notifier.setHttpsEnabled(value);
-          },
-          contentPadding: EdgeInsets.zero,
-        ),
-        if (serverState.httpsEnabled) ...[
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              const SizedBox(width: 8),
-              const Text('証明書 (cert.pem):', style: TextStyle(fontSize: 13)),
-            ],
+        // SSL/TLS 設定（Web / Android / iOS では cert/key の入手手段がないため非表示）(#150)
+        if (!Platform.isAndroid && !Platform.isIOS) ...[
+          const SizedBox(height: 10),
+          SwitchListTile(
+            title: const Text('SSL/TLS (HTTPS) モード'),
+            value: serverState.httpsEnabled,
+            onChanged: (value) {
+              notifier.setHttpsEnabled(value);
+            },
+            contentPadding: EdgeInsets.zero,
           ),
-          const SizedBox(height: 4),
-          _CertPathField(
-            label: 'cert.pem',
-            value: serverState.httpsCertPath,
-            onChanged: (path) => notifier.setHttpsCertPath(path),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              const SizedBox(width: 8),
-              const Text('秘密鍵 (key.pem):', style: TextStyle(fontSize: 13)),
-            ],
-          ),
-          const SizedBox(height: 4),
-          _CertPathField(
-            label: 'key.pem',
-            value: serverState.httpsKeyPath,
-            onChanged: (path) => notifier.setHttpsKeyPath(path),
-          ),
-          if (serverState.httpsMode) ...[
-            const SizedBox(height: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 400),
-              child: TextField(
-                controller: _hostnameController,
-                decoration: const InputDecoration(
-                  labelText: 'ホスト名 (任意)',
-                  hintText: 'example.local',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                onChanged: (value) {
-                  notifier.setHttpsHostname(value);
-                },
-              ),
+          if (serverState.httpsEnabled) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                const SizedBox(width: 8),
+                const Text('証明書 (cert.pem):', style: TextStyle(fontSize: 13)),
+              ],
             ),
+            const SizedBox(height: 4),
+            _CertPathField(
+              label: 'cert.pem',
+              value: serverState.httpsCertPath,
+              onChanged: (path) => notifier.setHttpsCertPath(path),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const SizedBox(width: 8),
+                const Text('秘密鍵 (key.pem):', style: TextStyle(fontSize: 13)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            _CertPathField(
+              label: 'key.pem',
+              value: serverState.httpsKeyPath,
+              onChanged: (path) => notifier.setHttpsKeyPath(path),
+            ),
+            if (serverState.httpsMode) ...[
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 400),
+                child: TextField(
+                  controller: _hostnameController,
+                  decoration: const InputDecoration(
+                    labelText: 'ホスト名 (任意)',
+                    hintText: 'example.local',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onChanged: (value) {
+                    notifier.setHttpsHostname(value);
+                  },
+                ),
+              ),
+            ],
           ],
         ],
 
