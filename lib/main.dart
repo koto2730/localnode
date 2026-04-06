@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show File, InternetAddress, Platform;
+import 'dart:io' show File, InternetAddress, Platform, stderr;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -512,6 +512,15 @@ void main(List<String> args) async {
 
   // CLIモードかチェック
   if (CliRunner.isCliMode(args)) {
+    // Windows では GUI サブシステムの exe のため stdin を正しく制御できない。
+    // localnode-cli.exe (コンソールサブシステム) の使用を促す。
+    if (Platform.isWindows) {
+      stderr.writeln(
+          'Note: On Windows, please use localnode-cli.exe for CLI mode.');
+      stderr.writeln(
+          '      localnode-cli.exe --help');
+      stderr.writeln('');
+    }
     // CLIモードではFlutter UIを使わずにサーバーを起動
     final runner = CliRunner(args);
     await runner.run();
