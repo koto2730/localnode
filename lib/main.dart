@@ -422,6 +422,7 @@ class ServerNotifier extends Notifier<ServerState> {
     await loadSettings();
     // loadSettings では copyWith の仕様上 null 値がクリアされないため明示的にリセット
     state = state.copyWith(
+      clearFixedPin: true,
       clearHttpsCertPath: true,
       clearHttpsKeyPath: true,
       clearHttpsHostname: true,
@@ -849,8 +850,13 @@ class _HomePageState extends ConsumerState<HomePage> {
             constraints: const BoxConstraints(maxWidth: 400),
             child: Row(
               children: [
-                const Text('SSL/TLS (HTTPS) モード'),
-                const Spacer(),
+                const Expanded(
+                  child: Text(
+                    'SSL/TLS (HTTPS) モード',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
                 Switch(
                   value: serverState.httpsEnabled,
                   onChanged: (value) {
@@ -1089,6 +1095,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             if (confirmed == true) {
               await notifier.resetAllSettings();
               // TextEditingController をデフォルト値に同期する
+              if (!context.mounted) return;
               _nameController.text = 'LocalNode';
               _portController.text = '8080';
               _fixedPinController.clear();
