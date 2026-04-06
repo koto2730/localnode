@@ -118,6 +118,9 @@ jobs:
       - name: Build Windows
         run: flutter build windows --release
 
+      - name: Build localnode-cli.exe (standalone CLI binary)
+        run: dart compile exe bin/localnode_cli.dart -o build\windows\x64\runner\Release\localnode-cli.exe
+
       - name: Create zip archive
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath localnode-windows-x64.zip
 
