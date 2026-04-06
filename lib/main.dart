@@ -420,8 +420,11 @@ class ServerNotifier extends Notifier<ServerState> {
     // ServerService の in-memory フォルダ状態もリセットしデフォルトに戻す
     await _serverService.resetDirectoryState();
     await loadSettings();
-    // フォルダパスを state に反映
+    // loadSettings では copyWith の仕様上 null 値がクリアされないため明示的にリセット
     state = state.copyWith(
+      clearHttpsCertPath: true,
+      clearHttpsKeyPath: true,
+      clearHttpsHostname: true,
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
@@ -1078,6 +1081,11 @@ class _HomePageState extends ConsumerState<HomePage> {
             );
             if (confirmed == true) {
               await notifier.resetAllSettings();
+              // TextEditingController をデフォルト値に同期する
+              _nameController.text = 'LocalNode';
+              _portController.text = '8080';
+              _fixedPinController.clear();
+              _hostnameController.clear();
             }
           },
         ),
