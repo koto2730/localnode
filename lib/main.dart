@@ -842,13 +842,20 @@ class _HomePageState extends ConsumerState<HomePage> {
         // SSL/TLS 設定（Web / Android / iOS では cert/key の入手手段がないため非表示）(#150)
         if (!Platform.isAndroid && !Platform.isIOS) ...[
           const SizedBox(height: 10),
-          SwitchListTile(
-            title: const Text('SSL/TLS (HTTPS) モード'),
-            value: serverState.httpsEnabled,
-            onChanged: (value) {
-              notifier.setHttpsEnabled(value);
-            },
-            contentPadding: EdgeInsets.zero,
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Row(
+              children: [
+                const Text('SSL/TLS (HTTPS) モード'),
+                const Spacer(),
+                Switch(
+                  value: serverState.httpsEnabled,
+                  onChanged: (value) {
+                    notifier.setHttpsEnabled(value);
+                  },
+                ),
+              ],
+            ),
           ),
           if (serverState.httpsEnabled) ...[
             const SizedBox(height: 4),
