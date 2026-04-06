@@ -420,8 +420,12 @@ class ServerNotifier extends Notifier<ServerState> {
     // ServerService の in-memory フォルダ状態もリセットしデフォルトに戻す
     await _serverService.resetDirectoryState();
     await loadSettings();
-    // フォルダパスを state に反映
+    // loadSettings では copyWith の仕様上 null 値がクリアされないため明示的にリセット
     state = state.copyWith(
+      clearFixedPin: true,
+      clearHttpsCertPath: true,
+      clearHttpsKeyPath: true,
+      clearHttpsHostname: true,
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
@@ -842,13 +846,25 @@ class _HomePageState extends ConsumerState<HomePage> {
         // SSL/TLS 設定（Web / Android / iOS では cert/key の入手手段がないため非表示）(#150)
         if (!Platform.isAndroid && !Platform.isIOS) ...[
           const SizedBox(height: 10),
-          SwitchListTile(
-            title: const Text('SSL/TLS (HTTPS) モード'),
-            value: serverState.httpsEnabled,
-            onChanged: (value) {
-              notifier.setHttpsEnabled(value);
-            },
-            contentPadding: EdgeInsets.zero,
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'SSL/TLS (HTTPS) モード',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Switch(
+                  value: serverState.httpsEnabled,
+                  onChanged: (value) {
+                    notifier.setHttpsEnabled(value);
+                  },
+                ),
+              ],
+            ),
           ),
           if (serverState.httpsEnabled) ...[
             const SizedBox(height: 4),
@@ -1078,6 +1094,12 @@ class _HomePageState extends ConsumerState<HomePage> {
             );
             if (confirmed == true) {
               await notifier.resetAllSettings();
+              // TextEditingController をデフォルト値に同期する
+              if (!context.mounted) return;
+              _nameController.text = 'LocalNode';
+              _portController.text = '8080';
+              _fixedPinController.clear();
+              _hostnameController.clear();
             }
           },
         ),
