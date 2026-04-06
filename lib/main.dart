@@ -847,13 +847,17 @@ class _HomePageState extends ConsumerState<HomePage> {
           const SizedBox(height: 10),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 400),
-            child: SwitchListTile(
-              title: const Text('SSL/TLS (HTTPS) モード'),
-              value: serverState.httpsEnabled,
-              onChanged: (value) {
-                notifier.setHttpsEnabled(value);
-              },
-              contentPadding: EdgeInsets.zero,
+            child: Row(
+              children: [
+                const Text('SSL/TLS (HTTPS) モード'),
+                const Spacer(),
+                Switch(
+                  value: serverState.httpsEnabled,
+                  onChanged: (value) {
+                    notifier.setHttpsEnabled(value);
+                  },
+                ),
+              ],
             ),
           ),
           if (serverState.httpsEnabled) ...[
