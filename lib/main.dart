@@ -453,8 +453,29 @@ class ServerNotifier extends Notifier<ServerState> {
       state = state.copyWith(clearHttpsHostname: true);
     } else {
       await prefs.setString('https_hostname', hostname);
-      state = state.copyWith(httpsHostname: hostname);
+      // ホスト名に対応するIPを解決して selectedIpAddress にセット (#155)
+      final resolvedIp = await _resolveHostnameToDeviceIp(hostname);
+      state = state.copyWith(
+        httpsHostname: hostname,
+        selectedIpAddress: resolvedIp ?? state.selectedIpAddress,
+      );
     }
+  }
+
+  /// ホスト名をデバイス保有IPに解決する (#155)
+  /// IPアドレスならそのまま返す。DNS名なら解決してデバイスIPと照合する。
+  Future<String?> _resolveHostnameToDeviceIp(String hostname) async {
+    final deviceIps = state.availableIpAddresses.toSet();
+    // IPアドレスそのものならそのまま返す
+    if (deviceIps.contains(hostname)) return hostname;
+    // DNS名前解決
+    try {
+      final addresses = await InternetAddress.lookup(hostname);
+      for (final addr in addresses) {
+        if (deviceIps.contains(addr.address)) return addr.address;
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// すべての保存済み設定を初期化する (#147)
@@ -858,6 +879,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         const SizedBox(height: 20),
 
         // IPアドレス選択ドロップダウン
+        // HTTPSモードでホスト名が設定済みの場合はIPをロックする (#155)
         if (serverState.availableIpAddresses.isNotEmpty &&
             serverState.selectedIpAddress != null)
           DropdownButton<String>(
@@ -865,11 +887,15 @@ class _HomePageState extends ConsumerState<HomePage> {
             items: serverState.availableIpAddresses
                 .map((ip) => DropdownMenuItem(value: ip, child: Text(ip)))
                 .toList(),
-            onChanged: (ip) {
-              if (ip != null) {
-                notifier.selectIpAddress(ip); // Future は fire-and-forget で OK
-              }
-            },
+            onChanged: (serverState.httpsMode &&
+                    serverState.httpsHostname != null &&
+                    serverState.httpsHostname!.isNotEmpty)
+                ? null // HTTPSホスト名設定時はIP変更不可
+                : (ip) {
+                    if (ip != null) {
+                      notifier.selectIpAddress(ip);
+                    }
+                  },
           ),
         const SizedBox(height: 10),
 
