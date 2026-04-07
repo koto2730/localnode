@@ -407,8 +407,11 @@ class ServerNotifier extends Notifier<ServerState> {
   /// cert.pem の SAN を解析し、デバイス保有IPと照合して候補リストを返す (#154)
   Future<List<String>> _parseCertSanCandidates(String certPath) async {
     try {
-      final pem = await File(certPath).readAsString();
-      final certData = X509Utils.x509CertificateFromPem(pem);
+      final raw = await File(certPath).readAsString();
+      // チェーン証明書の場合は最初のブロックだけ使う
+      final firstPem = _extractFirstPemBlock(raw);
+      if (firstPem == null) return [];
+      final certData = X509Utils.x509CertificateFromPem(firstPem);
       final sans = certData.subjectAlternativNames ?? [];
       final deviceIps = state.availableIpAddresses.toSet();
       final ipPattern = RegExp(r'^\d+\.\d+\.\d+\.\d+$');
@@ -419,6 +422,17 @@ class ServerNotifier extends Notifier<ServerState> {
     } catch (_) {
       return [];
     }
+  }
+
+  /// PEMファイルから最初の CERTIFICATE ブロックを抽出する
+  String? _extractFirstPemBlock(String pem) {
+    final begin = '-----BEGIN CERTIFICATE-----';
+    final end = '-----END CERTIFICATE-----';
+    final startIdx = pem.indexOf(begin);
+    if (startIdx == -1) return null;
+    final endIdx = pem.indexOf(end, startIdx);
+    if (endIdx == -1) return null;
+    return pem.substring(startIdx, endIdx + end.length);
   }
 
   Future<void> setHttpsKeyPath(String? path) async {
