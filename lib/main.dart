@@ -169,6 +169,9 @@ class ServerNotifier extends Notifier<ServerState> {
   // _serverService を ref 経由で取得
   ServerService get _serverService => ref.read(serverServiceProvider);
 
+  // cert解析のレースコンディション防止用 (#403)
+  String? _currentCertPath;
+
   Future<void> loadIpAddresses() async {
     if (kIsWeb) return; // Webでは実行しない
     await _serverService.initializePaths();
@@ -219,6 +222,12 @@ class ServerNotifier extends Notifier<ServerState> {
       httpsKeyPath: savedHttpsKeyPath,
       httpsHostname: savedHttpsHostname,
     );
+
+    // 起動後にSAN候補を復元 (#55)
+    if (savedHttpsCertPath != null) {
+      final candidates = await _parseCertSanCandidates(savedHttpsCertPath);
+      state = state.copyWith(certSanCandidates: candidates);
+    }
   }
 
   /// サーバー名を設定して永続化
@@ -276,6 +285,8 @@ class ServerNotifier extends Notifier<ServerState> {
     state = state.copyWith(selectedIpAddress: ipAddress);
     // 逆引きDNSでホスト名を自動入力（HTTPSモード時、フィールドが空の時のみ）(#133)
     if (state.httpsHostname != null && state.httpsHostname!.isNotEmpty) return;
+    // SAN候補がある場合は逆引きDNS自動入力をスキップ（certSanCandidatesと競合するため）(#985)
+    if (state.certSanCandidates.isNotEmpty) return;
     try {
       final resolved = await InternetAddress(ipAddress).reverse();
       // DNS応答が返ってきた時点で選択IPが変わっていれば無視（競合防止）
@@ -383,7 +394,9 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<void> setHttpsCertPath(String? path) async {
     final prefs = await SharedPreferences.getInstance();
     if (path == null || path.isEmpty) {
+      _currentCertPath = null;
       await prefs.remove('https_cert_path');
+      await prefs.remove('https_hostname');
       state = state.copyWith(
         clearHttpsCertPath: true,
         clearHttpsHostname: true,
@@ -392,7 +405,10 @@ class ServerNotifier extends Notifier<ServerState> {
     } else {
       await prefs.setString('https_cert_path', path);
       // cert選択時にSANを解析してデバイスIPと照合 (#154)
+      _currentCertPath = path;
       final candidates = await _parseCertSanCandidates(path);
+      // レースコンディション: 解析中に別のcertが選択された場合は無視 (#403)
+      if (_currentCertPath != path) return;
       state = state.copyWith(httpsCertPath: path, certSanCandidates: candidates);
       // 候補が1つなら自動選択
       if (candidates.length == 1) {
@@ -413,10 +429,11 @@ class ServerNotifier extends Notifier<ServerState> {
       if (firstPem == null) return [];
       final certData = X509Utils.x509CertificateFromPem(firstPem);
       final sans = certData.subjectAlternativNames ?? [];
-      final deviceIps = state.availableIpAddresses.toSet();
-      final ipPattern = RegExp(r'^\d+\.\d+\.\d+\.\d+$');
+      // state.availableIpAddresses は未初期化の可能性があるため直接取得 (#421)
+      final deviceIps = (await _serverService.getAvailableIpAddresses()).toSet();
       return sans.where((san) {
-        if (ipPattern.hasMatch(san)) return deviceIps.contains(san);
+        // IPv4/IPv6 両対応 (#419)
+        if (InternetAddress.tryParse(san) != null) return deviceIps.contains(san);
         return true; // ホスト名はすべて候補に含める
       }).toList();
     } catch (_) {
