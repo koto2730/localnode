@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show File, InternetAddress, Platform, stderr;
+import 'package:basic_utils/basic_utils.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +33,7 @@ class ServerState {
     this.httpsCertPath,
     this.httpsKeyPath,
     this.httpsHostname,
+    this.certSanCandidates = const [],
   });
 
   final ServerStatus status;
@@ -49,6 +51,7 @@ class ServerState {
   final String? httpsCertPath;
   final String? httpsKeyPath;
   final String? httpsHostname;
+  final List<String> certSanCandidates;
 
   bool get httpsMode =>
       httpsCertPath != null &&
@@ -72,12 +75,14 @@ class ServerState {
     String? httpsCertPath,
     String? httpsKeyPath,
     String? httpsHostname,
+    List<String>? certSanCandidates,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
     bool clearHttpsCertPath = false,
     bool clearHttpsKeyPath = false,
     bool clearHttpsHostname = false,
+    bool clearCertSanCandidates = false,
   }) {
     return ServerState(
       status: status ?? this.status,
@@ -99,6 +104,9 @@ class ServerState {
           clearHttpsKeyPath ? null : (httpsKeyPath ?? this.httpsKeyPath),
       httpsHostname:
           clearHttpsHostname ? null : (httpsHostname ?? this.httpsHostname),
+      certSanCandidates: clearCertSanCandidates
+          ? const []
+          : (certSanCandidates ?? this.certSanCandidates),
     );
   }
 }
@@ -356,7 +364,7 @@ class ServerNotifier extends Notifier<ServerState> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('https_enabled', enabled);
     if (!enabled) {
-      // 無効化時は cert/key/hostname を state と prefs からクリアする
+      // 無効化時は cert/key/hostname/SANs を state と prefs からクリアする
       await prefs.remove('https_cert_path');
       await prefs.remove('https_key_path');
       await prefs.remove('https_hostname');
@@ -365,6 +373,7 @@ class ServerNotifier extends Notifier<ServerState> {
         clearHttpsCertPath: true,
         clearHttpsKeyPath: true,
         clearHttpsHostname: true,
+        clearCertSanCandidates: true,
       );
     } else {
       state = state.copyWith(httpsEnabled: true);
@@ -375,10 +384,40 @@ class ServerNotifier extends Notifier<ServerState> {
     final prefs = await SharedPreferences.getInstance();
     if (path == null || path.isEmpty) {
       await prefs.remove('https_cert_path');
-      state = state.copyWith(clearHttpsCertPath: true);
+      state = state.copyWith(
+        clearHttpsCertPath: true,
+        clearHttpsHostname: true,
+        clearCertSanCandidates: true,
+      );
     } else {
       await prefs.setString('https_cert_path', path);
-      state = state.copyWith(httpsCertPath: path);
+      // cert選択時にSANを解析してデバイスIPと照合 (#154)
+      final candidates = await _parseCertSanCandidates(path);
+      state = state.copyWith(httpsCertPath: path, certSanCandidates: candidates);
+      // 候補が1つなら自動選択
+      if (candidates.length == 1) {
+        await setHttpsHostname(candidates.first);
+      } else {
+        await prefs.remove('https_hostname');
+        state = state.copyWith(clearHttpsHostname: true);
+      }
+    }
+  }
+
+  /// cert.pem の SAN を解析し、デバイス保有IPと照合して候補リストを返す (#154)
+  Future<List<String>> _parseCertSanCandidates(String certPath) async {
+    try {
+      final pem = await File(certPath).readAsString();
+      final certData = X509Utils.x509CertificateFromPem(pem);
+      final sans = certData.subjectAlternativNames ?? [];
+      final deviceIps = state.availableIpAddresses.toSet();
+      final ipPattern = RegExp(r'^\d+\.\d+\.\d+\.\d+$');
+      return sans.where((san) {
+        if (ipPattern.hasMatch(san)) return deviceIps.contains(san);
+        return true; // ホスト名はすべて候補に含める
+      }).toList();
+    } catch (_) {
+      return [];
     }
   }
 
@@ -426,6 +465,7 @@ class ServerNotifier extends Notifier<ServerState> {
       clearHttpsCertPath: true,
       clearHttpsKeyPath: true,
       clearHttpsHostname: true,
+      clearCertSanCandidates: true,
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
@@ -906,18 +946,31 @@ class _HomePageState extends ConsumerState<HomePage> {
               const SizedBox(height: 8),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 400),
-                child: TextField(
-                  controller: _hostnameController,
-                  decoration: const InputDecoration(
-                    labelText: 'ホスト名 (任意)',
-                    hintText: 'example.local',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  onChanged: (value) {
-                    notifier.setHttpsHostname(value);
-                  },
-                ),
+                child: serverState.certSanCandidates.isEmpty
+                    ? const Text(
+                        '証明書にSANが含まれていないか、デバイスのIPと一致するエントリがありません',
+                        style: TextStyle(fontSize: 12, color: Colors.orange),
+                      )
+                    : DropdownButtonFormField<String>(
+                        value: serverState.certSanCandidates
+                                .contains(serverState.httpsHostname)
+                            ? serverState.httpsHostname
+                            : null,
+                        decoration: const InputDecoration(
+                          labelText: '接続先 (SAN)',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        items: serverState.certSanCandidates
+                            .map((s) => DropdownMenuItem(
+                                  value: s,
+                                  child: Text(s, style: const TextStyle(fontSize: 13)),
+                                ))
+                            .toList(),
+                        onChanged: (value) {
+                          if (value != null) notifier.setHttpsHostname(value);
+                        },
+                      ),
               ),
             ],
           ],
