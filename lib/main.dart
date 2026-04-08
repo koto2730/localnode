@@ -34,6 +34,7 @@ class ServerState {
     this.httpsKeyPath,
     this.httpsHostname,
     this.certSanCandidates = const [],
+    this.resolvedHttpsIp,
   });
 
   final ServerStatus status;
@@ -52,6 +53,8 @@ class ServerState {
   final String? httpsKeyPath;
   final String? httpsHostname;
   final List<String> certSanCandidates;
+  // ホスト名をデバイスIPに解決した結果（非nullならIPドロップダウンをロック）(#985)
+  final String? resolvedHttpsIp;
 
   bool get httpsMode =>
       httpsCertPath != null &&
@@ -76,6 +79,7 @@ class ServerState {
     String? httpsKeyPath,
     String? httpsHostname,
     List<String>? certSanCandidates,
+    String? resolvedHttpsIp,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
@@ -83,6 +87,7 @@ class ServerState {
     bool clearHttpsKeyPath = false,
     bool clearHttpsHostname = false,
     bool clearCertSanCandidates = false,
+    bool clearResolvedHttpsIp = false,
   }) {
     return ServerState(
       status: status ?? this.status,
@@ -107,6 +112,8 @@ class ServerState {
       certSanCandidates: clearCertSanCandidates
           ? const []
           : (certSanCandidates ?? this.certSanCandidates),
+      resolvedHttpsIp:
+          clearResolvedHttpsIp ? null : (resolvedHttpsIp ?? this.resolvedHttpsIp),
     );
   }
 }
@@ -223,10 +230,34 @@ class ServerNotifier extends Notifier<ServerState> {
       httpsHostname: savedHttpsHostname,
     );
 
-    // 起動後にSAN候補を復元 (#55)
+    // 起動後にSAN候補を復元し、保存済みホスト名と照合 (#55)
     if (savedHttpsCertPath != null) {
       final candidates = await _parseCertSanCandidates(savedHttpsCertPath);
-      state = state.copyWith(certSanCandidates: candidates);
+      final prefs2 = await SharedPreferences.getInstance();
+      final hostname = state.httpsHostname;
+      if (hostname != null && !candidates.contains(hostname)) {
+        // デバイスIP変更等で候補にないホスト名はクリア
+        await prefs2.remove('https_hostname');
+        state = state.copyWith(
+          certSanCandidates: candidates,
+          clearHttpsHostname: true,
+          clearResolvedHttpsIp: true,
+        );
+      } else if (hostname != null) {
+        // 有効なホスト名ならIP解決して resolvedHttpsIp をセット
+        final resolvedIp = await _resolveHostnameToDeviceIp(hostname);
+        state = state.copyWith(
+          certSanCandidates: candidates,
+          resolvedHttpsIp: resolvedIp,
+          selectedIpAddress: resolvedIp ?? state.selectedIpAddress,
+        );
+      } else if (candidates.length == 1) {
+        // 候補が1つなら自動選択
+        await setHttpsHostname(candidates.first);
+        state = state.copyWith(certSanCandidates: candidates);
+      } else {
+        state = state.copyWith(certSanCandidates: candidates);
+      }
     }
   }
 
@@ -385,6 +416,7 @@ class ServerNotifier extends Notifier<ServerState> {
         clearHttpsKeyPath: true,
         clearHttpsHostname: true,
         clearCertSanCandidates: true,
+        clearResolvedHttpsIp: true,
       );
     } else {
       state = state.copyWith(httpsEnabled: true);
@@ -396,11 +428,14 @@ class ServerNotifier extends Notifier<ServerState> {
     if (path == null || path.isEmpty) {
       _currentCertPath = null;
       await prefs.remove('https_cert_path');
+      await prefs.remove('https_key_path');
       await prefs.remove('https_hostname');
       state = state.copyWith(
         clearHttpsCertPath: true,
+        clearHttpsKeyPath: true,
         clearHttpsHostname: true,
         clearCertSanCandidates: true,
+        clearResolvedHttpsIp: true,
       );
     } else {
       await prefs.setString('https_cert_path', path);
@@ -431,9 +466,13 @@ class ServerNotifier extends Notifier<ServerState> {
       final sans = certData.subjectAlternativNames ?? [];
       // state.availableIpAddresses は未初期化の可能性があるため直接取得 (#421)
       final deviceIps = (await _serverService.getAvailableIpAddresses()).toSet();
+      // IP検出失敗時のフォールバック '0.0.0.0' のみの場合はIPフィルタをスキップ (#Copilot)
+      final skipIpFilter = deviceIps.length == 1 && deviceIps.contains('0.0.0.0');
       return sans.where((san) {
         // IPv4/IPv6 両対応 (#419)
-        if (InternetAddress.tryParse(san) != null) return deviceIps.contains(san);
+        if (InternetAddress.tryParse(san) != null) {
+          return skipIpFilter || deviceIps.contains(san);
+        }
         return true; // ホスト名はすべて候補に含める
       }).toList();
     } catch (_) {
@@ -467,7 +506,7 @@ class ServerNotifier extends Notifier<ServerState> {
     final prefs = await SharedPreferences.getInstance();
     if (hostname.isEmpty) {
       await prefs.remove('https_hostname');
-      state = state.copyWith(clearHttpsHostname: true);
+      state = state.copyWith(clearHttpsHostname: true, clearResolvedHttpsIp: true);
     } else {
       await prefs.setString('https_hostname', hostname);
       // ホスト名に対応するIPを解決して selectedIpAddress にセット (#155)
@@ -475,6 +514,7 @@ class ServerNotifier extends Notifier<ServerState> {
       state = state.copyWith(
         httpsHostname: hostname,
         selectedIpAddress: resolvedIp ?? state.selectedIpAddress,
+        resolvedHttpsIp: resolvedIp, // 解決成功時のみ非null → IPドロップダウンロック (#Copilot)
       );
     }
   }
@@ -518,6 +558,7 @@ class ServerNotifier extends Notifier<ServerState> {
       clearHttpsKeyPath: true,
       clearHttpsHostname: true,
       clearCertSanCandidates: true,
+      clearResolvedHttpsIp: true,
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
@@ -905,9 +946,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                 .map((ip) => DropdownMenuItem(value: ip, child: Text(ip)))
                 .toList(),
             onChanged: (serverState.httpsMode &&
-                    serverState.httpsHostname != null &&
-                    serverState.httpsHostname!.isNotEmpty)
-                ? null // HTTPSホスト名設定時はIP変更不可
+                    serverState.resolvedHttpsIp != null)
+                ? null // ホスト名がデバイスIPに解決できた場合のみIPロック
                 : (ip) {
                     if (ip != null) {
                       notifier.selectIpAddress(ip);
