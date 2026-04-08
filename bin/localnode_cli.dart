@@ -64,10 +64,21 @@ Future<void> main(List<String> args) async {
   final noPin = results['no-pin'] as bool;
   final fixedPin = results['pin'] as String?;
   final serverName = results['name'] as String;
-  // TODO(v1.3.0): HTTPS support (#98)
-  const String? httpsCertPath = null;
-  const String? httpsKeyPath = null;
-  const bool httpsMode = false;
+  final httpsCertPath = results['https-cert'] as String?;
+  final httpsKeyPath = results['https-key'] as String?;
+  if ((httpsCertPath == null) != (httpsKeyPath == null)) {
+    stderr.writeln('Error: --https-cert and --https-key must be specified together.');
+    exit(1);
+  }
+  if (httpsCertPath != null && !File(httpsCertPath).existsSync()) {
+    stderr.writeln('Error: Certificate file does not exist: $httpsCertPath');
+    exit(1);
+  }
+  if (httpsKeyPath != null && !File(httpsKeyPath).existsSync()) {
+    stderr.writeln('Error: Key file does not exist: $httpsKeyPath');
+    exit(1);
+  }
+  final bool httpsMode = httpsCertPath != null && httpsKeyPath != null;
 
   final authMode = noPin
       ? _AuthMode.noPin
@@ -155,7 +166,8 @@ ArgParser _buildParser() {
         abbr: 'v', help: 'Enable verbose request logging', negatable: false)
     ..addOption('name',
         abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
-    // TODO(v1.3.0): --https-cert / --https-key (#98)
+    ..addOption('https-cert', help: 'Path to TLS certificate file (cert.pem)')
+    ..addOption('https-key', help: 'Path to TLS private key file (key.pem)')
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -174,6 +186,7 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --mode download-only --no-pin');
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
   stdout.writeln('  localnode-cli --name "MyServer"');
+  stdout.writeln('  localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem');
   stdout.writeln('');
   stdout.writeln('To stop: Ctrl+C');
 }
