@@ -4,15 +4,17 @@ A Flutter application that transforms your phone or computer into a secure, pers
 
 ## Features
 
-*   **Cross-Platform Server:** Turn your iOS, Android, Windows, macOS, or Linux device into a local HTTP file server.
+*   **Cross-Platform Server:** Turn your iOS, Android, Windows, macOS, or Linux device into a local HTTP/HTTPS file server.
 *   **Web Browser Access:** Access and manage your files from any device with a web browser on the same network. No special client app required.
 *   **Clipboard Sharing:** Sync text between devices via the clipboard sharing feature. Tag items with labels for easy identification.
 *   **Secure File Sharing:** Upload, download, and manage files with PIN-based authentication.
+*   **HTTPS/TLS Support:** Enable secure connections using your own TLS certificate and private key (e.g., from Tailscale). The SAN-aware selector automatically matches certificate entries to your device's IP addresses.
 *   **Access Control:** Configure download-only mode or disable PIN authentication for trusted networks.
 *   **Easy Connection:** Connect quickly using a QR code or by manually entering the displayed IP address.
 *   **IP Address Selection:** Choose which network interface (e.g., Wi-Fi, Tailscale) to use for serving files.
 *   **Custom Server Name:** Set a custom name displayed in the browser tab and page title.
 *   **Custom Shared Folder:** Select any folder on your device as the shared directory.
+*   **Settings Reset:** Reset all saved settings to defaults with a single button.
 *   **CLI Mode:** Run as a headless server from the command line on desktop platforms with full option support.
 *   **Client-only Web App:** The web version of LocalNode functions as a client to access servers running on other platforms.
 
@@ -55,7 +57,21 @@ A Flutter application that transforms your phone or computer into a secure, pers
 
 ### CLI Mode
 
-Run LocalNode as a headless server from the command line (Windows, macOS, Linux):
+Run LocalNode as a headless server from the command line.
+
+**Windows / Linux:**
+
+Use the standalone `localnode-cli` binary included in the release archive:
+
+```bash
+# Windows
+localnode-cli.exe [options]
+
+# Linux
+./localnode-cli [options]
+```
+
+**macOS:**
 
 ```bash
 localnode --cli [options]
@@ -80,6 +96,8 @@ localnode --cli [options]
 | `--pin` | Fixed PIN (random if not specified) |
 | `--dir`, `-d` | Shared directory path |
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
+| `--https-cert` | Path to TLS certificate file (cert.pem) |
+| `--https-key` | Path to TLS private key file (key.pem) |
 | `--no-pin` | Disable PIN authentication |
 | `--no-clipboard` | Hide clipboard content from console output |
 | `--verbose`, `-v` | Enable verbose request logging |
@@ -89,25 +107,26 @@ localnode --cli [options]
 
 ```bash
 # Start with defaults (port 8080, random PIN, current directory)
-localnode --cli
+localnode-cli
 
 # Specify port, PIN, and shared directory
-localnode --cli -p 3000 --pin 1234 -d /home/user/share
+localnode-cli -p 3000 --pin 1234 -d /home/user/share
 
 # Specify IP address (useful for WSL, VPN, multi-NIC)
-localnode --cli -d /path/to/share --ip 192.168.1.100
+localnode-cli -d /path/to/share --ip 192.168.1.100
 
 # Set a custom server name
-localnode --cli --name "My Server"
+localnode-cli --name "My Server"
 
 # Download-only mode without PIN
-localnode --cli --mode download-only --no-pin
+localnode-cli --mode download-only --no-pin
+
+# Enable HTTPS with a Tailscale certificate
+localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem
 
 ```
 
 To stop the server: **Ctrl+C**.
-
-> **Note (Windows):** On Windows, only Ctrl+C is supported to stop the server.
 
 ## Platform Support
 
