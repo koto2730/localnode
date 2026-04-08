@@ -1736,12 +1736,44 @@ class _CertPathField extends StatelessWidget {
           const SizedBox(width: 8),
           OutlinedButton(
             onPressed: () async {
-              final result = await FilePicker.platform.pickFiles(
-                type: FileType.any,
-                dialogTitle: '$label を選択',
-              );
-              if (result != null && result.files.single.path != null) {
-                onChanged(result.files.single.path);
+              try {
+                final result = await FilePicker.platform.pickFiles(
+                  type: FileType.any,
+                  dialogTitle: '$label を選択',
+                );
+                if (result != null && result.files.single.path != null) {
+                  onChanged(result.files.single.path);
+                }
+              } catch (_) {
+                // XDG Desktop Portal 未インストール環境（WSL等）でのフォールバック (#161)
+                if (!context.mounted) return;
+                final controller = TextEditingController(text: value ?? '');
+                final entered = await showDialog<String>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text('$label のパスを入力'),
+                    content: TextField(
+                      controller: controller,
+                      decoration: const InputDecoration(
+                        hintText: '/path/to/file.pem',
+                      ),
+                      autofocus: true,
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('キャンセル'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, controller.text),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                );
+                if (entered != null && entered.isNotEmpty) {
+                  onChanged(entered);
+                }
               }
             },
             child: Text('$label を選択'),
