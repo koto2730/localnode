@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:io' show File, InternetAddress, Platform;
+import 'dart:io' show File, InternetAddress, Platform, stderr;
+import 'package:basic_utils/basic_utils.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +33,8 @@ class ServerState {
     this.httpsCertPath,
     this.httpsKeyPath,
     this.httpsHostname,
+    this.certSanCandidates = const [],
+    this.resolvedHttpsIp,
   });
 
   final ServerStatus status;
@@ -49,6 +52,9 @@ class ServerState {
   final String? httpsCertPath;
   final String? httpsKeyPath;
   final String? httpsHostname;
+  final List<String> certSanCandidates;
+  // ホスト名をデバイスIPに解決した結果（非nullならIPドロップダウンをロック）(#985)
+  final String? resolvedHttpsIp;
 
   bool get httpsMode =>
       httpsCertPath != null &&
@@ -72,12 +78,16 @@ class ServerState {
     String? httpsCertPath,
     String? httpsKeyPath,
     String? httpsHostname,
+    List<String>? certSanCandidates,
+    String? resolvedHttpsIp,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
     bool clearHttpsCertPath = false,
     bool clearHttpsKeyPath = false,
     bool clearHttpsHostname = false,
+    bool clearCertSanCandidates = false,
+    bool clearResolvedHttpsIp = false,
   }) {
     return ServerState(
       status: status ?? this.status,
@@ -99,6 +109,11 @@ class ServerState {
           clearHttpsKeyPath ? null : (httpsKeyPath ?? this.httpsKeyPath),
       httpsHostname:
           clearHttpsHostname ? null : (httpsHostname ?? this.httpsHostname),
+      certSanCandidates: clearCertSanCandidates
+          ? const []
+          : (certSanCandidates ?? this.certSanCandidates),
+      resolvedHttpsIp:
+          clearResolvedHttpsIp ? null : (resolvedHttpsIp ?? this.resolvedHttpsIp),
     );
   }
 }
@@ -161,6 +176,9 @@ class ServerNotifier extends Notifier<ServerState> {
   // _serverService を ref 経由で取得
   ServerService get _serverService => ref.read(serverServiceProvider);
 
+  // cert解析のレースコンディション防止用 (#403)
+  String? _currentCertPath;
+
   Future<void> loadIpAddresses() async {
     if (kIsWeb) return; // Webでは実行しない
     await _serverService.initializePaths();
@@ -211,6 +229,36 @@ class ServerNotifier extends Notifier<ServerState> {
       httpsKeyPath: savedHttpsKeyPath,
       httpsHostname: savedHttpsHostname,
     );
+
+    // 起動後にSAN候補を復元し、保存済みホスト名と照合 (#55)
+    if (savedHttpsCertPath != null) {
+      final candidates = await _parseCertSanCandidates(savedHttpsCertPath);
+      final prefs2 = await SharedPreferences.getInstance();
+      final hostname = state.httpsHostname;
+      if (hostname != null && !candidates.contains(hostname)) {
+        // デバイスIP変更等で候補にないホスト名はクリア
+        await prefs2.remove('https_hostname');
+        state = state.copyWith(
+          certSanCandidates: candidates,
+          clearHttpsHostname: true,
+          clearResolvedHttpsIp: true,
+        );
+      } else if (hostname != null) {
+        // 有効なホスト名ならIP解決して resolvedHttpsIp をセット
+        final resolvedIp = await _resolveHostnameToDeviceIp(hostname);
+        state = state.copyWith(
+          certSanCandidates: candidates,
+          resolvedHttpsIp: resolvedIp,
+          selectedIpAddress: resolvedIp ?? state.selectedIpAddress,
+        );
+      } else if (candidates.length == 1) {
+        // 候補が1つなら自動選択
+        await setHttpsHostname(candidates.first);
+        state = state.copyWith(certSanCandidates: candidates);
+      } else {
+        state = state.copyWith(certSanCandidates: candidates);
+      }
+    }
   }
 
   /// サーバー名を設定して永続化
@@ -268,6 +316,8 @@ class ServerNotifier extends Notifier<ServerState> {
     state = state.copyWith(selectedIpAddress: ipAddress);
     // 逆引きDNSでホスト名を自動入力（HTTPSモード時、フィールドが空の時のみ）(#133)
     if (state.httpsHostname != null && state.httpsHostname!.isNotEmpty) return;
+    // SAN候補がある場合は逆引きDNS自動入力をスキップ（certSanCandidatesと競合するため）(#985)
+    if (state.certSanCandidates.isNotEmpty) return;
     try {
       final resolved = await InternetAddress(ipAddress).reverse();
       // DNS応答が返ってきた時点で選択IPが変わっていれば無視（競合防止）
@@ -356,7 +406,7 @@ class ServerNotifier extends Notifier<ServerState> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('https_enabled', enabled);
     if (!enabled) {
-      // 無効化時は cert/key/hostname を state と prefs からクリアする
+      // 無効化時は cert/key/hostname/SANs を state と prefs からクリアする
       await prefs.remove('https_cert_path');
       await prefs.remove('https_key_path');
       await prefs.remove('https_hostname');
@@ -365,6 +415,8 @@ class ServerNotifier extends Notifier<ServerState> {
         clearHttpsCertPath: true,
         clearHttpsKeyPath: true,
         clearHttpsHostname: true,
+        clearCertSanCandidates: true,
+        clearResolvedHttpsIp: true,
       );
     } else {
       state = state.copyWith(httpsEnabled: true);
@@ -374,12 +426,69 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<void> setHttpsCertPath(String? path) async {
     final prefs = await SharedPreferences.getInstance();
     if (path == null || path.isEmpty) {
+      _currentCertPath = null;
       await prefs.remove('https_cert_path');
-      state = state.copyWith(clearHttpsCertPath: true);
+      await prefs.remove('https_key_path');
+      await prefs.remove('https_hostname');
+      state = state.copyWith(
+        clearHttpsCertPath: true,
+        clearHttpsKeyPath: true,
+        clearHttpsHostname: true,
+        clearCertSanCandidates: true,
+        clearResolvedHttpsIp: true,
+      );
     } else {
       await prefs.setString('https_cert_path', path);
-      state = state.copyWith(httpsCertPath: path);
+      // cert選択時にSANを解析してデバイスIPと照合 (#154)
+      _currentCertPath = path;
+      final candidates = await _parseCertSanCandidates(path);
+      // レースコンディション: 解析中に別のcertが選択された場合は無視 (#403)
+      if (_currentCertPath != path) return;
+      state = state.copyWith(httpsCertPath: path, certSanCandidates: candidates);
+      // 候補が1つなら自動選択
+      if (candidates.length == 1) {
+        await setHttpsHostname(candidates.first);
+      } else {
+        await prefs.remove('https_hostname');
+        state = state.copyWith(clearHttpsHostname: true);
+      }
     }
+  }
+
+  /// cert.pem の SAN を解析し、デバイス保有IPと照合して候補リストを返す (#154)
+  Future<List<String>> _parseCertSanCandidates(String certPath) async {
+    try {
+      final raw = await File(certPath).readAsString();
+      // チェーン証明書の場合は最初のブロックだけ使う
+      final firstPem = _extractFirstPemBlock(raw);
+      if (firstPem == null) return [];
+      final certData = X509Utils.x509CertificateFromPem(firstPem);
+      final sans = certData.subjectAlternativNames ?? [];
+      // state.availableIpAddresses は未初期化の可能性があるため直接取得 (#421)
+      final deviceIps = (await _serverService.getAvailableIpAddresses()).toSet();
+      // IP検出失敗時のフォールバック '0.0.0.0' のみの場合はIPフィルタをスキップ (#Copilot)
+      final skipIpFilter = deviceIps.length == 1 && deviceIps.contains('0.0.0.0');
+      return sans.where((san) {
+        // IPv4/IPv6 両対応 (#419)
+        if (InternetAddress.tryParse(san) != null) {
+          return skipIpFilter || deviceIps.contains(san);
+        }
+        return true; // ホスト名はすべて候補に含める
+      }).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// PEMファイルから最初の CERTIFICATE ブロックを抽出する
+  String? _extractFirstPemBlock(String pem) {
+    final begin = '-----BEGIN CERTIFICATE-----';
+    final end = '-----END CERTIFICATE-----';
+    final startIdx = pem.indexOf(begin);
+    if (startIdx == -1) return null;
+    final endIdx = pem.indexOf(end, startIdx);
+    if (endIdx == -1) return null;
+    return pem.substring(startIdx, endIdx + end.length);
   }
 
   Future<void> setHttpsKeyPath(String? path) async {
@@ -397,11 +506,33 @@ class ServerNotifier extends Notifier<ServerState> {
     final prefs = await SharedPreferences.getInstance();
     if (hostname.isEmpty) {
       await prefs.remove('https_hostname');
-      state = state.copyWith(clearHttpsHostname: true);
+      state = state.copyWith(clearHttpsHostname: true, clearResolvedHttpsIp: true);
     } else {
       await prefs.setString('https_hostname', hostname);
-      state = state.copyWith(httpsHostname: hostname);
+      // ホスト名に対応するIPを解決して selectedIpAddress にセット (#155)
+      final resolvedIp = await _resolveHostnameToDeviceIp(hostname);
+      state = state.copyWith(
+        httpsHostname: hostname,
+        selectedIpAddress: resolvedIp ?? state.selectedIpAddress,
+        resolvedHttpsIp: resolvedIp, // 解決成功時のみ非null → IPドロップダウンロック (#Copilot)
+      );
     }
+  }
+
+  /// ホスト名をデバイス保有IPに解決する (#155)
+  /// IPアドレスならそのまま返す。DNS名なら解決してデバイスIPと照合する。
+  Future<String?> _resolveHostnameToDeviceIp(String hostname) async {
+    final deviceIps = state.availableIpAddresses.toSet();
+    // IPアドレスそのものならそのまま返す
+    if (deviceIps.contains(hostname)) return hostname;
+    // DNS名前解決
+    try {
+      final addresses = await InternetAddress.lookup(hostname);
+      for (final addr in addresses) {
+        if (deviceIps.contains(addr.address)) return addr.address;
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// すべての保存済み設定を初期化する (#147)
@@ -426,6 +557,8 @@ class ServerNotifier extends Notifier<ServerState> {
       clearHttpsCertPath: true,
       clearHttpsKeyPath: true,
       clearHttpsHostname: true,
+      clearCertSanCandidates: true,
+      clearResolvedHttpsIp: true,
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
@@ -512,6 +645,15 @@ void main(List<String> args) async {
 
   // CLIモードかチェック
   if (CliRunner.isCliMode(args)) {
+    // Windows では GUI サブシステムの exe のため stdin を正しく制御できない。
+    // localnode-cli.exe (コンソールサブシステム) の使用を促す。
+    if (Platform.isWindows) {
+      stderr.writeln(
+          'Note: On Windows, please use localnode-cli.exe for CLI mode.');
+      stderr.writeln(
+          '      localnode-cli.exe --help');
+      stderr.writeln('');
+    }
     // CLIモードではFlutter UIを使わずにサーバーを起動
     final runner = CliRunner(args);
     await runner.run();
@@ -795,6 +937,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         const SizedBox(height: 20),
 
         // IPアドレス選択ドロップダウン
+        // HTTPSモードでホスト名が設定済みの場合はIPをロックする (#155)
         if (serverState.availableIpAddresses.isNotEmpty &&
             serverState.selectedIpAddress != null)
           DropdownButton<String>(
@@ -802,11 +945,14 @@ class _HomePageState extends ConsumerState<HomePage> {
             items: serverState.availableIpAddresses
                 .map((ip) => DropdownMenuItem(value: ip, child: Text(ip)))
                 .toList(),
-            onChanged: (ip) {
-              if (ip != null) {
-                notifier.selectIpAddress(ip); // Future は fire-and-forget で OK
-              }
-            },
+            onChanged: (serverState.httpsMode &&
+                    serverState.resolvedHttpsIp != null)
+                ? null // ホスト名がデバイスIPに解決できた場合のみIPロック
+                : (ip) {
+                    if (ip != null) {
+                      notifier.selectIpAddress(ip);
+                    }
+                  },
           ),
         const SizedBox(height: 10),
 
@@ -897,18 +1043,31 @@ class _HomePageState extends ConsumerState<HomePage> {
               const SizedBox(height: 8),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 400),
-                child: TextField(
-                  controller: _hostnameController,
-                  decoration: const InputDecoration(
-                    labelText: 'ホスト名 (任意)',
-                    hintText: 'example.local',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  onChanged: (value) {
-                    notifier.setHttpsHostname(value);
-                  },
-                ),
+                child: serverState.certSanCandidates.isEmpty
+                    ? const Text(
+                        '証明書にSANが含まれていないか、デバイスのIPと一致するエントリがありません',
+                        style: TextStyle(fontSize: 12, color: Colors.orange),
+                      )
+                    : DropdownButtonFormField<String>(
+                        value: serverState.certSanCandidates
+                                .contains(serverState.httpsHostname)
+                            ? serverState.httpsHostname
+                            : null,
+                        decoration: const InputDecoration(
+                          labelText: '接続先 (SAN)',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        items: serverState.certSanCandidates
+                            .map((s) => DropdownMenuItem(
+                                  value: s,
+                                  child: Text(s, style: const TextStyle(fontSize: 13)),
+                                ))
+                            .toList(),
+                        onChanged: (value) {
+                          if (value != null) notifier.setHttpsHostname(value);
+                        },
+                      ),
               ),
             ],
           ],
@@ -1617,12 +1776,44 @@ class _CertPathField extends StatelessWidget {
           const SizedBox(width: 8),
           OutlinedButton(
             onPressed: () async {
-              final result = await FilePicker.platform.pickFiles(
-                type: FileType.any,
-                dialogTitle: '$label を選択',
-              );
-              if (result != null && result.files.single.path != null) {
-                onChanged(result.files.single.path);
+              try {
+                final result = await FilePicker.platform.pickFiles(
+                  type: FileType.any,
+                  dialogTitle: '$label を選択',
+                );
+                if (result != null && result.files.single.path != null) {
+                  onChanged(result.files.single.path);
+                }
+              } catch (_) {
+                // XDG Desktop Portal 未インストール環境（WSL等）でのフォールバック (#161)
+                if (!context.mounted) return;
+                final controller = TextEditingController(text: value ?? '');
+                final entered = await showDialog<String>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text('$label のパスを入力'),
+                    content: TextField(
+                      controller: controller,
+                      decoration: const InputDecoration(
+                        hintText: '/path/to/file.pem',
+                      ),
+                      autofocus: true,
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('キャンセル'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, controller.text),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                );
+                if (entered != null && entered.isNotEmpty) {
+                  onChanged(entered);
+                }
               }
             },
             child: Text('$label を選択'),
