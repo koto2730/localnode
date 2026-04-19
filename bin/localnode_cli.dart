@@ -777,6 +777,7 @@ class _CliServer {
         json.encode({
           'version': '1.1.2',
           'name': _serverName,
+          'serverName': _serverName,
           'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
           'authMode': _authMode == _AuthMode.fixedPin
               ? 'fixedPin'
