@@ -699,6 +699,7 @@
         </div>
         <button class="lightbox-nav" id="lightbox-next">›</button>
         <div id="lightbox-meta"></div>
+        <button id="lightbox-download" style="margin-top:0.75rem; padding:0.4rem 1rem; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.4); color:white; border-radius:4px; cursor:pointer; font-size:0.85rem;">⬇ 保存</button>
         <div id="lightbox-zoom-hint">スクロールでズーム • 矢印キーで移動</div>
     </div>
 
@@ -1421,6 +1422,11 @@
                 document.body.style.overflow = '';
                 lightboxImg.src = '';
             };
+
+            document.getElementById('lightbox-download').addEventListener('click', () => {
+                const item = lightboxImageList[lightboxIndex];
+                if (item) downloadFile(item.id, item.name);
+            });
 
             document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
             lightboxEl.addEventListener('click', (e) => { if (e.target === lightboxEl) closeLightbox(); });
