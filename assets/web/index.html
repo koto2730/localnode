@@ -385,6 +385,221 @@
         .breadcrumb-current { color: #333; font-weight: 500; }
         .folder-row { cursor: pointer; }
         .folder-row:hover td { background-color: #f0f7ff; }
+
+        /* ソート・ビューワーコントロール */
+        .list-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .sort-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            font-size: 0.85rem;
+            color: #666;
+        }
+        .sort-controls button {
+            padding: 0.25rem 0.6rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        .sort-controls button.active {
+            background: #1a73e8;
+            color: white;
+            border-color: #1a73e8;
+        }
+        #viewerModeBtn {
+            padding: 0.35rem 0.8rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        #viewerModeBtn.active {
+            background: #1a73e8;
+            color: white;
+            border-color: #1a73e8;
+        }
+
+        /* 画像グリッド（ビューワーモード） */
+        .viewer-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 0.75rem;
+            margin-top: 0.5rem;
+        }
+        .viewer-item {
+            border: 2px solid transparent;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            background: #f8f9fa;
+            text-align: center;
+            padding: 0.5rem;
+            transition: border-color 0.15s;
+        }
+        .viewer-item:hover { border-color: #1a73e8; }
+        .viewer-item.selected { border-color: #ea4335; }
+        .viewer-item img {
+            width: 100%;
+            height: 100px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .viewer-item .viewer-name {
+            font-size: 0.75rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin-top: 0.4rem;
+            color: #333;
+        }
+        .viewer-item .viewer-icon {
+            font-size: 2.5rem;
+            line-height: 100px;
+        }
+        .viewer-compare-btn {
+            font-size: 0.7rem;
+            padding: 0.15rem 0.4rem;
+            margin-top: 0.3rem;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            background: white;
+            cursor: pointer;
+        }
+        .viewer-compare-btn.selected { background: #ea4335; color: white; border-color: #ea4335; }
+
+        /* ライトボックス */
+        #lightbox {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 200;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        #lightbox.open { display: flex; }
+        #lightbox-img-wrap {
+            position: relative;
+            overflow: hidden;
+            max-width: 90vw;
+            max-height: 75vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #lightbox-img {
+            max-width: 90vw;
+            max-height: 75vh;
+            object-fit: contain;
+            transform-origin: center center;
+            transition: transform 0.1s;
+            user-select: none;
+        }
+        #lightbox-meta {
+            color: white;
+            font-size: 0.85rem;
+            margin-top: 0.75rem;
+            text-align: center;
+            opacity: 0.85;
+        }
+        .lightbox-nav {
+            position: fixed;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255,255,255,0.15);
+            border: none;
+            color: white;
+            font-size: 2rem;
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        #lightbox-prev { left: 1rem; }
+        #lightbox-next { right: 1rem; }
+        #lightbox-close {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            padding: 0.3rem 0.7rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        #lightbox-zoom-hint {
+            position: fixed;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255,255,255,0.5);
+            font-size: 0.75rem;
+        }
+
+        /* 比較ビュー */
+        #comparison-view {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: #111;
+            z-index: 200;
+            flex-direction: column;
+        }
+        #comparison-view.open { display: flex; }
+        #comparison-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            background: #222;
+            color: white;
+        }
+        #comparison-header button {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            padding: 0.3rem 0.8rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .comparison-panes {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        .comparison-pane {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-right: 1px solid #444;
+        }
+        .comparison-pane:last-child { border-right: none; }
+        .comparison-pane img {
+            max-width: 100%;
+            max-height: 80vh;
+            object-fit: contain;
+        }
+        .comparison-pane .comp-meta {
+            color: rgba(255,255,255,0.7);
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -439,18 +654,17 @@
 
                 <div id="breadcrumb"></div>
 
-                <div id="file-list">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th class="preview-col"></th>
-                                <th class="fileinfo-col">ファイル名</th>
-                                <th class="actions">操作</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
+                <div class="list-controls">
+                    <div class="sort-controls">
+                        <span>並び替え:</span>
+                        <button id="sortNameBtn" class="active">名前</button>
+                        <button id="sortSizeBtn">サイズ</button>
+                        <button id="sortOrderBtn" title="昇順/降順">↑</button>
+                    </div>
+                    <button id="viewerModeBtn">🖼 グリッド</button>
                 </div>
+
+                <div id="file-list"></div>
             </div>
 
             <!-- クリップボードタブ -->
@@ -476,6 +690,36 @@
         </div>
     </div>
 
+    <!-- ライトボックス -->
+    <div id="lightbox">
+        <button id="lightbox-close">✕</button>
+        <button class="lightbox-nav" id="lightbox-prev">‹</button>
+        <div id="lightbox-img-wrap">
+            <img id="lightbox-img" src="" alt="">
+        </div>
+        <button class="lightbox-nav" id="lightbox-next">›</button>
+        <div id="lightbox-meta"></div>
+        <div id="lightbox-zoom-hint">スクロールでズーム • 矢印キーで移動</div>
+    </div>
+
+    <!-- 比較ビュー -->
+    <div id="comparison-view">
+        <div id="comparison-header">
+            <span>画像比較</span>
+            <button id="comparison-close">✕ 閉じる</button>
+        </div>
+        <div class="comparison-panes">
+            <div class="comparison-pane">
+                <img id="comp-img-0" src="" alt="">
+                <div class="comp-meta" id="comp-meta-0"></div>
+            </div>
+            <div class="comparison-pane">
+                <img id="comp-img-1" src="" alt="">
+                <div class="comp-meta" id="comp-meta-1"></div>
+            </div>
+        </div>
+    </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const pinModal = document.getElementById('pin-modal');
@@ -484,7 +728,6 @@
             const pinInput = document.getElementById('pinInput');
             const pinStatus = document.getElementById('pinStatus');
 
-            const fileListBody = document.querySelector('#file-list tbody');
             const uploadForm = document.getElementById('uploadForm');
             const fileInput = document.getElementById('fileInput');
             const uploadStatus = document.getElementById('uploadStatus');
@@ -495,6 +738,19 @@
             let serverInfo = {};
             // 現在表示中のフォルダパス（ルートは空文字）
             let currentPath = '';
+
+            // ビューワーモード・ソート状態
+            let sortBy = 'name';
+            let sortOrder = 'asc';
+            let isViewerMode = false;
+            let allItems = [];
+            let compareImages = [];
+            let lightboxImageList = [];
+            let lightboxIndex = 0;
+            let lightboxScale = 1;
+
+            const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp']);
+            const isImageFile = (name) => IMAGE_EXTS.has((name.split('.').pop() || '').toLowerCase());
 
             const renderBreadcrumb = () => {
                 const breadcrumb = document.getElementById('breadcrumb');
@@ -647,61 +903,21 @@
                     if (!response.ok) throw new Error('Failed to fetch files.');
                     const items = await response.json();
 
-                    fileListBody.innerHTML = '';
+                    allItems = items;
                     const hasFiles = items.some(i => i.type === 'file' || !i.type);
-                    const hasItems = items.length > 0;
-
-                    if (!hasItems) {
-                        fileListBody.innerHTML = '<tr><td colspan="3" style="text-align:center;">ファイルはありません。</td></tr>';
+                    const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+                    if (items.length === 0) {
                         downloadAllBtn.style.display = 'none';
                         deleteAllBtn.style.display = 'none';
                     } else {
-                        const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
                         downloadAllBtn.style.display = hasFiles ? 'inline-block' : 'none';
                         deleteAllBtn.style.display = (hasFiles && !isDownloadOnly) ? 'inline-block' : 'none';
-
-                        items.forEach(item => {
-                            const row = document.createElement('tr');
-                            if (item.type === 'directory') {
-                                row.classList.add('folder-row');
-                                row.innerHTML = `
-                                    <td class="preview-col">📁</td>
-                                    <td class="fileinfo-col" title="${escapeHtml(item.name)}">
-                                        <div class="fileinfo-name">${escapeHtml(item.name)}</div>
-                                    </td>
-                                    <td class="actions">
-                                        <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}.zip')">DL</button>
-                                    </td>
-                                `;
-                                row.addEventListener('click', (e) => {
-                                    if (e.target.tagName === 'BUTTON') return;
-                                    const newPath = currentPath ? `${currentPath}/${item.name}` : item.name;
-                                    navigateTo(newPath);
-                                });
-                            } else {
-                                const sizeMB = (item.size / (1024 * 1024)).toFixed(2);
-                                const preview = getFilePreview(item);
-                                const deleteBtn = isDownloadOnly
-                                    ? ''
-                                    : `<button class="btn-delete" onclick="deleteFile('${item.id}', '${escapeHtml(item.name)}')">削除</button>`;
-                                row.innerHTML = `
-                                    <td class="preview-col">${preview}</td>
-                                    <td class="fileinfo-col" title="${escapeHtml(item.name)}">
-                                        <div class="fileinfo-name">${escapeHtml(item.name)}</div>
-                                        <div class="fileinfo-size">${sizeMB} MB</div>
-                                    </td>
-                                    <td class="actions">
-                                        <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}')">DL</button>
-                                        ${deleteBtn}
-                                    </td>
-                                `;
-                            }
-                            fileListBody.appendChild(row);
-                        });
                     }
+                    renderView();
                 } catch (error) {
                     if (error.message !== 'Authentication failed.') {
-                        fileListBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color: red;">${error.message}</td></tr>`;
+                        document.getElementById('file-list').innerHTML =
+                            `<table><tbody><tr><td colspan="3" style="text-align:center; color: red;">${error.message}</td></tr></tbody></table>`;
                     }
                 }
             };
@@ -1015,6 +1231,249 @@
                 } catch (error) {
                     alert(error.message);
                 }
+            });
+
+            // === ソート・ビューワーモード ===
+
+            const sortItems = (items) => {
+                const dirs = items.filter(i => i.type === 'directory');
+                const files = items.filter(i => i.type !== 'directory');
+                const cmp = (a, b) => {
+                    let r = 0;
+                    if (sortBy === 'name') r = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+                    else if (sortBy === 'size') r = (a.size || 0) - (b.size || 0);
+                    return sortOrder === 'asc' ? r : -r;
+                };
+                return [...dirs.sort(cmp), ...files.sort(cmp)];
+            };
+
+            const renderView = () => {
+                const sorted = sortItems(allItems);
+                if (isViewerMode) renderGridView(sorted);
+                else renderTableView(sorted);
+            };
+
+            const renderTableView = (items) => {
+                const fileList = document.getElementById('file-list');
+                const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+
+                if (items.length === 0) {
+                    fileList.innerHTML = '<table><tbody><tr><td colspan="3" style="text-align:center;">ファイルはありません。</td></tr></tbody></table>';
+                    return;
+                }
+
+                fileList.innerHTML = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="preview-col"></th>
+                                <th class="fileinfo-col">ファイル名</th>
+                                <th class="actions">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>`;
+                const tbody = fileList.querySelector('tbody');
+
+                items.forEach(item => {
+                    const row = document.createElement('tr');
+                    if (item.type === 'directory') {
+                        row.classList.add('folder-row');
+                        row.innerHTML = `
+                            <td class="preview-col">📁</td>
+                            <td class="fileinfo-col" title="${escapeHtml(item.name)}">
+                                <div class="fileinfo-name">${escapeHtml(item.name)}</div>
+                            </td>
+                            <td class="actions">
+                                <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}.zip')">DL</button>
+                            </td>`;
+                        row.addEventListener('click', (e) => {
+                            if (e.target.tagName === 'BUTTON') return;
+                            navigateTo(currentPath ? `${currentPath}/${item.name}` : item.name);
+                        });
+                    } else {
+                        const sizeMB = (item.size / (1024 * 1024)).toFixed(2);
+                        const preview = getFilePreview(item);
+                        const deleteBtn = isDownloadOnly
+                            ? ''
+                            : `<button class="btn-delete" onclick="deleteFile('${item.id}', '${escapeHtml(item.name)}')">削除</button>`;
+                        row.innerHTML = `
+                            <td class="preview-col">${preview}</td>
+                            <td class="fileinfo-col" title="${escapeHtml(item.name)}">
+                                <div class="fileinfo-name">${escapeHtml(item.name)}</div>
+                                <div class="fileinfo-size">${sizeMB} MB</div>
+                            </td>
+                            <td class="actions">
+                                <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}')">DL</button>
+                                ${deleteBtn}
+                            </td>`;
+                    }
+                    tbody.appendChild(row);
+                });
+            };
+
+            const renderGridView = (items) => {
+                lightboxImageList = items.filter(i => i.type !== 'directory' && isImageFile(i.name));
+                const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+                const fileList = document.getElementById('file-list');
+
+                if (items.length === 0) {
+                    fileList.innerHTML = '<p style="text-align:center; color:#666; padding:1rem;">ファイルはありません。</p>';
+                    return;
+                }
+
+                let header = '';
+                if (compareImages.length > 0) {
+                    const openBtn = compareImages.length === 2
+                        ? '<button id="compareOpenBtn" style="margin-left:0.5rem; padding:0.2rem 0.6rem; background:#1a73e8; color:white; border:none; border-radius:4px; cursor:pointer;">比較する</button>'
+                        : '';
+                    header = `<div style="text-align:right; margin-bottom:0.5rem; font-size:0.85rem; color:#666;">
+                        ${compareImages.length}/2 選択中${openBtn}
+                        <button id="compareClearBtn" style="margin-left:0.5rem; padding:0.2rem 0.6rem; background:#999; color:white; border:none; border-radius:4px; cursor:pointer;">クリア</button>
+                    </div>`;
+                }
+
+                let html = header + '<div class="viewer-grid">';
+                items.forEach(item => {
+                    if (item.type === 'directory') {
+                        const target = currentPath ? `${currentPath}/${item.name}` : item.name;
+                        html += `<div class="viewer-item" onclick="navigateTo('${escapeHtml(target)}')">
+                            <div class="viewer-icon">📁</div>
+                            <div class="viewer-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+                        </div>`;
+                    } else if (isImageFile(item.name)) {
+                        const imgIdx = lightboxImageList.findIndex(i => i.id === item.id);
+                        const sel = compareImages.some(c => c.id === item.id);
+                        html += `<div class="viewer-item${sel ? ' selected' : ''}">
+                            <img src="/api/thumbnail/${item.id}" alt="${escapeHtml(item.name)}" loading="lazy" onclick="openLightbox(${imgIdx})" style="cursor:pointer;">
+                            <div class="viewer-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+                            <button class="viewer-compare-btn${sel ? ' selected' : ''}" onclick="toggleCompare('${item.id}','${escapeHtml(item.name)}')">
+                                ${sel ? '✓ 選択済' : '比較選択'}
+                            </button>
+                        </div>`;
+                    } else {
+                        const preview = getFilePreview(item);
+                        html += `<div class="viewer-item" onclick="downloadFile('${item.id}','${escapeHtml(item.name)}')">
+                            <div class="viewer-icon">${preview}</div>
+                            <div class="viewer-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+                        </div>`;
+                    }
+                });
+                html += '</div>';
+                fileList.innerHTML = html;
+
+                const compareOpenBtn = document.getElementById('compareOpenBtn');
+                if (compareOpenBtn) compareOpenBtn.addEventListener('click', openComparison);
+                const compareClearBtn = document.getElementById('compareClearBtn');
+                if (compareClearBtn) compareClearBtn.addEventListener('click', () => { compareImages = []; renderView(); });
+            };
+
+            window.toggleCompare = (id, name) => {
+                const idx = compareImages.findIndex(c => c.id === id);
+                if (idx >= 0) {
+                    compareImages.splice(idx, 1);
+                } else {
+                    if (compareImages.length >= 2) { alert('比較できるのは2枚までです。'); return; }
+                    compareImages.push({ id, name });
+                }
+                renderView();
+            };
+
+            const openComparison = () => {
+                if (compareImages.length < 2) return;
+                document.getElementById('comp-img-0').src = `/api/download/${compareImages[0].id}`;
+                document.getElementById('comp-meta-0').textContent = compareImages[0].name;
+                document.getElementById('comp-img-1').src = `/api/download/${compareImages[1].id}`;
+                document.getElementById('comp-meta-1').textContent = compareImages[1].name;
+                document.getElementById('comparison-view').classList.add('open');
+            };
+
+            document.getElementById('comparison-close').addEventListener('click', () => {
+                document.getElementById('comparison-view').classList.remove('open');
+            });
+
+            // === ライトボックス ===
+            const lightboxEl = document.getElementById('lightbox');
+            const lightboxImg = document.getElementById('lightbox-img');
+            const lightboxMeta = document.getElementById('lightbox-meta');
+
+            window.openLightbox = (idx) => {
+                if (lightboxImageList.length === 0) return;
+                lightboxIndex = idx;
+                lightboxScale = 1;
+                lightboxImg.style.transform = 'scale(1)';
+                updateLightbox();
+                lightboxEl.classList.add('open');
+                document.body.style.overflow = 'hidden';
+            };
+
+            const updateLightbox = () => {
+                const item = lightboxImageList[lightboxIndex];
+                if (!item) return;
+                lightboxImg.src = `/api/download/${item.id}`;
+                lightboxImg.alt = item.name;
+                const sizeMB = item.size ? ` • ${(item.size / (1024 * 1024)).toFixed(2)} MB` : '';
+                lightboxMeta.textContent = `${item.name}${sizeMB} (${lightboxIndex + 1} / ${lightboxImageList.length})`;
+            };
+
+            const closeLightbox = () => {
+                lightboxEl.classList.remove('open');
+                document.body.style.overflow = '';
+                lightboxImg.src = '';
+            };
+
+            document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+            lightboxEl.addEventListener('click', (e) => { if (e.target === lightboxEl) closeLightbox(); });
+
+            document.getElementById('lightbox-prev').addEventListener('click', () => {
+                lightboxIndex = (lightboxIndex - 1 + lightboxImageList.length) % lightboxImageList.length;
+                lightboxScale = 1;
+                lightboxImg.style.transform = 'scale(1)';
+                updateLightbox();
+            });
+
+            document.getElementById('lightbox-next').addEventListener('click', () => {
+                lightboxIndex = (lightboxIndex + 1) % lightboxImageList.length;
+                lightboxScale = 1;
+                lightboxImg.style.transform = 'scale(1)';
+                updateLightbox();
+            });
+
+            document.getElementById('lightbox-img-wrap').addEventListener('wheel', (e) => {
+                e.preventDefault();
+                lightboxScale = Math.min(Math.max(lightboxScale * (e.deltaY > 0 ? 0.9 : 1.1), 0.5), 5);
+                lightboxImg.style.transform = `scale(${lightboxScale})`;
+            }, { passive: false });
+
+            document.addEventListener('keydown', (e) => {
+                if (!lightboxEl.classList.contains('open')) return;
+                if (e.key === 'ArrowLeft') document.getElementById('lightbox-prev').click();
+                else if (e.key === 'ArrowRight') document.getElementById('lightbox-next').click();
+                else if (e.key === 'Escape') closeLightbox();
+            });
+
+            // === ソートボタン ===
+            const updateSortButtons = () => {
+                document.getElementById('sortNameBtn').classList.toggle('active', sortBy === 'name');
+                document.getElementById('sortSizeBtn').classList.toggle('active', sortBy === 'size');
+                document.getElementById('sortOrderBtn').textContent = sortOrder === 'asc' ? '↑' : '↓';
+            };
+
+            document.getElementById('sortNameBtn').addEventListener('click', () => {
+                sortBy = 'name'; updateSortButtons(); renderView();
+            });
+            document.getElementById('sortSizeBtn').addEventListener('click', () => {
+                sortBy = 'size'; updateSortButtons(); renderView();
+            });
+            document.getElementById('sortOrderBtn').addEventListener('click', () => {
+                sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'; updateSortButtons(); renderView();
+            });
+            document.getElementById('viewerModeBtn').addEventListener('click', () => {
+                isViewerMode = !isViewerMode;
+                const btn = document.getElementById('viewerModeBtn');
+                btn.classList.toggle('active', isViewerMode);
+                btn.textContent = isViewerMode ? '☰ リスト' : '🖼 グリッド';
+                renderView();
             });
 
             // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
