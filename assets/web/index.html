@@ -365,6 +365,26 @@
         .clipboard-section {
             margin-top: 0;
         }
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+            padding: 0.5rem 0;
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+            min-height: 2rem;
+        }
+        .breadcrumb-item {
+            color: #1a73e8;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .breadcrumb-item:hover { color: #0d47a1; }
+        .breadcrumb-sep { color: #999; }
+        .breadcrumb-current { color: #333; font-weight: 500; }
+        .folder-row { cursor: pointer; }
+        .folder-row:hover td { background-color: #f0f7ff; }
     </style>
 </head>
 <body>
@@ -416,6 +436,8 @@
                     <button id="downloadAllBtn">すべてをzipでダウンロード</button>
                     <button id="deleteAllBtn">すべてを削除</button>
                 </div>
+
+                <div id="breadcrumb"></div>
 
                 <div id="file-list">
                     <table>
@@ -471,6 +493,36 @@
 
             // サーバー情報（モード等）
             let serverInfo = {};
+            // 現在表示中のフォルダパス（ルートは空文字）
+            let currentPath = '';
+
+            const renderBreadcrumb = () => {
+                const breadcrumb = document.getElementById('breadcrumb');
+                if (!currentPath) {
+                    breadcrumb.innerHTML = '<span class="breadcrumb-current">🏠 ホーム</span>';
+                    return;
+                }
+                const parts = currentPath.split('/');
+                let html = '<span class="breadcrumb-item" onclick="navigateTo(\'\')">🏠 ホーム</span>';
+                let accumulated = '';
+                parts.forEach((part, i) => {
+                    accumulated += (accumulated ? '/' : '') + part;
+                    html += '<span class="breadcrumb-sep"> / </span>';
+                    if (i === parts.length - 1) {
+                        html += `<span class="breadcrumb-current">${escapeHtml(part)}</span>`;
+                    } else {
+                        const path = accumulated;
+                        html += `<span class="breadcrumb-item" onclick="navigateTo('${escapeHtml(path)}')">${escapeHtml(part)}</span>`;
+                    }
+                });
+                breadcrumb.innerHTML = html;
+            };
+
+            window.navigateTo = (path) => {
+                currentPath = path;
+                renderBreadcrumb();
+                fetchFiles();
+            };
 
             // 401を検知してPINモーダルを表示する汎用fetchラッパー
             const safeFetch = async (url, options = {}) => {
@@ -586,55 +638,80 @@
                 return '📁'; // Default icon
             };
 
-            // ファイル一覧を取得して表示
+            // ファイル一覧を取得して表示（サブフォルダナビゲーション対応）
             const fetchFiles = async () => {
+                renderBreadcrumb();
                 try {
-                    const response = await safeFetch('/api/files');
+                    const url = currentPath ? `/api/files?path=${encodeURIComponent(currentPath)}` : '/api/files';
+                    const response = await safeFetch(url);
                     if (!response.ok) throw new Error('Failed to fetch files.');
-                    const files = await response.json();
+                    const items = await response.json();
 
                     fileListBody.innerHTML = '';
-                    if (files.length === 0) {
+                    const hasFiles = items.some(i => i.type === 'file' || !i.type);
+                    const hasItems = items.length > 0;
+
+                    if (!hasItems) {
                         fileListBody.innerHTML = '<tr><td colspan="3" style="text-align:center;">ファイルはありません。</td></tr>';
-                        downloadAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
-                        deleteAllBtn.style.display = 'none'; // ファイルがなければボタンを隠す
+                        downloadAllBtn.style.display = 'none';
+                        deleteAllBtn.style.display = 'none';
                     } else {
                         const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
-                        downloadAllBtn.style.display = 'inline-block'; // ファイルがあればボタンを表示
-                        deleteAllBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
-                        files.forEach(file => {
+                        downloadAllBtn.style.display = hasFiles ? 'inline-block' : 'none';
+                        deleteAllBtn.style.display = (hasFiles && !isDownloadOnly) ? 'inline-block' : 'none';
+
+                        items.forEach(item => {
                             const row = document.createElement('tr');
-                            const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
-                            const preview = getFilePreview(file);
-
-                            const deleteBtn = isDownloadOnly
-                                ? ''
-                                : `<button class="btn-delete" onclick="deleteFile('${file.id}', '${escapeHtml(file.name)}')">削除</button>`;
-
-                            row.innerHTML = `
-                                <td class="preview-col">${preview}</td>
-                                <td class="fileinfo-col" title="${escapeHtml(file.name)}">
-                                    <div class="fileinfo-name">${escapeHtml(file.name)}</div>
-                                    <div class="fileinfo-size">${sizeMB} MB</div>
-                                </td>
-                                <td class="actions">
-                                    <button class="btn-download" onclick="downloadFile('${file.id}', '${escapeHtml(file.name)}')">DL</button>
-                                    ${deleteBtn}
-                                </td>
-                            `;
+                            if (item.type === 'directory') {
+                                row.classList.add('folder-row');
+                                row.innerHTML = `
+                                    <td class="preview-col">📁</td>
+                                    <td class="fileinfo-col" title="${escapeHtml(item.name)}">
+                                        <div class="fileinfo-name">${escapeHtml(item.name)}</div>
+                                    </td>
+                                    <td class="actions">
+                                        <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}.zip')">DL</button>
+                                    </td>
+                                `;
+                                row.addEventListener('click', (e) => {
+                                    if (e.target.tagName === 'BUTTON') return;
+                                    const newPath = currentPath ? `${currentPath}/${item.name}` : item.name;
+                                    navigateTo(newPath);
+                                });
+                            } else {
+                                const sizeMB = (item.size / (1024 * 1024)).toFixed(2);
+                                const preview = getFilePreview(item);
+                                const deleteBtn = isDownloadOnly
+                                    ? ''
+                                    : `<button class="btn-delete" onclick="deleteFile('${item.id}', '${escapeHtml(item.name)}')">削除</button>`;
+                                row.innerHTML = `
+                                    <td class="preview-col">${preview}</td>
+                                    <td class="fileinfo-col" title="${escapeHtml(item.name)}">
+                                        <div class="fileinfo-name">${escapeHtml(item.name)}</div>
+                                        <div class="fileinfo-size">${sizeMB} MB</div>
+                                    </td>
+                                    <td class="actions">
+                                        <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}')">DL</button>
+                                        ${deleteBtn}
+                                    </td>
+                                `;
+                            }
                             fileListBody.appendChild(row);
                         });
                     }
                 } catch (error) {
-                     if (error.message !== 'Authentication failed.') {
+                    if (error.message !== 'Authentication failed.') {
                         fileListBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color: red;">${error.message}</td></tr>`;
-                     }
+                    }
                 }
             };
 
-            // 全ファイルダウンロード処理
+            // 全ファイルダウンロード処理（現在フォルダのみ）
             downloadAllBtn.addEventListener('click', () => {
-                window.location.href = '/api/download-all';
+                const url = currentPath
+                    ? `/api/download-all?path=${encodeURIComponent(currentPath)}`
+                    : '/api/download-all';
+                window.location.href = url;
             });
 
             // 全ファイル削除処理
