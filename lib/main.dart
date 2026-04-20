@@ -475,7 +475,9 @@ class ServerNotifier extends Notifier<ServerState> {
         }
         return true; // ホスト名はすべて候補に含める
       }).toList();
-    } catch (_) {
+    } catch (e, st) {
+      stderr.writeln('Warning: SAN parsing failed for "$certPath": $e');
+      stderr.writeln(st);
       return [];
     }
   }
@@ -1496,6 +1498,19 @@ class _HomePageState extends ConsumerState<HomePage> {
               SnackBar(
                 content: Text('秘密鍵ファイルが見つかりません: ${serverState.httpsKeyPath}'),
                 backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
+          // #168: HTTPS モードで SAN がデバイス IP と一致しない場合は起動をブロック
+          if (serverState.httpsMode && serverState.certSanCandidates.isEmpty) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                    '証明書のSANにデバイスのIPと一致するエントリがありません。接続できないため起動を中断しました。'),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 6),
               ),
             );
             return;
