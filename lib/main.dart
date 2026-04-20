@@ -10,6 +10,7 @@ import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:window_manager/window_manager.dart';
 
 // サーバーの状態を表すenum
 enum ServerStatus { stopped, running, error }
@@ -666,6 +667,24 @@ void main(List<String> args) async {
 
   // 通常のFlutter UIモード
   WidgetsFlutterBinding.ensureInitialized();
+
+  // デスクトップはウィンドウサイズを設定 (#135)
+  if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    await windowManager.ensureInitialized();
+    await windowManager.waitUntilReadyToShow(
+      const WindowOptions(
+        size: Size(520, 820),
+        minimumSize: Size(420, 600),
+        center: true,
+        titleBarStyle: TitleBarStyle.normal,
+      ),
+      () async {
+        await windowManager.show();
+        await windowManager.focus();
+      },
+    );
+  }
+
   runApp(const ProviderScope(child: MyApp()));
 }
 
