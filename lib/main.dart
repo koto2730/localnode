@@ -475,7 +475,9 @@ class ServerNotifier extends Notifier<ServerState> {
         }
         return true; // ホスト名はすべて候補に含める
       }).toList();
-    } catch (_) {
+    } catch (e, st) {
+      stderr.writeln('Warning: SAN parsing failed for "$certPath": $e');
+      stderr.writeln(st);
       return [];
     }
   }
@@ -1016,28 +1018,34 @@ class _HomePageState extends ConsumerState<HomePage> {
           ),
           if (serverState.httpsEnabled) ...[
             const SizedBox(height: 4),
-            Row(
-              children: [
-                const SizedBox(width: 8),
-                const Text('証明書 (cert.pem):', style: TextStyle(fontSize: 13)),
-              ],
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 400),
+              child: const Row(
+                children: [
+                  SizedBox(width: 8),
+                  Text('証明書ファイル:', style: TextStyle(fontSize: 13)),
+                ],
+              ),
             ),
             const SizedBox(height: 4),
             _CertPathField(
-              label: 'cert.pem',
+              label: '証明書ファイル',
               value: serverState.httpsCertPath,
               onChanged: (path) => notifier.setHttpsCertPath(path),
             ),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                const SizedBox(width: 8),
-                const Text('秘密鍵 (key.pem):', style: TextStyle(fontSize: 13)),
-              ],
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 400),
+              child: const Row(
+                children: [
+                  SizedBox(width: 8),
+                  Text('秘密鍵ファイル:', style: TextStyle(fontSize: 13)),
+                ],
+              ),
             ),
             const SizedBox(height: 4),
             _CertPathField(
-              label: 'key.pem',
+              label: '秘密鍵ファイル',
               value: serverState.httpsKeyPath,
               onChanged: (path) => notifier.setHttpsKeyPath(path),
             ),
@@ -1496,6 +1504,19 @@ class _HomePageState extends ConsumerState<HomePage> {
               SnackBar(
                 content: Text('秘密鍵ファイルが見つかりません: ${serverState.httpsKeyPath}'),
                 backgroundColor: Colors.red,
+              ),
+            );
+            return;
+          }
+          // #168: HTTPS モードで SAN がデバイス IP と一致しない場合は起動をブロック
+          if (serverState.httpsMode && serverState.certSanCandidates.isEmpty) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                    '証明書のSANにデバイスのIPと一致するエントリがありません。接続できないため起動を中断しました。'),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 6),
               ),
             );
             return;
