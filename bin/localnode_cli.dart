@@ -14,6 +14,7 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:args/args.dart';
+import 'package:basic_utils/basic_utils.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:qr/qr.dart';
@@ -86,7 +87,18 @@ Future<void> main(List<String> args) async {
           ? _AuthMode.fixedPin
           : _AuthMode.randomPin;
 
-  final ipAddress = specifiedIp ?? await _selectIpAddress();
+  // #177/#169: HTTPS モードで SAN→ホスト名→IP 解決フロー
+  String ipAddress;
+  String advertisedHost; // QR/URL に使うホスト名またはIP
+  if (httpsMode) {
+    final sanResult = await _resolveHttpsHost(
+        certPath: httpsCertPath!, specifiedIp: specifiedIp);
+    ipAddress = sanResult.bindIp;
+    advertisedHost = sanResult.advertisedHost;
+  } else {
+    ipAddress = specifiedIp ?? await _selectIpAddress();
+    advertisedHost = ipAddress;
+  }
 
   stdout.writeln('');
   stdout.writeln('LocalNode CLI Server');
@@ -113,7 +125,7 @@ Future<void> main(List<String> args) async {
   }
 
   final scheme = httpsMode ? 'https' : 'http';
-  final serverUrl = '$scheme://$ipAddress:$port';
+  final serverUrl = '$scheme://$advertisedHost:$port';
 
   stdout.writeln('Server started.');
   stdout.writeln('');
@@ -356,6 +368,143 @@ bool _isInteractiveForeground() {
   } catch (_) {
     return true;
   }
+}
+
+// =============================================================================
+// HTTPS: SAN → ホスト名 → IP 解決 (#177, #169)
+// =============================================================================
+
+class _HttpsHostResult {
+  final String bindIp;
+  final String advertisedHost;
+  _HttpsHostResult({required this.bindIp, required this.advertisedHost});
+}
+
+/// cert の SAN を解析し、バインド IP と広告ホストを決定する。
+/// - SANのホスト名をデバイスIPに解決して候補を絞り込む
+/// - 候補が1つなら自動決定、複数なら対話選択
+/// - 一致しない場合はエラー終了 (#169)
+Future<_HttpsHostResult> _resolveHttpsHost({
+  required String certPath,
+  String? specifiedIp,
+}) async {
+  // SAN を解析
+  List<String> sans = [];
+  try {
+    final raw = await File(certPath).readAsString();
+    final begin = '-----BEGIN CERTIFICATE-----';
+    final end = '-----END CERTIFICATE-----';
+    final startIdx = raw.indexOf(begin);
+    final endIdx = startIdx >= 0 ? raw.indexOf(end, startIdx) : -1;
+    if (startIdx >= 0 && endIdx >= 0) {
+      final pem = raw.substring(startIdx, endIdx + end.length);
+      final cert = X509Utils.x509CertificateFromPem(pem);
+      sans = cert.subjectAlternativNames ?? [];
+    }
+  } catch (e) {
+    stderr.writeln('Warning: Failed to parse certificate SANs: $e');
+  }
+
+  if (sans.isEmpty) {
+    stderr.writeln('Error: No SANs found in certificate. Cannot determine HTTPS hostname.');
+    exit(1);
+  }
+
+  // デバイスの IP 一覧を取得
+  final deviceIps = <String>{};
+  try {
+    for (final iface in await NetworkInterface.list()) {
+      for (final addr in iface.addresses) {
+        deviceIps.add(addr.address);
+      }
+    }
+  } catch (_) {}
+
+  // --ip 指定時はその IP が SAN に含まれるか検証 (#169)
+  if (specifiedIp != null) {
+    bool covered = sans.contains(specifiedIp);
+    if (!covered) {
+      // ホスト名 SAN を DNS 解決して照合
+      for (final san in sans) {
+        if (InternetAddress.tryParse(san) == null) {
+          try {
+            final addrs = await InternetAddress.lookup(san);
+            if (addrs.any((a) => a.address == specifiedIp)) {
+              covered = true;
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+    if (!covered) {
+      stderr.writeln(
+          'Error: The certificate does not cover the specified IP "$specifiedIp".');
+      stderr.writeln('  Certificate SANs: ${sans.join(', ')}');
+      exit(1);
+    }
+    return _HttpsHostResult(bindIp: specifiedIp, advertisedHost: specifiedIp);
+  }
+
+  // SAN のホスト名をデバイス IP に解決して候補を抽出
+  final candidates = <({String host, String ip})>[];
+  for (final san in sans) {
+    if (InternetAddress.tryParse(san) != null) {
+      // IP SAN: デバイス IP と一致するか確認
+      if (deviceIps.contains(san)) {
+        candidates.add((host: san, ip: san));
+      }
+    } else {
+      // ホスト名 SAN: DNS 解決してデバイス IP と照合
+      try {
+        final addrs = await InternetAddress.lookup(san);
+        for (final addr in addrs) {
+          if (deviceIps.contains(addr.address)) {
+            candidates.add((host: san, ip: addr.address));
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (candidates.isEmpty) {
+    stderr.writeln(
+        'Error: Certificate SANs do not match any device IP address. Cannot start HTTPS server.');
+    stderr.writeln('  Certificate SANs: ${sans.join(', ')}');
+    stderr.writeln('  Device IPs: ${deviceIps.join(', ')}');
+    stderr.writeln('  Use --ip <address> to override, or fix the certificate.');
+    exit(1);
+  }
+
+  if (candidates.length == 1) {
+    final c = candidates.first;
+    stdout.writeln('HTTPS: Using "${c.host}" (resolved to ${c.ip})');
+    return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
+  }
+
+  // 複数候補 → 対話選択
+  if (stdin.hasTerminal && _isInteractiveForeground()) {
+    stdout.writeln('Multiple HTTPS hostname candidates detected:');
+    for (int i = 0; i < candidates.length; i++) {
+      final c = candidates[i];
+      stdout.writeln('  [${i + 1}] ${c.host} (${c.ip})');
+    }
+    stdout.write('Select [1-${candidates.length}] (default: 1): ');
+    try {
+      final input = stdin.readLineSync()?.trim();
+      if (input != null && input.isNotEmpty) {
+        final idx = int.tryParse(input);
+        if (idx != null && idx >= 1 && idx <= candidates.length) {
+          final c = candidates[idx - 1];
+          return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
+        }
+      }
+    } catch (_) {}
+  }
+  final c = candidates.first;
+  stdout.writeln('HTTPS: Auto-selecting "${c.host}" (${c.ip})');
+  return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
 }
 
 void _flushWindowsInput() {
