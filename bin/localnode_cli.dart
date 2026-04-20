@@ -65,6 +65,8 @@ Future<void> main(List<String> args) async {
   final noPin = results['no-pin'] as bool;
   final fixedPin = results['pin'] as String?;
   final serverName = results['name'] as String;
+  final noToken = results['no-token'] as bool;
+  final fixedToken = results['token'] as String?;
   final httpsCertPath = results['https-cert'] as String?;
   final httpsKeyPath = results['https-key'] as String?;
   if ((httpsCertPath == null) != (httpsKeyPath == null)) {
@@ -104,6 +106,11 @@ Future<void> main(List<String> args) async {
   stdout.writeln('LocalNode CLI Server');
   stdout.writeln('=' * 40);
 
+  // #173: アップロードトークンの決定（download-only モードでは不要）
+  final String? uploadToken = (!noToken && !downloadOnly)
+      ? (fixedToken ?? _generateUploadToken())
+      : null;
+
   final server = _CliServer(verbose: verbose);
 
   try {
@@ -118,6 +125,7 @@ Future<void> main(List<String> args) async {
       clipboardEnabled: !noClipboard,
       httpsCertPath: httpsCertPath,
       httpsKeyPath: httpsKeyPath,
+      uploadToken: uploadToken,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -137,6 +145,14 @@ Future<void> main(List<String> args) async {
   }
   stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
+  if (uploadToken != null) {
+    stdout.writeln('  Upload Token: $uploadToken');
+    stdout.writeln('');
+    stdout.writeln('  curl example:');
+    stdout.writeln('    curl -H "Authorization: Bearer $uploadToken" \\');
+    stdout.writeln('         -F "file=@/path/to/file" \\');
+    stdout.writeln('         $serverUrl/api/upload');
+  }
   stdout.writeln('');
   stdout.writeln('QR Code:');
   _printQrCode(serverUrl);
@@ -180,6 +196,9 @@ ArgParser _buildParser() {
         abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
     ..addOption('https-cert', help: 'Path to TLS certificate file (cert.pem)')
     ..addOption('https-key', help: 'Path to TLS private key file (key.pem)')
+    ..addOption('token', help: 'Fixed upload token (random if not specified)')
+    ..addFlag('no-token',
+        help: 'Disable token-based upload authentication', negatable: false)
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -507,6 +526,14 @@ Future<_HttpsHostResult> _resolveHttpsHost({
   return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
 }
 
+/// ランダムなアップロードトークンを生成する（32文字の16進数）
+String _generateUploadToken() {
+  final r = Random.secure();
+  return List.generate(16, (_) => r.nextInt(256))
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+}
+
 void _flushWindowsInput() {
   if (!Platform.isWindows) return;
   try {
@@ -607,6 +634,7 @@ class _CliServer {
   final Set<String> _sessions = {};
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
+  String? _uploadToken;
 
   late final Router _router;
 
@@ -649,9 +677,11 @@ class _CliServer {
     bool clipboardEnabled = true,
     String? httpsCertPath,
     String? httpsKeyPath,
+    String? uploadToken,
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
+    _uploadToken = uploadToken;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
@@ -854,6 +884,15 @@ class _CliServer {
             }
           }
           if (token != null && _sessions.contains(token)) return inner(req);
+
+          // #173: Bearer トークンによるアップロード認証
+          if (_uploadToken != null &&
+              req.method == 'POST' &&
+              path == 'api/upload') {
+            final authHeader = req.headers['authorization'] ?? '';
+            if (authHeader == 'Bearer $_uploadToken') return inner(req);
+          }
+
           return Response.unauthorized(
             json.encode({'error': 'Authentication required.'}),
             headers: {'Content-Type': 'application/json'},
