@@ -67,6 +67,7 @@ Future<void> main(List<String> args) async {
   final serverName = results['name'] as String;
   final noToken = results['no-token'] as bool;
   final fixedToken = results['token'] as String?;
+  final postActions = results['post-action'] as List<String>;
   final httpsCertPath = results['https-cert'] as String?;
   final httpsKeyPath = results['https-key'] as String?;
   if ((httpsCertPath == null) != (httpsKeyPath == null)) {
@@ -126,6 +127,7 @@ Future<void> main(List<String> args) async {
       httpsCertPath: httpsCertPath,
       httpsKeyPath: httpsKeyPath,
       uploadToken: uploadToken,
+      postActions: postActions,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -145,6 +147,12 @@ Future<void> main(List<String> args) async {
   }
   stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
+  if (postActions.isNotEmpty) {
+    stdout.writeln('  Post-action(s):');
+    for (final s in postActions) {
+      stdout.writeln('    $s');
+    }
+  }
   if (uploadToken != null) {
     stdout.writeln('  Upload Token: $uploadToken');
     stdout.writeln('');
@@ -196,6 +204,9 @@ ArgParser _buildParser() {
         abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
     ..addOption('https-cert', help: 'Path to TLS certificate file (cert.pem)')
     ..addOption('https-key', help: 'Path to TLS private key file (key.pem)')
+    ..addMultiOption('post-action',
+        help: 'Script to run after each upload (repeatable)',
+        valueHelp: 'script')
     ..addOption('token', help: 'Fixed upload token (random if not specified)')
     ..addFlag('no-token',
         help: 'Disable token-based upload authentication', negatable: false)
@@ -635,6 +646,7 @@ class _CliServer {
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
+  List<String> _postActions = [];
 
   late final Router _router;
 
@@ -678,10 +690,12 @@ class _CliServer {
     String? httpsCertPath,
     String? httpsKeyPath,
     String? uploadToken,
+    List<String> postActions = const [],
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
     _uploadToken = uploadToken;
+    _postActions = postActions;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
@@ -1022,10 +1036,37 @@ class _CliServer {
         sink.add(chunk);
       }
       await sink.close();
+      if (_postActions.isNotEmpty) {
+        _runPostActions(file.path);
+      }
       return Response.ok('File uploaded: ${p.basename(file.path)}');
     } catch (e) {
       await sink.close();
       return Response.internalServerError(body: 'Upload failed: $e');
+    }
+  }
+
+  void _runPostActions(String filePath) {
+    for (final script in _postActions) {
+      () async {
+        try {
+          final result = await Process.run(
+            Platform.isWindows ? 'cmd' : script,
+            Platform.isWindows ? ['/c', script, filePath] : [filePath],
+            runInShell: !Platform.isWindows,
+          );
+          if (result.exitCode != 0) {
+            stderr.writeln('[post-action] "$script" exited ${result.exitCode}');
+            if ((result.stderr as String).isNotEmpty) {
+              stderr.writeln(result.stderr);
+            }
+          } else {
+            _log('[post-action] "$script" completed for ${p.basename(filePath)}');
+          }
+        } catch (e) {
+          stderr.writeln('[post-action] Failed to run "$script": $e');
+        }
+      }();
     }
   }
 
