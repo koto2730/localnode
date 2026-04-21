@@ -67,7 +67,22 @@ Future<void> main(List<String> args) async {
   final serverName = results['name'] as String;
   final noToken = results['no-token'] as bool;
   final fixedToken = results['token'] as String?;
-  final postActions = results['post-action'] as List<String>;
+  final postActionRaw = results['post-action'] as List<String>;
+  final postActions = <({String pattern, String script})>[];
+  for (final entry in postActionRaw) {
+    final eq = entry.indexOf('=');
+    if (eq <= 0) {
+      stderr.writeln('Error: --post-action must be in <pattern>=<script> format: $entry');
+      exit(1);
+    }
+    final pattern = entry.substring(0, eq).trim();
+    final script = entry.substring(eq + 1).trim();
+    if (pattern.isEmpty || script.isEmpty) {
+      stderr.writeln('Error: --post-action pattern and script must not be empty: $entry');
+      exit(1);
+    }
+    postActions.add((pattern: pattern, script: script));
+  }
   final mentionActionRaw = results['mention-action'] as List<String>;
   final mentionActions = <String, String>{};
   for (final entry in mentionActionRaw) {
@@ -170,8 +185,8 @@ Future<void> main(List<String> args) async {
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
   if (postActions.isNotEmpty) {
     stdout.writeln('  Post-action(s):');
-    for (final s in postActions) {
-      stdout.writeln('    $s');
+    for (final a in postActions) {
+      stdout.writeln('    ${a.pattern} -> ${a.script}');
     }
   }
   if (mentionActions.isNotEmpty) {
@@ -233,10 +248,12 @@ ArgParser _buildParser() {
     ..addOption('https-key', help: 'Path to TLS private key file (key.pem)')
     ..addMultiOption('post-action',
         help:
-            'Script to run after each upload (repeatable). Runs as the server process user. '
+            'Script to run after matching uploads: <pattern>=<script> (repeatable). '
+            'Pattern is a glob matched against the filename (e.g. *.zip, *.png, *). '
+            'Runs as the server process user. '
             'Use only on trusted networks. If running as a systemd service, set User= to a '
             'low-privilege account.',
-        valueHelp: 'script')
+        valueHelp: 'pattern=script')
     ..addMultiOption('mention-action',
         help:
             'Register a clipboard mention command: <alias>=<script>. '
@@ -265,7 +282,7 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
   stdout.writeln('  localnode-cli --name "MyServer"');
   stdout.writeln('  localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem');
-  stdout.writeln('  localnode-cli --post-action ./resize.sh --post-action ./notify.sh');
+  stdout.writeln('  localnode-cli --post-action "*.png=./resize.sh" --post-action "*.zip=./unzip.sh"');
   stdout.writeln('  localnode-cli --mention-action backup=./backup.sh --mention-action notify=./notify.sh');
   stdout.writeln('');
   stdout.writeln('Security note (--post-action / --mention-action):');
@@ -689,7 +706,7 @@ class _CliServer {
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
-  List<String> _postActions = [];
+  List<({String pattern, String script})> _postActions = [];
   Map<String, String> _mentionActions = {};
 
   late final Router _router;
@@ -734,7 +751,7 @@ class _CliServer {
     String? httpsCertPath,
     String? httpsKeyPath,
     String? uploadToken,
-    List<String> postActions = const [],
+    List<({String pattern, String script})> postActions = const [],
     Map<String, String> mentionActions = const {},
   }) async {
     _authMode = authMode;
@@ -1092,25 +1109,38 @@ class _CliServer {
     }
   }
 
+  bool _globMatch(String pattern, String filename) {
+    final regexStr = RegExp.escape(pattern)
+        .replaceAll(r'\*', '.*')
+        .replaceAll(r'\?', '.');
+    return RegExp('^$regexStr\$', caseSensitive: !Platform.isWindows)
+        .hasMatch(filename);
+  }
+
   void _runPostActions(String filePath) {
-    for (final script in _postActions) {
+    final filename = p.basename(filePath);
+    for (final action in _postActions) {
+      if (!_globMatch(action.pattern, filename)) continue;
       () async {
         try {
           final result = await Process.run(
-            Platform.isWindows ? 'cmd' : script,
-            Platform.isWindows ? ['/c', script, filePath] : [filePath],
+            Platform.isWindows ? 'cmd' : action.script,
+            Platform.isWindows
+                ? ['/c', action.script, filePath]
+                : [filePath],
             runInShell: !Platform.isWindows,
           );
           if (result.exitCode != 0) {
-            stderr.writeln('[post-action] "$script" exited ${result.exitCode}');
+            stderr.writeln(
+                '[post-action] "${action.script}" exited ${result.exitCode}');
             if ((result.stderr as String).isNotEmpty) {
               stderr.writeln(result.stderr);
             }
           } else {
-            _log('[post-action] "$script" completed for ${p.basename(filePath)}');
+            _log('[post-action] "${action.script}" completed for $filename');
           }
         } catch (e) {
-          stderr.writeln('[post-action] Failed to run "$script": $e');
+          stderr.writeln('[post-action] Failed to run "${action.script}": $e');
         }
       }();
     }
