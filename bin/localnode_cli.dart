@@ -82,6 +82,10 @@ Future<void> main(List<String> args) async {
       stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
       exit(1);
     }
+    if (alias == 'list') {
+      stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
+      exit(1);
+    }
     mentionActions[alias] = script;
   }
   final httpsCertPath = results['https-cert'] as String?;
@@ -1112,6 +1116,30 @@ class _CliServer {
     }
   }
 
+  String _buildMentionList() {
+    if (_mentionActions.isEmpty) {
+      return 'No mention actions registered.\nBuilt-in: @list';
+    }
+    final lines = ['Available mention commands:']
+      ..add('  @list — show this list')
+      ..addAll(_mentionActions.keys.map((a) => '  @run $a'));
+    return lines.join('\n');
+  }
+
+  void _replyToClipboard(String text) {
+    final item = _ClipboardItem(
+      id: _generateId(),
+      text: text,
+      tag: 'mention-result',
+      createdAt: DateTime.now(),
+    );
+    _clipboardItems.insert(0, item);
+    while (_clipboardItems.length > _maxClipboardItems) {
+      _clipboardItems.removeLast();
+    }
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+  }
+
   void _runMentionAction(String alias, String script) {
     () async {
       try {
@@ -1126,17 +1154,7 @@ class _CliServer {
         if (result.exitCode != 0 && (result.stderr as String).isNotEmpty) {
           stderr.writeln('[mention-action] "$alias" stderr: ${result.stderr}');
         }
-        final resultItem = _ClipboardItem(
-          id: _generateId(),
-          text: resultText,
-          tag: 'mention-result',
-          createdAt: DateTime.now(),
-        );
-        _clipboardItems.insert(0, resultItem);
-        while (_clipboardItems.length > _maxClipboardItems) {
-          _clipboardItems.removeLast();
-        }
-        _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+        _replyToClipboard(resultText);
         _log('[mention-action] "$alias" -> $resultText');
       } catch (e) {
         stderr.writeln('[mention-action] Failed to run "$alias": $e');
@@ -1295,8 +1313,10 @@ class _CliServer {
       }
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
 
-      // #174: @run <alias> メンション検出
-      if (_mentionActions.isNotEmpty) {
+      // #174: メンションコマンド検出
+      if (text == '@list') {
+        _replyToClipboard(_buildMentionList());
+      } else {
         final match = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
         if (match != null) {
           final alias = match.group(1)!;
