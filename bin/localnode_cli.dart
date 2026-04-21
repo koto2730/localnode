@@ -1147,12 +1147,24 @@ class _CliServer {
   }
 
   String _buildMentionList() {
+    final lines = <String>[];
+
+    lines.add('Mention commands:');
+    lines.add('  @list — show this list');
     if (_mentionActions.isEmpty) {
-      return 'No mention actions registered.\nBuilt-in: @list';
+      lines.add('  (no @run actions registered)');
+    } else {
+      lines.addAll(_mentionActions.keys.map((a) => '  @run $a'));
     }
-    final lines = ['Available mention commands:']
-      ..add('  @list — show this list')
-      ..addAll(_mentionActions.keys.map((a) => '  @run $a'));
+
+    if (_postActions.isNotEmpty) {
+      lines.add('');
+      lines.add('Post-upload actions:');
+      for (final a in _postActions) {
+        lines.add('  ${a.pattern} -> ${a.script}');
+      }
+    }
+
     return lines.join('\n');
   }
 
