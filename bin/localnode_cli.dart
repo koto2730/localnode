@@ -205,7 +205,10 @@ ArgParser _buildParser() {
     ..addOption('https-cert', help: 'Path to TLS certificate file (cert.pem)')
     ..addOption('https-key', help: 'Path to TLS private key file (key.pem)')
     ..addMultiOption('post-action',
-        help: 'Script to run after each upload (repeatable)',
+        help:
+            'Script to run after each upload (repeatable). Runs as the server process user. '
+            'Use only on trusted networks. If running as a systemd service, set User= to a '
+            'low-privilege account.',
         valueHelp: 'script')
     ..addOption('token', help: 'Fixed upload token (random if not specified)')
     ..addFlag('no-token',
@@ -229,6 +232,12 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
   stdout.writeln('  localnode-cli --name "MyServer"');
   stdout.writeln('  localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem');
+  stdout.writeln('  localnode-cli --post-action ./resize.sh --post-action ./notify.sh');
+  stdout.writeln('');
+  stdout.writeln('Security note (--post-action):');
+  stdout.writeln('  Scripts run with the same user privileges as the LocalNode process.');
+  stdout.writeln('  If running as a systemd service, set User= to a low-privilege account.');
+  stdout.writeln('  Use only on trusted networks.');
   stdout.writeln('');
   stdout.writeln('To stop: Ctrl+C');
 }

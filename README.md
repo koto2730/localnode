@@ -98,6 +98,9 @@ localnode --cli [options]
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |
+| `--post-action` | Script to execute after each upload (repeatable) |
+| `--token` | Fixed upload token for Bearer auth (random if not specified) |
+| `--no-token` | Disable token-based upload authentication |
 | `--no-pin` | Disable PIN authentication |
 | `--no-clipboard` | Hide clipboard content from console output |
 | `--verbose`, `-v` | Enable verbose request logging |
