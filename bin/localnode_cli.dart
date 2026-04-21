@@ -68,6 +68,22 @@ Future<void> main(List<String> args) async {
   final noToken = results['no-token'] as bool;
   final fixedToken = results['token'] as String?;
   final postActions = results['post-action'] as List<String>;
+  final mentionActionRaw = results['mention-action'] as List<String>;
+  final mentionActions = <String, String>{};
+  for (final entry in mentionActionRaw) {
+    final eq = entry.indexOf('=');
+    if (eq <= 0) {
+      stderr.writeln('Error: --mention-action must be in <alias>=<script> format: $entry');
+      exit(1);
+    }
+    final alias = entry.substring(0, eq).trim();
+    final script = entry.substring(eq + 1).trim();
+    if (alias.isEmpty || script.isEmpty) {
+      stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
+      exit(1);
+    }
+    mentionActions[alias] = script;
+  }
   final httpsCertPath = results['https-cert'] as String?;
   final httpsKeyPath = results['https-key'] as String?;
   if ((httpsCertPath == null) != (httpsKeyPath == null)) {
@@ -128,6 +144,7 @@ Future<void> main(List<String> args) async {
       httpsKeyPath: httpsKeyPath,
       uploadToken: uploadToken,
       postActions: postActions,
+      mentionActions: mentionActions,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -151,6 +168,12 @@ Future<void> main(List<String> args) async {
     stdout.writeln('  Post-action(s):');
     for (final s in postActions) {
       stdout.writeln('    $s');
+    }
+  }
+  if (mentionActions.isNotEmpty) {
+    stdout.writeln('  Mention action(s):');
+    for (final entry in mentionActions.entries) {
+      stdout.writeln('    @run ${entry.key} -> ${entry.value}');
     }
   }
   if (uploadToken != null) {
@@ -210,6 +233,12 @@ ArgParser _buildParser() {
             'Use only on trusted networks. If running as a systemd service, set User= to a '
             'low-privilege account.',
         valueHelp: 'script')
+    ..addMultiOption('mention-action',
+        help:
+            'Register a clipboard mention command: <alias>=<script>. '
+            'Send "@run <alias>" via clipboard to trigger the script (repeatable). '
+            'Runs as the server process user.',
+        valueHelp: 'alias=script')
     ..addOption('token', help: 'Fixed upload token (random if not specified)')
     ..addFlag('no-token',
         help: 'Disable token-based upload authentication', negatable: false)
@@ -233,8 +262,9 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --name "MyServer"');
   stdout.writeln('  localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem');
   stdout.writeln('  localnode-cli --post-action ./resize.sh --post-action ./notify.sh');
+  stdout.writeln('  localnode-cli --mention-action backup=./backup.sh --mention-action notify=./notify.sh');
   stdout.writeln('');
-  stdout.writeln('Security note (--post-action):');
+  stdout.writeln('Security note (--post-action / --mention-action):');
   stdout.writeln('  Scripts run with the same user privileges as the LocalNode process.');
   stdout.writeln('  If running as a systemd service, set User= to a low-privilege account.');
   stdout.writeln('  Use only on trusted networks.');
@@ -656,6 +686,7 @@ class _CliServer {
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
   List<String> _postActions = [];
+  Map<String, String> _mentionActions = {};
 
   late final Router _router;
 
@@ -700,11 +731,13 @@ class _CliServer {
     String? httpsKeyPath,
     String? uploadToken,
     List<String> postActions = const [],
+    Map<String, String> mentionActions = const {},
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
     _uploadToken = uploadToken;
     _postActions = postActions;
+    _mentionActions = mentionActions;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
@@ -1079,6 +1112,38 @@ class _CliServer {
     }
   }
 
+  void _runMentionAction(String alias, String script) {
+    () async {
+      try {
+        final result = await Process.run(
+          Platform.isWindows ? 'cmd' : script,
+          Platform.isWindows ? ['/c', script] : [],
+          runInShell: !Platform.isWindows,
+        );
+        final resultText = result.exitCode == 0
+            ? '@run $alias: OK'
+            : '@run $alias: FAILED (exit ${result.exitCode})';
+        if (result.exitCode != 0 && (result.stderr as String).isNotEmpty) {
+          stderr.writeln('[mention-action] "$alias" stderr: ${result.stderr}');
+        }
+        final resultItem = _ClipboardItem(
+          id: _generateId(),
+          text: resultText,
+          tag: 'mention-result',
+          createdAt: DateTime.now(),
+        );
+        _clipboardItems.insert(0, resultItem);
+        while (_clipboardItems.length > _maxClipboardItems) {
+          _clipboardItems.removeLast();
+        }
+        _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+        _log('[mention-action] "$alias" -> $resultText');
+      } catch (e) {
+        stderr.writeln('[mention-action] Failed to run "$alias": $e');
+      }
+    }();
+  }
+
   Future<Response> _downloadHandler(Request req, String id) async {
     try {
       final filePath = utf8.decode(base64Url.decode(id));
@@ -1229,6 +1294,19 @@ class _CliServer {
         _clipboardItems.removeLast();
       }
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+      // #174: @run <alias> メンション検出
+      if (_mentionActions.isNotEmpty) {
+        final match = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
+        if (match != null) {
+          final alias = match.group(1)!;
+          final script = _mentionActions[alias];
+          if (script != null) {
+            _runMentionAction(alias, script);
+          }
+        }
+      }
+
       return Response.ok(json.encode(item.toJson()),
           headers: {'Content-Type': 'application/json'});
     } catch (_) {
