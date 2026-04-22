@@ -424,24 +424,52 @@ class ServerService {
     }
     // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合は、従来のdart:ioを使用
     else {
-      final directory = Directory(storagePath);
-      if (!await directory.exists()) {
+      // ?path= パラメータで相対パスを受け取りサブフォルダナビゲーションに対応 (#178, #179)
+      final relPath = request.url.queryParameters['path'] ?? '';
+      final rootDir = Directory(storagePath);
+      if (!await rootDir.exists()) {
         return Response.internalServerError(body: 'Documents directory not found.');
       }
-      final files = await directory.list().where((item) => item is File).cast<File>().toList();
-      final fileList = files.map((file) async {
-        final stat = await file.stat();
-        // パスをBase64エンコードしてIDとして追加
-        final id = base64Url.encode(utf8.encode(file.path));
-        return {
-          'name': p.basename(file.path),
-          'size': stat.size,
-          'modified': stat.modified.toIso8601String(),
-          'id': id,
-        };
+      // パストラバーサル防止: シンボリックリンク解決後のパスで検証
+      final canonicalRoot = await rootDir.resolveSymbolicLinks();
+      final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+      final directory = Directory(targetPath);
+      if (!await directory.exists()) {
+        return Response.notFound('Directory not found.');
+      }
+      final canonicalTarget = await directory.resolveSymbolicLinks();
+      if (canonicalTarget != canonicalRoot &&
+          !p.isWithin(canonicalRoot, canonicalTarget)) {
+        return Response.forbidden('Access denied');
+      }
+      final items = await directory.list(followLinks: false).toList();
+      final itemList = items.map((item) async {
+        final isDir = item is Directory;
+        final id = base64Url.encode(utf8.encode(item.path));
+        if (isDir) {
+          return {
+            'name': p.basename(item.path),
+            'type': 'directory',
+            'id': id,
+          };
+        } else {
+          final stat = await item.stat();
+          return {
+            'name': p.basename(item.path),
+            'type': 'file',
+            'size': stat.size,
+            'modified': stat.modified.toIso8601String(),
+            'id': id,
+          };
+        }
       }).toList();
 
-      final results = await Future.wait(fileList);
+      final results = await Future.wait(itemList);
+      // フォルダ先頭、名前順でソート
+      results.sort((a, b) {
+        if (a['type'] != b['type']) return a['type'] == 'directory' ? -1 : 1;
+        return (a['name'] as String).compareTo(b['name'] as String);
+      });
       return Response.ok(jsonEncode(results), headers: {'Content-Type': 'application/json'});
     }
   }
@@ -566,6 +594,41 @@ class ServerService {
       // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
       else {
         final filePath = decoded;
+        // パストラバーサル防止: シンボリックリンク解決後のパスで検証
+        final canonicalRoot =
+            await Directory(storagePath).resolveSymbolicLinks();
+        final canonicalFile =
+            await File(filePath).resolveSymbolicLinks().catchError((_) async {
+          return Directory(filePath).resolveSymbolicLinks();
+        });
+        if (canonicalFile != canonicalRoot &&
+            !p.isWithin(canonicalRoot, canonicalFile)) {
+          return Response.forbidden('Access denied');
+        }
+        // フォルダの場合はZIPで返す (#179)
+        if (await FileSystemEntity.isDirectory(filePath)) {
+          final dirName = Uri.encodeComponent(p.basename(filePath))
+              .replaceAll("'", '%27');
+          final encoder = ZipEncoder();
+          final archive = Archive();
+          final dir = Directory(filePath);
+          final files =
+              dir.listSync(recursive: true, followLinks: false).whereType<File>();
+          for (final file in files) {
+            final bytes = await file.readAsBytes();
+            final rel = p.relative(file.path, from: filePath);
+            archive.addFile(ArchiveFile(rel, bytes.length, bytes));
+          }
+          final zipData = encoder.encode(archive);
+          if (zipData == null) {
+            return Response.internalServerError(body: 'Failed to create zip.');
+          }
+          return Response.ok(zipData, headers: {
+            'Content-Type': 'application/zip',
+            'Content-Disposition':
+                "attachment; filename*=UTF-8''$dirName.zip",
+          });
+        }
         final file = File(filePath);
         if (!await file.exists()) {
           return Response.notFound('File not found: $filePath');
@@ -851,14 +914,24 @@ class ServerService {
     }
     // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
     else {
-      final directory = Directory(storagePath);
+      // ?path= で現在フォルダを指定し、そのフォルダのファイルのみをZIP (#179)
+      final relPath = request.url.queryParameters['path'] ?? '';
+      final canonicalRoot = await Directory(storagePath).resolveSymbolicLinks();
+      final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+      final directory = Directory(targetPath);
       if (!await directory.exists()) {
         return Response.internalServerError(body: 'Documents directory not found.');
       }
-      final files = directory.listSync(recursive: true).whereType<File>();
+      final canonicalTarget = await directory.resolveSymbolicLinks();
+      if (canonicalTarget != canonicalRoot &&
+          !p.isWithin(canonicalRoot, canonicalTarget)) {
+        return Response.forbidden('Access denied');
+      }
+      // 現在フォルダの直下ファイルのみ（再帰なし）
+      final files = directory.listSync(followLinks: false).whereType<File>();
       for (final file in files) {
         final bytes = await file.readAsBytes();
-        final filename = p.relative(file.path, from: directory.path);
+        final filename = p.basename(file.path);
         archive.addFile(ArchiveFile(filename, bytes.length, bytes));
       }
     }

@@ -14,6 +14,7 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:args/args.dart';
+import 'package:basic_utils/basic_utils.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:qr/qr.dart';
@@ -64,6 +65,44 @@ Future<void> main(List<String> args) async {
   final noPin = results['no-pin'] as bool;
   final fixedPin = results['pin'] as String?;
   final serverName = results['name'] as String;
+  final noToken = results['no-token'] as bool;
+  final fixedToken = results['token'] as String?;
+  final postActionRaw = results['post-action'] as List<String>;
+  final postActions = <({String pattern, String script})>[];
+  for (final entry in postActionRaw) {
+    final eq = entry.indexOf('=');
+    if (eq <= 0) {
+      stderr.writeln('Error: --post-action must be in <pattern>=<script> format: $entry');
+      exit(1);
+    }
+    final pattern = entry.substring(0, eq).trim();
+    final script = entry.substring(eq + 1).trim();
+    if (pattern.isEmpty || script.isEmpty) {
+      stderr.writeln('Error: --post-action pattern and script must not be empty: $entry');
+      exit(1);
+    }
+    postActions.add((pattern: pattern, script: script));
+  }
+  final mentionActionRaw = results['mention-action'] as List<String>;
+  final mentionActions = <String, String>{};
+  for (final entry in mentionActionRaw) {
+    final eq = entry.indexOf('=');
+    if (eq <= 0) {
+      stderr.writeln('Error: --mention-action must be in <alias>=<script> format: $entry');
+      exit(1);
+    }
+    final alias = entry.substring(0, eq).trim();
+    final script = entry.substring(eq + 1).trim();
+    if (alias.isEmpty || script.isEmpty) {
+      stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
+      exit(1);
+    }
+    if (alias == 'list') {
+      stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
+      exit(1);
+    }
+    mentionActions[alias] = script;
+  }
   final httpsCertPath = results['https-cert'] as String?;
   final httpsKeyPath = results['https-key'] as String?;
   if ((httpsCertPath == null) != (httpsKeyPath == null)) {
@@ -86,11 +125,27 @@ Future<void> main(List<String> args) async {
           ? _AuthMode.fixedPin
           : _AuthMode.randomPin;
 
-  final ipAddress = specifiedIp ?? await _selectIpAddress();
+  // #177/#169: HTTPS モードで SAN→ホスト名→IP 解決フロー
+  String ipAddress;
+  String advertisedHost; // QR/URL に使うホスト名またはIP
+  if (httpsMode) {
+    final sanResult = await _resolveHttpsHost(
+        certPath: httpsCertPath!, specifiedIp: specifiedIp);
+    ipAddress = sanResult.bindIp;
+    advertisedHost = sanResult.advertisedHost;
+  } else {
+    ipAddress = specifiedIp ?? await _selectIpAddress();
+    advertisedHost = ipAddress;
+  }
 
   stdout.writeln('');
   stdout.writeln('LocalNode CLI Server');
   stdout.writeln('=' * 40);
+
+  // #173: アップロードトークンの決定（download-only モードでは不要）
+  final String? uploadToken = (!noToken && !downloadOnly)
+      ? (fixedToken ?? _generateUploadToken())
+      : null;
 
   final server = _CliServer(verbose: verbose);
 
@@ -106,6 +161,9 @@ Future<void> main(List<String> args) async {
       clipboardEnabled: !noClipboard,
       httpsCertPath: httpsCertPath,
       httpsKeyPath: httpsKeyPath,
+      uploadToken: uploadToken,
+      postActions: postActions,
+      mentionActions: mentionActions,
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -113,7 +171,7 @@ Future<void> main(List<String> args) async {
   }
 
   final scheme = httpsMode ? 'https' : 'http';
-  final serverUrl = '$scheme://$ipAddress:$port';
+  final serverUrl = '$scheme://$advertisedHost:$port';
 
   stdout.writeln('Server started.');
   stdout.writeln('');
@@ -125,6 +183,26 @@ Future<void> main(List<String> args) async {
   }
   stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
+  if (postActions.isNotEmpty) {
+    stdout.writeln('  Post-action(s):');
+    for (final a in postActions) {
+      stdout.writeln('    ${a.pattern} -> ${a.script}');
+    }
+  }
+  if (mentionActions.isNotEmpty) {
+    stdout.writeln('  Mention action(s):');
+    for (final entry in mentionActions.entries) {
+      stdout.writeln('    @run ${entry.key} -> ${entry.value}');
+    }
+  }
+  if (uploadToken != null) {
+    stdout.writeln('  Upload Token: $uploadToken');
+    stdout.writeln('');
+    stdout.writeln('  curl example:');
+    stdout.writeln('    curl -H "Authorization: Bearer $uploadToken" \\');
+    stdout.writeln('         -F "file=@/path/to/file" \\');
+    stdout.writeln('         $serverUrl/api/upload');
+  }
   stdout.writeln('');
   stdout.writeln('QR Code:');
   _printQrCode(serverUrl);
@@ -168,6 +246,23 @@ ArgParser _buildParser() {
         abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
     ..addOption('https-cert', help: 'Path to TLS certificate file (cert.pem)')
     ..addOption('https-key', help: 'Path to TLS private key file (key.pem)')
+    ..addMultiOption('post-action',
+        help:
+            'Script to run after matching uploads: <pattern>=<script> (repeatable). '
+            'Pattern is a glob matched against the filename (e.g. *.zip, *.png, *). '
+            'Runs as the server process user. '
+            'Use only on trusted networks. If running as a systemd service, set User= to a '
+            'low-privilege account.',
+        valueHelp: 'pattern=script')
+    ..addMultiOption('mention-action',
+        help:
+            'Register a clipboard mention command: <alias>=<script>. '
+            'Send "@run <alias>" via clipboard to trigger the script (repeatable). '
+            'Runs as the server process user.',
+        valueHelp: 'alias=script')
+    ..addOption('token', help: 'Fixed upload token (random if not specified)')
+    ..addFlag('no-token',
+        help: 'Disable token-based upload authentication', negatable: false)
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -187,6 +282,13 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --no-clipboard --verbose');
   stdout.writeln('  localnode-cli --name "MyServer"');
   stdout.writeln('  localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem');
+  stdout.writeln('  localnode-cli --post-action "*.png=./resize.sh" --post-action "*.zip=./unzip.sh"');
+  stdout.writeln('  localnode-cli --mention-action backup=./backup.sh --mention-action notify=./notify.sh');
+  stdout.writeln('');
+  stdout.writeln('Security note (--post-action / --mention-action):');
+  stdout.writeln('  Scripts run with the same user privileges as the LocalNode process.');
+  stdout.writeln('  If running as a systemd service, set User= to a low-privilege account.');
+  stdout.writeln('  Use only on trusted networks.');
   stdout.writeln('');
   stdout.writeln('To stop: Ctrl+C');
 }
@@ -358,6 +460,151 @@ bool _isInteractiveForeground() {
   }
 }
 
+// =============================================================================
+// HTTPS: SAN → ホスト名 → IP 解決 (#177, #169)
+// =============================================================================
+
+class _HttpsHostResult {
+  final String bindIp;
+  final String advertisedHost;
+  _HttpsHostResult({required this.bindIp, required this.advertisedHost});
+}
+
+/// cert の SAN を解析し、バインド IP と広告ホストを決定する。
+/// - SANのホスト名をデバイスIPに解決して候補を絞り込む
+/// - 候補が1つなら自動決定、複数なら対話選択
+/// - 一致しない場合はエラー終了 (#169)
+Future<_HttpsHostResult> _resolveHttpsHost({
+  required String certPath,
+  String? specifiedIp,
+}) async {
+  // SAN を解析
+  List<String> sans = [];
+  try {
+    final raw = await File(certPath).readAsString();
+    final begin = '-----BEGIN CERTIFICATE-----';
+    final end = '-----END CERTIFICATE-----';
+    final startIdx = raw.indexOf(begin);
+    final endIdx = startIdx >= 0 ? raw.indexOf(end, startIdx) : -1;
+    if (startIdx >= 0 && endIdx >= 0) {
+      final pem = raw.substring(startIdx, endIdx + end.length);
+      final cert = X509Utils.x509CertificateFromPem(pem);
+      sans = cert.subjectAlternativNames ?? [];
+    }
+  } catch (e) {
+    stderr.writeln('Warning: Failed to parse certificate SANs: $e');
+  }
+
+  if (sans.isEmpty) {
+    stderr.writeln('Error: No SANs found in certificate. Cannot determine HTTPS hostname.');
+    exit(1);
+  }
+
+  // デバイスの IP 一覧を取得
+  final deviceIps = <String>{};
+  try {
+    for (final iface in await NetworkInterface.list()) {
+      for (final addr in iface.addresses) {
+        deviceIps.add(addr.address);
+      }
+    }
+  } catch (_) {}
+
+  // --ip 指定時はその IP が SAN に含まれるか検証 (#169)
+  if (specifiedIp != null) {
+    bool covered = sans.contains(specifiedIp);
+    if (!covered) {
+      // ホスト名 SAN を DNS 解決して照合
+      for (final san in sans) {
+        if (InternetAddress.tryParse(san) == null) {
+          try {
+            final addrs = await InternetAddress.lookup(san);
+            if (addrs.any((a) => a.address == specifiedIp)) {
+              covered = true;
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+    if (!covered) {
+      stderr.writeln(
+          'Error: The certificate does not cover the specified IP "$specifiedIp".');
+      stderr.writeln('  Certificate SANs: ${sans.join(', ')}');
+      exit(1);
+    }
+    return _HttpsHostResult(bindIp: specifiedIp, advertisedHost: specifiedIp);
+  }
+
+  // SAN のホスト名をデバイス IP に解決して候補を抽出
+  final candidates = <({String host, String ip})>[];
+  for (final san in sans) {
+    if (InternetAddress.tryParse(san) != null) {
+      // IP SAN: デバイス IP と一致するか確認
+      if (deviceIps.contains(san)) {
+        candidates.add((host: san, ip: san));
+      }
+    } else {
+      // ホスト名 SAN: DNS 解決してデバイス IP と照合
+      try {
+        final addrs = await InternetAddress.lookup(san);
+        for (final addr in addrs) {
+          if (deviceIps.contains(addr.address)) {
+            candidates.add((host: san, ip: addr.address));
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (candidates.isEmpty) {
+    stderr.writeln(
+        'Error: Certificate SANs do not match any device IP address. Cannot start HTTPS server.');
+    stderr.writeln('  Certificate SANs: ${sans.join(', ')}');
+    stderr.writeln('  Device IPs: ${deviceIps.join(', ')}');
+    stderr.writeln('  Use --ip <address> to override, or fix the certificate.');
+    exit(1);
+  }
+
+  if (candidates.length == 1) {
+    final c = candidates.first;
+    stdout.writeln('HTTPS: Using "${c.host}" (resolved to ${c.ip})');
+    return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
+  }
+
+  // 複数候補 → 対話選択
+  if (stdin.hasTerminal && _isInteractiveForeground()) {
+    stdout.writeln('Multiple HTTPS hostname candidates detected:');
+    for (int i = 0; i < candidates.length; i++) {
+      final c = candidates[i];
+      stdout.writeln('  [${i + 1}] ${c.host} (${c.ip})');
+    }
+    stdout.write('Select [1-${candidates.length}] (default: 1): ');
+    try {
+      final input = stdin.readLineSync()?.trim();
+      if (input != null && input.isNotEmpty) {
+        final idx = int.tryParse(input);
+        if (idx != null && idx >= 1 && idx <= candidates.length) {
+          final c = candidates[idx - 1];
+          return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
+        }
+      }
+    } catch (_) {}
+  }
+  final c = candidates.first;
+  stdout.writeln('HTTPS: Auto-selecting "${c.host}" (${c.ip})');
+  return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
+}
+
+/// ランダムなアップロードトークンを生成する（32文字の16進数）
+String _generateUploadToken() {
+  final r = Random.secure();
+  return List.generate(16, (_) => r.nextInt(256))
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+}
+
 void _flushWindowsInput() {
   if (!Platform.isWindows) return;
   try {
@@ -458,6 +705,9 @@ class _CliServer {
   final Set<String> _sessions = {};
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
+  String? _uploadToken;
+  List<({String pattern, String script})> _postActions = [];
+  Map<String, String> _mentionActions = {};
 
   late final Router _router;
 
@@ -500,9 +750,15 @@ class _CliServer {
     bool clipboardEnabled = true,
     String? httpsCertPath,
     String? httpsKeyPath,
+    String? uploadToken,
+    List<({String pattern, String script})> postActions = const [],
+    Map<String, String> mentionActions = const {},
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
+    _uploadToken = uploadToken;
+    _postActions = postActions;
+    _mentionActions = mentionActions;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
@@ -705,6 +961,15 @@ class _CliServer {
             }
           }
           if (token != null && _sessions.contains(token)) return inner(req);
+
+          // #173: Bearer トークンによるアップロード認証
+          if (_uploadToken != null &&
+              req.method == 'POST' &&
+              path == 'api/upload') {
+            final authHeader = req.headers['authorization'] ?? '';
+            if (authHeader == 'Bearer $_uploadToken') return inner(req);
+          }
+
           return Response.unauthorized(
             json.encode({'error': 'Authentication required.'}),
             headers: {'Content-Type': 'application/json'},
@@ -777,6 +1042,7 @@ class _CliServer {
         json.encode({
           'version': '1.1.2',
           'name': _serverName,
+          'serverName': _serverName,
           'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
           'authMode': _authMode == _AuthMode.fixedPin
               ? 'fixedPin'
@@ -833,11 +1099,109 @@ class _CliServer {
         sink.add(chunk);
       }
       await sink.close();
+      if (_postActions.isNotEmpty) {
+        _runPostActions(file.path);
+      }
       return Response.ok('File uploaded: ${p.basename(file.path)}');
     } catch (e) {
       await sink.close();
       return Response.internalServerError(body: 'Upload failed: $e');
     }
+  }
+
+  bool _globMatch(String pattern, String filename) {
+    final regexStr = RegExp.escape(pattern)
+        .replaceAll(r'\*', '.*')
+        .replaceAll(r'\?', '.');
+    return RegExp('^$regexStr\$', caseSensitive: !Platform.isWindows)
+        .hasMatch(filename);
+  }
+
+  void _runPostActions(String filePath) {
+    final filename = p.basename(filePath);
+    for (final action in _postActions) {
+      if (!_globMatch(action.pattern, filename)) continue;
+      () async {
+        try {
+          final result = await Process.run(
+            Platform.isWindows ? 'cmd' : action.script,
+            Platform.isWindows
+                ? ['/c', action.script, filePath]
+                : [filePath],
+            runInShell: !Platform.isWindows,
+          );
+          if (result.exitCode != 0) {
+            stderr.writeln(
+                '[post-action] "${action.script}" exited ${result.exitCode}');
+            if ((result.stderr as String).isNotEmpty) {
+              stderr.writeln(result.stderr);
+            }
+          } else {
+            _log('[post-action] "${action.script}" completed for $filename');
+          }
+        } catch (e) {
+          stderr.writeln('[post-action] Failed to run "${action.script}": $e');
+        }
+      }();
+    }
+  }
+
+  String _buildMentionList() {
+    final lines = <String>[];
+
+    lines.add('Mention commands:');
+    lines.add('  @list — show this list');
+    if (_mentionActions.isEmpty) {
+      lines.add('  (no @run actions registered)');
+    } else {
+      lines.addAll(_mentionActions.keys.map((a) => '  @run $a'));
+    }
+
+    if (_postActions.isNotEmpty) {
+      lines.add('');
+      lines.add('Post-upload actions:');
+      for (final a in _postActions) {
+        lines.add('  ${a.pattern} -> ${a.script}');
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  void _replyToClipboard(String text) {
+    final item = _ClipboardItem(
+      id: _generateId(),
+      text: text,
+      tag: 'mention-result',
+      createdAt: DateTime.now(),
+    );
+    _clipboardItems.insert(0, item);
+    while (_clipboardItems.length > _maxClipboardItems) {
+      _clipboardItems.removeLast();
+    }
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  void _runMentionAction(String alias, String script) {
+    () async {
+      try {
+        final result = await Process.run(
+          Platform.isWindows ? 'cmd' : script,
+          Platform.isWindows ? ['/c', script] : [],
+          runInShell: !Platform.isWindows,
+        );
+        final resultText = result.exitCode == 0
+            ? '@run $alias: OK'
+            : '@run $alias: FAILED (exit ${result.exitCode})';
+        if (result.exitCode != 0 && (result.stderr as String).isNotEmpty) {
+          stderr.writeln('[mention-action] "$alias" stderr: ${result.stderr}');
+        }
+        _replyToClipboard(resultText);
+        _log('[mention-action] "$alias" -> $resultText');
+      } catch (e) {
+        stderr.writeln('[mention-action] Failed to run "$alias": $e');
+      }
+    }();
   }
 
   Future<Response> _downloadHandler(Request req, String id) async {
@@ -990,6 +1354,21 @@ class _CliServer {
         _clipboardItems.removeLast();
       }
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+      // #174: メンションコマンド検出
+      if (text == '@list') {
+        _replyToClipboard(_buildMentionList());
+      } else {
+        final match = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
+        if (match != null) {
+          final alias = match.group(1)!;
+          final script = _mentionActions[alias];
+          if (script != null) {
+            _runMentionAction(alias, script);
+          }
+        }
+      }
+
       return Response.ok(json.encode(item.toJson()),
           headers: {'Content-Type': 'application/json'});
     } catch (_) {

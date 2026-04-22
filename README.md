@@ -98,6 +98,10 @@ localnode --cli [options]
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |
+| `--post-action` | Script to execute on matching uploads: `pattern=script` (repeatable, glob pattern) |
+| `--mention-action` | Register clipboard mention command: `alias=script` (repeatable) |
+| `--token` | Fixed upload token for Bearer auth (random if not specified) |
+| `--no-token` | Disable token-based upload authentication |
 | `--no-pin` | Disable PIN authentication |
 | `--no-clipboard` | Hide clipboard content from console output |
 | `--verbose`, `-v` | Enable verbose request logging |
@@ -123,6 +127,15 @@ localnode-cli --mode download-only --no-pin
 
 # Enable HTTPS with a Tailscale certificate
 localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem
+
+# Run scripts based on uploaded file type
+localnode-cli --post-action "*.png=./move-pic.sh" --post-action "*.zip=./unzip.sh"
+
+# Run a script for all uploads
+localnode-cli --post-action "*=./notify.sh"
+
+# Trigger scripts via clipboard mention commands
+localnode-cli --mention-action backup=./backup.sh --mention-action notify=./notify.sh
 
 ```
 
