@@ -754,24 +754,34 @@
 
             const renderBreadcrumb = () => {
                 const breadcrumb = document.getElementById('breadcrumb');
+                breadcrumb.textContent = '';
+                const mkSpan = (cls, text) => {
+                    const s = document.createElement('span');
+                    s.className = cls;
+                    s.textContent = text;
+                    return s;
+                };
                 if (!currentPath) {
-                    breadcrumb.innerHTML = '<span class="breadcrumb-current">🏠 ホーム</span>';
+                    breadcrumb.appendChild(mkSpan('breadcrumb-current', '🏠 ホーム'));
                     return;
                 }
+                const home = mkSpan('breadcrumb-item', '🏠 ホーム');
+                home.addEventListener('click', () => navigateTo(''));
+                breadcrumb.appendChild(home);
                 const parts = currentPath.split('/');
-                let html = '<span class="breadcrumb-item" onclick="navigateTo(\'\')">🏠 ホーム</span>';
                 let accumulated = '';
                 parts.forEach((part, i) => {
                     accumulated += (accumulated ? '/' : '') + part;
-                    html += '<span class="breadcrumb-sep"> / </span>';
+                    breadcrumb.appendChild(mkSpan('breadcrumb-sep', ' / '));
                     if (i === parts.length - 1) {
-                        html += `<span class="breadcrumb-current">${escapeHtml(part)}</span>`;
+                        breadcrumb.appendChild(mkSpan('breadcrumb-current', part));
                     } else {
                         const path = accumulated;
-                        html += `<span class="breadcrumb-item" onclick="navigateTo('${escapeHtml(path)}')">${escapeHtml(part)}</span>`;
+                        const item = mkSpan('breadcrumb-item', part);
+                        item.addEventListener('click', () => navigateTo(path));
+                        breadcrumb.appendChild(item);
                     }
                 });
-                breadcrumb.innerHTML = html;
             };
 
             window.navigateTo = (path) => {
@@ -1279,34 +1289,58 @@
                     const row = document.createElement('tr');
                     if (item.type === 'directory') {
                         row.classList.add('folder-row');
-                        row.innerHTML = `
-                            <td class="preview-col">📁</td>
-                            <td class="fileinfo-col" title="${escapeHtml(item.name)}">
-                                <div class="fileinfo-name">${escapeHtml(item.name)}</div>
-                            </td>
-                            <td class="actions">
-                                <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}.zip')">DL</button>
-                            </td>`;
+                        const tdIcon = document.createElement('td');
+                        tdIcon.className = 'preview-col';
+                        tdIcon.textContent = '📁';
+                        const tdName = document.createElement('td');
+                        tdName.className = 'fileinfo-col';
+                        tdName.title = item.name;
+                        const nameDiv = document.createElement('div');
+                        nameDiv.className = 'fileinfo-name';
+                        nameDiv.textContent = item.name;
+                        tdName.appendChild(nameDiv);
+                        const tdActions = document.createElement('td');
+                        tdActions.className = 'actions';
+                        const dlBtn = document.createElement('button');
+                        dlBtn.className = 'btn-download';
+                        dlBtn.textContent = 'DL';
+                        dlBtn.addEventListener('click', () => downloadFile(item.id, item.name + '.zip'));
+                        tdActions.appendChild(dlBtn);
+                        row.append(tdIcon, tdName, tdActions);
                         row.addEventListener('click', (e) => {
                             if (e.target.tagName === 'BUTTON') return;
                             navigateTo(currentPath ? `${currentPath}/${item.name}` : item.name);
                         });
                     } else {
                         const sizeMB = (item.size / (1024 * 1024)).toFixed(2);
-                        const preview = getFilePreview(item);
-                        const deleteBtn = isDownloadOnly
-                            ? ''
-                            : `<button class="btn-delete" onclick="deleteFile('${item.id}', '${escapeHtml(item.name)}')">削除</button>`;
-                        row.innerHTML = `
-                            <td class="preview-col">${preview}</td>
-                            <td class="fileinfo-col" title="${escapeHtml(item.name)}">
-                                <div class="fileinfo-name">${escapeHtml(item.name)}</div>
-                                <div class="fileinfo-size">${sizeMB} MB</div>
-                            </td>
-                            <td class="actions">
-                                <button class="btn-download" onclick="downloadFile('${item.id}', '${escapeHtml(item.name)}')">DL</button>
-                                ${deleteBtn}
-                            </td>`;
+                        const tdIcon = document.createElement('td');
+                        tdIcon.className = 'preview-col';
+                        tdIcon.textContent = getFilePreview(item);
+                        const tdName = document.createElement('td');
+                        tdName.className = 'fileinfo-col';
+                        tdName.title = item.name;
+                        const nameDiv = document.createElement('div');
+                        nameDiv.className = 'fileinfo-name';
+                        nameDiv.textContent = item.name;
+                        const sizeDiv = document.createElement('div');
+                        sizeDiv.className = 'fileinfo-size';
+                        sizeDiv.textContent = `${sizeMB} MB`;
+                        tdName.append(nameDiv, sizeDiv);
+                        const tdActions = document.createElement('td');
+                        tdActions.className = 'actions';
+                        const dlBtn = document.createElement('button');
+                        dlBtn.className = 'btn-download';
+                        dlBtn.textContent = 'DL';
+                        dlBtn.addEventListener('click', () => downloadFile(item.id, item.name));
+                        tdActions.appendChild(dlBtn);
+                        if (!isDownloadOnly) {
+                            const delBtn = document.createElement('button');
+                            delBtn.className = 'btn-delete';
+                            delBtn.textContent = '削除';
+                            delBtn.addEventListener('click', () => deleteFile(item.id, item.name));
+                            tdActions.appendChild(delBtn);
+                        }
+                        row.append(tdIcon, tdName, tdActions);
                     }
                     tbody.appendChild(row);
                 });
@@ -1322,50 +1356,73 @@
                     return;
                 }
 
-                let header = '';
+                fileList.textContent = '';
+
                 if (compareImages.length > 0) {
-                    const openBtn = compareImages.length === 2
-                        ? '<button id="compareOpenBtn" style="margin-left:0.5rem; padding:0.2rem 0.6rem; background:#1a73e8; color:white; border:none; border-radius:4px; cursor:pointer;">比較する</button>'
-                        : '';
-                    header = `<div style="text-align:right; margin-bottom:0.5rem; font-size:0.85rem; color:#666;">
-                        ${compareImages.length}/2 選択中${openBtn}
-                        <button id="compareClearBtn" style="margin-left:0.5rem; padding:0.2rem 0.6rem; background:#999; color:white; border:none; border-radius:4px; cursor:pointer;">クリア</button>
-                    </div>`;
+                    const hdr = document.createElement('div');
+                    Object.assign(hdr.style, { textAlign: 'right', marginBottom: '0.5rem', fontSize: '0.85rem', color: '#666' });
+                    hdr.appendChild(document.createTextNode(`${compareImages.length}/2 選択中`));
+                    if (compareImages.length === 2) {
+                        const openBtn = document.createElement('button');
+                        openBtn.id = 'compareOpenBtn';
+                        Object.assign(openBtn.style, { marginLeft: '0.5rem', padding: '0.2rem 0.6rem', background: '#1a73e8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' });
+                        openBtn.textContent = '比較する';
+                        openBtn.addEventListener('click', openComparison);
+                        hdr.appendChild(openBtn);
+                    }
+                    const clearBtn = document.createElement('button');
+                    clearBtn.id = 'compareClearBtn';
+                    Object.assign(clearBtn.style, { marginLeft: '0.5rem', padding: '0.2rem 0.6rem', background: '#999', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' });
+                    clearBtn.textContent = 'クリア';
+                    clearBtn.addEventListener('click', () => { compareImages = []; renderView(); });
+                    hdr.appendChild(clearBtn);
+                    fileList.appendChild(hdr);
                 }
 
-                let html = header + '<div class="viewer-grid">';
+                const grid = document.createElement('div');
+                grid.className = 'viewer-grid';
+
                 items.forEach(item => {
+                    const viewerItem = document.createElement('div');
+                    const nameDiv = document.createElement('div');
+                    nameDiv.className = 'viewer-name';
+                    nameDiv.title = item.name;
+                    nameDiv.textContent = item.name;
+
                     if (item.type === 'directory') {
+                        viewerItem.className = 'viewer-item';
+                        const iconDiv = document.createElement('div');
+                        iconDiv.className = 'viewer-icon';
+                        iconDiv.textContent = '📁';
+                        viewerItem.append(iconDiv, nameDiv);
                         const target = currentPath ? `${currentPath}/${item.name}` : item.name;
-                        html += `<div class="viewer-item" onclick="navigateTo('${escapeHtml(target)}')">
-                            <div class="viewer-icon">📁</div>
-                            <div class="viewer-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
-                        </div>`;
+                        viewerItem.addEventListener('click', () => navigateTo(target));
                     } else if (isImageFile(item.name)) {
                         const imgIdx = lightboxImageList.findIndex(i => i.id === item.id);
                         const sel = compareImages.some(c => c.id === item.id);
-                        html += `<div class="viewer-item${sel ? ' selected' : ''}">
-                            <img src="/api/thumbnail/${item.id}" alt="${escapeHtml(item.name)}" loading="lazy" onclick="openLightbox(${imgIdx})" style="cursor:pointer;">
-                            <div class="viewer-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
-                            <button class="viewer-compare-btn${sel ? ' selected' : ''}" onclick="toggleCompare('${item.id}','${escapeHtml(item.name)}')">
-                                ${sel ? '✓ 選択済' : '比較選択'}
-                            </button>
-                        </div>`;
+                        viewerItem.className = `viewer-item${sel ? ' selected' : ''}`;
+                        const img = document.createElement('img');
+                        img.src = `/api/thumbnail/${item.id}`;
+                        img.alt = item.name;
+                        img.loading = 'lazy';
+                        img.style.cursor = 'pointer';
+                        img.addEventListener('click', () => openLightbox(imgIdx));
+                        const cmpBtn = document.createElement('button');
+                        cmpBtn.className = `viewer-compare-btn${sel ? ' selected' : ''}`;
+                        cmpBtn.textContent = sel ? '✓ 選択済' : '比較選択';
+                        cmpBtn.addEventListener('click', () => toggleCompare(item.id, item.name));
+                        viewerItem.append(img, nameDiv, cmpBtn);
                     } else {
-                        const preview = getFilePreview(item);
-                        html += `<div class="viewer-item" onclick="downloadFile('${item.id}','${escapeHtml(item.name)}')">
-                            <div class="viewer-icon">${preview}</div>
-                            <div class="viewer-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
-                        </div>`;
+                        viewerItem.className = 'viewer-item';
+                        const iconDiv = document.createElement('div');
+                        iconDiv.className = 'viewer-icon';
+                        iconDiv.textContent = getFilePreview(item);
+                        viewerItem.append(iconDiv, nameDiv);
+                        viewerItem.addEventListener('click', () => downloadFile(item.id, item.name));
                     }
+                    grid.appendChild(viewerItem);
                 });
-                html += '</div>';
-                fileList.innerHTML = html;
-
-                const compareOpenBtn = document.getElementById('compareOpenBtn');
-                if (compareOpenBtn) compareOpenBtn.addEventListener('click', openComparison);
-                const compareClearBtn = document.getElementById('compareClearBtn');
-                if (compareClearBtn) compareClearBtn.addEventListener('click', () => { compareImages = []; renderView(); });
+                fileList.appendChild(grid);
             };
 
             window.toggleCompare = (id, name) => {
