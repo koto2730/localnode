@@ -430,16 +430,19 @@ class ServerService {
       if (!await rootDir.exists()) {
         return Response.internalServerError(body: 'Documents directory not found.');
       }
-      // パストラバーサル防止
-      final targetPath = p.normalize(p.join(storagePath, relPath));
-      if (!targetPath.startsWith(p.normalize(storagePath))) {
-        return Response.forbidden('Access denied');
-      }
+      // パストラバーサル防止: シンボリックリンク解決後のパスで検証
+      final canonicalRoot = await rootDir.resolveSymbolicLinks();
+      final targetPath = p.normalize(p.join(canonicalRoot, relPath));
       final directory = Directory(targetPath);
       if (!await directory.exists()) {
         return Response.notFound('Directory not found.');
       }
-      final items = await directory.list().toList();
+      final canonicalTarget = await directory.resolveSymbolicLinks();
+      if (canonicalTarget != canonicalRoot &&
+          !p.isWithin(canonicalRoot, canonicalTarget)) {
+        return Response.forbidden('Access denied');
+      }
+      final items = await directory.list(followLinks: false).toList();
       final itemList = items.map((item) async {
         final isDir = item is Directory;
         final id = base64Url.encode(utf8.encode(item.path));
@@ -591,18 +594,26 @@ class ServerService {
       // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
       else {
         final filePath = decoded;
-        // パストラバーサル防止
-        final rootPath = p.normalize(storagePath);
-        if (!p.normalize(filePath).startsWith(rootPath)) {
+        // パストラバーサル防止: シンボリックリンク解決後のパスで検証
+        final canonicalRoot =
+            await Directory(storagePath).resolveSymbolicLinks();
+        final canonicalFile =
+            await File(filePath).resolveSymbolicLinks().catchError((_) async {
+          return Directory(filePath).resolveSymbolicLinks();
+        });
+        if (canonicalFile != canonicalRoot &&
+            !p.isWithin(canonicalRoot, canonicalFile)) {
           return Response.forbidden('Access denied');
         }
         // フォルダの場合はZIPで返す (#179)
         if (await FileSystemEntity.isDirectory(filePath)) {
-          final dirName = p.basename(filePath);
+          final dirName = Uri.encodeComponent(p.basename(filePath))
+              .replaceAll("'", '%27');
           final encoder = ZipEncoder();
           final archive = Archive();
           final dir = Directory(filePath);
-          final files = dir.listSync(recursive: true).whereType<File>();
+          final files =
+              dir.listSync(recursive: true, followLinks: false).whereType<File>();
           for (final file in files) {
             final bytes = await file.readAsBytes();
             final rel = p.relative(file.path, from: filePath);
@@ -614,7 +625,8 @@ class ServerService {
           }
           return Response.ok(zipData, headers: {
             'Content-Type': 'application/zip',
-            'Content-Disposition': 'attachment; filename="$dirName.zip"',
+            'Content-Disposition':
+                "attachment; filename*=UTF-8''$dirName.zip",
           });
         }
         final file = File(filePath);
@@ -904,16 +916,19 @@ class ServerService {
     else {
       // ?path= で現在フォルダを指定し、そのフォルダのファイルのみをZIP (#179)
       final relPath = request.url.queryParameters['path'] ?? '';
-      final targetPath = p.normalize(p.join(storagePath, relPath));
-      if (!targetPath.startsWith(p.normalize(storagePath))) {
-        return Response.forbidden('Access denied');
-      }
+      final canonicalRoot = await Directory(storagePath).resolveSymbolicLinks();
+      final targetPath = p.normalize(p.join(canonicalRoot, relPath));
       final directory = Directory(targetPath);
       if (!await directory.exists()) {
         return Response.internalServerError(body: 'Documents directory not found.');
       }
+      final canonicalTarget = await directory.resolveSymbolicLinks();
+      if (canonicalTarget != canonicalRoot &&
+          !p.isWithin(canonicalRoot, canonicalTarget)) {
+        return Response.forbidden('Access denied');
+      }
       // 現在フォルダの直下ファイルのみ（再帰なし）
-      final files = directory.listSync().whereType<File>();
+      final files = directory.listSync(followLinks: false).whereType<File>();
       for (final file in files) {
         final bytes = await file.readAsBytes();
         final filename = p.basename(file.path);
