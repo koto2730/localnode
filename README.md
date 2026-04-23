@@ -140,10 +140,14 @@ localnode-cli --mention-action backup=./backup.sh --mention-action notify=./noti
 ```
 
 > **Note (`--post-action` / `--mention-action`):** The `script` value must be a path to an executable file only — passing arguments inline (e.g. `script=./notify.sh arg1`) is not supported. For `--post-action`, the uploaded file path is automatically passed as the first argument to the script.
-
-```bash
-
-```
+>
+> ```bash
+> # Valid: executable path only; the uploaded file path is passed automatically
+> localnode-cli --post-action "*.jpg=./process-image.sh"
+>
+> # Valid: mention action with an executable path only
+> localnode-cli --mention-action backup=./backup.sh
+> ```
 
 To stop the server: **Ctrl+C**.
 
