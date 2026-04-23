@@ -1134,8 +1134,8 @@ class _CliServer {
     if (Platform.isWindows) {
       if (script.toLowerCase().endsWith('.ps1')) {
         return (
-          'powershell.exe',
-          ['-ExecutionPolicy', 'Bypass', '-File', script, ...extraArgs]
+          'cmd',
+          ['/c', 'powershell.exe', '-ExecutionPolicy', 'Bypass', '-File', script, ...extraArgs]
         );
       }
       return ('cmd', ['/c', script, ...extraArgs]);
