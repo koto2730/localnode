@@ -200,7 +200,8 @@ Future<void> main(List<String> args) async {
     stdout.writeln('');
     stdout.writeln('  curl example:');
     stdout.writeln('    curl -H "Authorization: Bearer $uploadToken" \\');
-    stdout.writeln('         -F "file=@/path/to/file" \\');
+    stdout.writeln('         -H "x-filename: myfile.txt" \\');
+    stdout.writeln('         --data-binary @/path/to/myfile.txt \\');
     stdout.writeln('         $serverUrl/api/upload');
   }
   stdout.writeln('');
@@ -1055,25 +1056,43 @@ class _CliServer {
         headers: {'Content-Type': 'application/json'},
       );
 
-  Future<Response> _getFilesHandler(Request _) async {
-    final dir = Directory(_storagePath!);
-    if (!await dir.exists()) {
+  Future<Response> _getFilesHandler(Request req) async {
+    final root = Directory(_storagePath!);
+    if (!await root.exists()) {
       return Response.internalServerError(body: 'Storage directory not found.');
     }
-    final files = await dir
-        .list()
-        .where((e) => e is File)
-        .cast<File>()
-        .toList();
-    final list = await Future.wait(files.map((f) async {
-      final stat = await f.stat();
+    final relPath = req.url.queryParameters['path'] ?? '';
+    final canonicalRoot = await root.resolveSymbolicLinks();
+    final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+    final dir = Directory(targetPath);
+    if (!await dir.exists()) {
+      return Response.notFound('Directory not found.');
+    }
+    final canonicalTarget = await dir.resolveSymbolicLinks();
+    if (canonicalTarget != canonicalRoot &&
+        !p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
+    }
+    final entries = await dir.list(followLinks: false).toList();
+    final list = await Future.wait(entries.map((e) async {
+      final isDir = e is Directory;
+      final id = base64Url.encode(utf8.encode(e.path));
+      if (isDir) {
+        return {'name': p.basename(e.path), 'type': 'directory', 'id': id};
+      }
+      final stat = await e.stat();
       return {
-        'name': p.basename(f.path),
+        'name': p.basename(e.path),
+        'type': 'file',
         'size': stat.size,
         'modified': stat.modified.toIso8601String(),
-        'id': base64Url.encode(utf8.encode(f.path)),
+        'id': id,
       };
     }));
+    list.sort((a, b) {
+      if (a['type'] != b['type']) return a['type'] == 'directory' ? -1 : 1;
+      return (a['name'] as String).compareTo(b['name'] as String);
+    });
     return Response.ok(jsonEncode(list),
         headers: {'Content-Type': 'application/json'});
   }
@@ -1109,6 +1128,21 @@ class _CliServer {
     }
   }
 
+  // Windows で .ps1 は powershell.exe 経由で実行
+  (String executable, List<String> args) _buildCommand(
+      String script, List<String> extraArgs) {
+    if (Platform.isWindows) {
+      if (script.toLowerCase().endsWith('.ps1')) {
+        return (
+          'powershell.exe',
+          ['-ExecutionPolicy', 'Bypass', '-File', script, ...extraArgs]
+        );
+      }
+      return ('cmd', ['/c', script, ...extraArgs]);
+    }
+    return (script, extraArgs);
+  }
+
   bool _globMatch(String pattern, String filename) {
     final regexStr = RegExp.escape(pattern)
         .replaceAll(r'\*', '.*')
@@ -1123,11 +1157,9 @@ class _CliServer {
       if (!_globMatch(action.pattern, filename)) continue;
       () async {
         try {
+          final cmd = _buildCommand(action.script, [filePath]);
           final result = await Process.run(
-            Platform.isWindows ? 'cmd' : action.script,
-            Platform.isWindows
-                ? ['/c', action.script, filePath]
-                : [filePath],
+            cmd.$1, cmd.$2,
             runInShell: !Platform.isWindows,
           );
           if (result.exitCode != 0) {
@@ -1185,9 +1217,9 @@ class _CliServer {
   void _runMentionAction(String alias, String script) {
     () async {
       try {
+        final cmd = _buildCommand(script, []);
         final result = await Process.run(
-          Platform.isWindows ? 'cmd' : script,
-          Platform.isWindows ? ['/c', script] : [],
+          cmd.$1, cmd.$2,
           runInShell: !Platform.isWindows,
         );
         final resultText = result.exitCode == 0
@@ -1247,17 +1279,28 @@ class _CliServer {
     }
   }
 
-  Future<Response> _downloadAllHandler(Request _) async {
-    final dir = Directory(_storagePath!);
-    if (!await dir.exists()) {
+  Future<Response> _downloadAllHandler(Request req) async {
+    final root = Directory(_storagePath!);
+    if (!await root.exists()) {
       return Response.internalServerError(body: 'Storage directory not found.');
     }
+    final relPath = req.url.queryParameters['path'] ?? '';
+    final canonicalRoot = await root.resolveSymbolicLinks();
+    final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+    final dir = Directory(targetPath);
+    if (!await dir.exists()) {
+      return Response.internalServerError(body: 'Directory not found.');
+    }
+    final canonicalTarget = await dir.resolveSymbolicLinks();
+    if (canonicalTarget != canonicalRoot &&
+        !p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
+    }
     final archive = Archive();
-    final files = dir.listSync(recursive: true).whereType<File>();
+    final files = dir.listSync(followLinks: false).whereType<File>();
     for (final f in files) {
       final bytes = await f.readAsBytes();
-      archive.addFile(ArchiveFile(
-          p.relative(f.path, from: dir.path), bytes.length, bytes));
+      archive.addFile(ArchiveFile(p.basename(f.path), bytes.length, bytes));
     }
     final zip = ZipEncoder().encode(archive);
     if (zip == null) {
