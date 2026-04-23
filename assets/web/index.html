@@ -539,6 +539,19 @@
             cursor: pointer;
             border-radius: 4px;
         }
+        #lightbox-save {
+            position: fixed;
+            bottom: 2.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 0.9rem;
+            padding: 0.3rem 0.8rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
         #lightbox-zoom-hint {
             position: fixed;
             bottom: 1rem;
@@ -699,6 +712,7 @@
         </div>
         <button class="lightbox-nav" id="lightbox-next">›</button>
         <div id="lightbox-meta"></div>
+        <button id="lightbox-save">⬇ 保存</button>
         <div id="lightbox-zoom-hint">スクロールでズーム • 矢印キーで移動</div>
     </div>
 
@@ -901,7 +915,7 @@
                 if (videoExtensions.includes(ext)) return '🎬';
                 if (audioExtensions.includes(ext)) return '🎵';
                 if (ext === 'pdf') return '📄';
-                return '📁'; // Default icon
+                return '📎';
             };
 
             // ファイル一覧を取得して表示（サブフォルダナビゲーション対応）
@@ -1315,7 +1329,16 @@
                         const sizeMB = (item.size / (1024 * 1024)).toFixed(2);
                         const tdIcon = document.createElement('td');
                         tdIcon.className = 'preview-col';
-                        tdIcon.textContent = getFilePreview(item);
+                        const preview = getFilePreview(item);
+                        if (preview.startsWith('<img')) {
+                            const img = document.createElement('img');
+                            img.src = `/api/thumbnail/${item.id}`;
+                            img.alt = item.name;
+                            img.loading = 'lazy';
+                            tdIcon.appendChild(img);
+                        } else {
+                            tdIcon.textContent = preview;
+                        }
                         const tdName = document.createElement('td');
                         tdName.className = 'fileinfo-col';
                         tdName.title = item.name;
@@ -1481,6 +1504,10 @@
 
             document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
             lightboxEl.addEventListener('click', (e) => { if (e.target === lightboxEl) closeLightbox(); });
+            document.getElementById('lightbox-save').addEventListener('click', () => {
+                const item = lightboxImageList[lightboxIndex];
+                if (item) downloadFile(item.id, item.name);
+            });
 
             document.getElementById('lightbox-prev').addEventListener('click', () => {
                 lightboxIndex = (lightboxIndex - 1 + lightboxImageList.length) % lightboxImageList.length;
