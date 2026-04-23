@@ -1329,15 +1329,14 @@
                         const sizeMB = (item.size / (1024 * 1024)).toFixed(2);
                         const tdIcon = document.createElement('td');
                         tdIcon.className = 'preview-col';
-                        const preview = getFilePreview(item);
-                        if (preview.startsWith('<img')) {
+                        if (isImageFile(item.name)) {
                             const img = document.createElement('img');
                             img.src = `/api/thumbnail/${item.id}`;
                             img.alt = item.name;
                             img.loading = 'lazy';
                             tdIcon.appendChild(img);
                         } else {
-                            tdIcon.textContent = preview;
+                            tdIcon.textContent = getFilePreview(item);
                         }
                         const tdName = document.createElement('td');
                         tdName.className = 'fileinfo-col';
