@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:math';
 
 import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -876,62 +877,99 @@ class ServerService {
       return Response.internalServerError(body: 'Documents directory not initialized.');
     }
 
-    final encoder = ZipEncoder();
-    final archive = Archive();
+    // #195: ZIP を一時ファイルへストリーミングして書き出し、レスポンスとして
+    // 流す。これによりサーバ側でも巨大ファイル × 多数を扱える。
+    final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
+    final zipPath = p.join(tempDir.path, 'localnode_files.zip');
 
-    // AndroidでSAF URIが設定されている場合
-    if (Platform.isAndroid && _safDirectoryUri != null) {
-      try {
-        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
-        if (files == null) {
-          return Response.internalServerError(body: 'Failed to list files for zipping.');
-        }
+    try {
+      final zipEncoder = ZipFileEncoder()..create(zipPath);
 
-        for (final fileInfo in files) {
-          final String fileUri = fileInfo['uri'];
-          final String filename = fileInfo['name'];
-          final Uint8List? bytes = await _safPlatform.invokeMethod('readFile', {'uri': fileUri});
-          if (bytes != null) {
-            archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+      // AndroidでSAF URIが設定されている場合
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        try {
+          final List<dynamic>? files = await _safPlatform
+              .invokeMethod('listFiles', {'uri': _safDirectoryUri});
+          if (files == null) {
+            await zipEncoder.close();
+            await tempDir.delete(recursive: true);
+            return Response.internalServerError(
+                body: 'Failed to list files for zipping.');
           }
+          for (final fileInfo in files) {
+            final String fileUri = fileInfo['uri'];
+            final String filename = fileInfo['name'];
+            final Uint8List? bytes = await _safPlatform
+                .invokeMethod('readFile', {'uri': fileUri});
+            if (bytes != null) {
+              // SAF はバイト列でしか取れないため、一時ファイルへ書いてから
+              // ZipFileEncoder に渡してストリーム圧縮
+              final tmpFile = File(p.join(tempDir.path, filename));
+              await tmpFile.writeAsBytes(bytes, flush: true);
+              await zipEncoder.addFile(tmpFile, filename);
+              await tmpFile.delete();
+            }
+          }
+        } on PlatformException catch (e) {
+          await zipEncoder.close();
+          await tempDir.delete(recursive: true);
+          return Response.internalServerError(
+              body: 'Failed to read files for zipping: ${e.message}');
         }
-      } on PlatformException catch(e) {
-        return Response.internalServerError(body: 'Failed to read files for zipping: ${e.message}');
+      } else {
+        // ?path= で現在フォルダを指定し、そのフォルダのファイルのみをZIP (#179)
+        final relPath = request.url.queryParameters['path'] ?? '';
+        final canonicalRoot =
+            await Directory(storagePath).resolveSymbolicLinks();
+        final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+        final directory = Directory(targetPath);
+        if (!await directory.exists()) {
+          await zipEncoder.close();
+          await tempDir.delete(recursive: true);
+          return Response.internalServerError(
+              body: 'Documents directory not found.');
+        }
+        final canonicalTarget = await directory.resolveSymbolicLinks();
+        if (canonicalTarget != canonicalRoot &&
+            !p.isWithin(canonicalRoot, canonicalTarget)) {
+          await zipEncoder.close();
+          await tempDir.delete(recursive: true);
+          return Response.forbidden('Access denied');
+        }
+        // 現在フォルダの直下ファイルのみ（再帰なし）
+        final files = directory.listSync(followLinks: false).whereType<File>();
+        for (final file in files) {
+          await zipEncoder.addFile(file, p.basename(file.path));
+        }
       }
-    }
-    // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
-    else {
-      // ?path= で現在フォルダを指定し、そのフォルダのファイルのみをZIP (#179)
-      final relPath = request.url.queryParameters['path'] ?? '';
-      final canonicalRoot = await Directory(storagePath).resolveSymbolicLinks();
-      final targetPath = p.normalize(p.join(canonicalRoot, relPath));
-      final directory = Directory(targetPath);
-      if (!await directory.exists()) {
-        return Response.internalServerError(body: 'Documents directory not found.');
-      }
-      final canonicalTarget = await directory.resolveSymbolicLinks();
-      if (canonicalTarget != canonicalRoot &&
-          !p.isWithin(canonicalRoot, canonicalTarget)) {
-        return Response.forbidden('Access denied');
-      }
-      // 現在フォルダの直下ファイルのみ（再帰なし）
-      final files = directory.listSync(followLinks: false).whereType<File>();
-      for (final file in files) {
-        final bytes = await file.readAsBytes();
-        final filename = p.basename(file.path);
-        archive.addFile(ArchiveFile(filename, bytes.length, bytes));
-      }
-    }
 
-    final zipData = encoder.encode(archive);
-    if (zipData == null) {
-      return Response.internalServerError(body: 'Failed to create zip file.');
-    }
+      await zipEncoder.close();
 
-    return Response.ok(zipData, headers: {
-      'Content-Type': 'application/zip',
-      'Content-Disposition': 'attachment; filename="localnode_files.zip"',
-    });
+      final zipFile = File(zipPath);
+      final length = await zipFile.length();
+
+      // ストリーム完了後（成功・中断問わず）に一時ディレクトリを削除
+      Stream<List<int>> streamAndCleanup() async* {
+        try {
+          yield* zipFile.openRead();
+        } finally {
+          try {
+            await tempDir.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+
+      return Response.ok(streamAndCleanup(), headers: {
+        'Content-Type': 'application/zip',
+        'Content-Length': '$length',
+        'Content-Disposition': 'attachment; filename="localnode_files.zip"',
+      });
+    } catch (e) {
+      try {
+        await tempDir.delete(recursive: true);
+      } catch (_) {}
+      return Response.internalServerError(body: 'Failed to create zip: $e');
+    }
   }
 
   // === Clipboard Handlers ===
