@@ -956,10 +956,18 @@
 
             // 全ファイル削除処理
             deleteAllBtn.addEventListener('click', async () => {
-                if (!confirm('本当にすべてのファイルを削除しますか？この操作は取り消せません。')) return;
+                const fileIds = allItems
+                    .filter(i => i.type !== 'directory')
+                    .map(i => i.id);
+                if (fileIds.length === 0) return;
+                if (!confirm(`このフォルダの${fileIds.length}個のファイルを削除します。よろしいですか？この操作は取り消せません。`)) return;
 
                 try {
-                    const response = await safeFetch('/api/files', { method: 'DELETE' });
+                    const response = await safeFetch('/api/files/delete-batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: fileIds }),
+                    });
                     if (!response.ok) throw new Error('削除に失敗しました。');
                     const result = await response.json();
                     alert(`${result.deleted}個のファイルを削除しました。`);

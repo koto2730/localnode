@@ -208,7 +208,7 @@ class ServerService {
     _router.get('/api/thumbnail/<id>', _thumbnailHandler);
     _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<id>', _deleteFileHandler);
-    _router.delete('/api/files', _deleteAllFilesHandler);
+    _router.post('/api/files/delete-batch', _deleteBatchHandler);
     // クリップボード共有API
     _router.get('/api/clipboard', _getClipboardHandler);
     _router.post('/api/clipboard', _postClipboardHandler);
@@ -814,7 +814,8 @@ class ServerService {
     }
   }
 
-  Future<Response> _deleteAllFilesHandler(Request request) async {
+  // #190: 表示されているファイル ID のリストを受け取って削除
+  Future<Response> _deleteBatchHandler(Request request) async {
     final guard = _checkDownloadOnlyMode();
     if (guard != null) return guard;
 
@@ -823,64 +824,70 @@ class ServerService {
       return Response.internalServerError(body: 'Documents directory not initialized.');
     }
 
+    final List<dynamic> ids;
+    try {
+      final body = json.decode(await request.readAsString()) as Map<String, dynamic>;
+      ids = body['ids'] as List<dynamic>? ?? const [];
+    } catch (_) {
+      return Response.badRequest(body: 'Invalid request body.');
+    }
+
     int deleted = 0;
     int failed = 0;
+    final List<String> skipped = [];
 
-    try {
-      // AndroidでSAF URIが設定されている場合
-      if (Platform.isAndroid && _safDirectoryUri != null) {
-        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
-        if (files != null) {
-          for (final fileInfo in files) {
-            try {
-              final String fileUri = fileInfo['uri'];
-              final String filename = fileInfo['name'];
-              final bool? success = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
-              if (success == true) {
-                deleted++;
-                // サムネイルキャッシュも削除
-                final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
-                if (await cacheFile.exists()) {
-                  await cacheFile.delete();
-                }
-              } else {
-                failed++;
-              }
-            } catch (e) {
-              failed++;
-            }
+    // Android SAF
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      for (final raw in ids) {
+        try {
+          final fileUri = utf8.decode(base64Url.decode(raw as String));
+          if (!fileUri.startsWith(_safDirectoryUri!)) {
+            skipped.add(raw);
+            continue;
           }
+          final filename = Uri.parse(fileUri).pathSegments.last;
+          final success = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
+          if (success == true) {
+            deleted++;
+            final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+            if (await cacheFile.exists()) await cacheFile.delete();
+          } else {
+            failed++;
+          }
+        } catch (_) {
+          failed++;
         }
       }
-      // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
-      else {
-        final directory = Directory(storagePath);
-        if (await directory.exists()) {
-          final files = await directory.list().where((item) => item is File).cast<File>().toList();
-          for (final file in files) {
-            try {
-              final filename = p.basename(file.path);
-              await file.delete();
-              deleted++;
-              // サムネイルキャッシュも削除
-              final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
-              if (await cacheFile.exists()) {
-                await cacheFile.delete();
-              }
-            } catch (e) {
-              failed++;
-            }
+    } else {
+      final canonicalRoot = await Directory(storagePath).resolveSymbolicLinks();
+      for (final raw in ids) {
+        try {
+          final filePath = utf8.decode(base64Url.decode(raw as String));
+          final file = File(filePath);
+          if (!await file.exists()) {
+            failed++;
+            continue;
           }
+          final canonicalFile = await file.resolveSymbolicLinks();
+          if (!p.isWithin(canonicalRoot, canonicalFile)) {
+            skipped.add(raw as String);
+            continue;
+          }
+          final filename = p.basename(filePath);
+          await file.delete();
+          deleted++;
+          final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+          if (await cacheFile.exists()) await cacheFile.delete();
+        } catch (_) {
+          failed++;
         }
       }
-
-      return Response.ok(
-        json.encode({'deleted': deleted, 'failed': failed}),
-        headers: {'Content-Type': 'application/json'},
-      );
-    } catch (e) {
-      return Response.internalServerError(body: "Failed to delete files: $e");
     }
+
+    return Response.ok(
+      json.encode({'deleted': deleted, 'failed': failed, 'skipped': skipped}),
+      headers: {'Content-Type': 'application/json'},
+    );
   }
 
   Future<Response> _downloadAllHandler(Request request) async {

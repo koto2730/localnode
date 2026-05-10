@@ -727,7 +727,7 @@ class _CliServer {
       ..get('/api/thumbnail/<id>', _thumbnailHandler)
       ..get('/api/download-all', _downloadAllHandler)
       ..delete('/api/files/<id>', _deleteFileHandler)
-      ..delete('/api/files', _deleteAllFilesHandler)
+      ..post('/api/files/delete-batch', _deleteBatchHandler)
       ..get('/api/clipboard', _getClipboardHandler)
       ..post('/api/clipboard', _postClipboardHandler)
       ..delete('/api/clipboard/<id>', _deleteClipboardItemHandler)
@@ -1331,28 +1331,51 @@ class _CliServer {
     }
   }
 
-  Future<Response> _deleteAllFilesHandler(Request req) async {
+  // #190: クライアントが指定したファイル ID のみ削除
+  Future<Response> _deleteBatchHandler(Request req) async {
     final guard = _guardDownloadOnly();
     if (guard != null) return guard;
-    final dir = Directory(_storagePath!);
-    int deleted = 0, failed = 0;
-    if (await dir.exists()) {
-      final files =
-          await dir.list().where((e) => e is File).cast<File>().toList();
-      for (final f in files) {
-        try {
-          await f.delete();
-          deleted++;
-          final cache = File(p.join(
-              _thumbnailCacheDir!.path, '${p.basename(f.path)}.jpg'));
-          if (await cache.exists()) await cache.delete();
-        } catch (_) {
+
+    final List<dynamic> ids;
+    try {
+      final body = json.decode(await req.readAsString()) as Map<String, dynamic>;
+      ids = body['ids'] as List<dynamic>? ?? const [];
+    } catch (_) {
+      return Response.badRequest(body: 'Invalid request body.');
+    }
+
+    int deleted = 0;
+    int failed = 0;
+    final List<String> skipped = [];
+
+    final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
+    for (final raw in ids) {
+      try {
+        final filePath = utf8.decode(base64Url.decode(raw as String));
+        final file = File(filePath);
+        if (!await file.exists()) {
           failed++;
+          continue;
         }
+        final canonicalFile = await file.resolveSymbolicLinks();
+        if (!p.isWithin(canonicalRoot, canonicalFile)) {
+          skipped.add(raw);
+          continue;
+        }
+        final filename = p.basename(filePath);
+        await file.delete();
+        deleted++;
+        final cache = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+        if (await cache.exists()) await cache.delete();
+      } catch (_) {
+        failed++;
       }
     }
-    return Response.ok(json.encode({'deleted': deleted, 'failed': failed}),
-        headers: {'Content-Type': 'application/json'});
+
+    return Response.ok(
+      json.encode({'deleted': deleted, 'failed': failed, 'skipped': skipped}),
+      headers: {'Content-Type': 'application/json'},
+    );
   }
 
   // --- クリップボードハンドラ ---
