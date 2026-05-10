@@ -13,6 +13,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:args/args.dart';
 import 'package:basic_utils/basic_utils.dart';
 import 'package:image/image.dart' as img;
@@ -1296,20 +1297,42 @@ class _CliServer {
         !p.isWithin(canonicalRoot, canonicalTarget)) {
       return Response.forbidden('Access denied');
     }
-    final archive = Archive();
-    final files = dir.listSync(followLinks: false).whereType<File>();
-    for (final f in files) {
-      final bytes = await f.readAsBytes();
-      archive.addFile(ArchiveFile(p.basename(f.path), bytes.length, bytes));
+
+    // #195: ZIP を一時ファイルへストリーミング書き出ししてレスポンスとして流す
+    final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
+    final zipPath = p.join(tempDir.path, 'localnode_files.zip');
+    try {
+      final zipEncoder = ZipFileEncoder()..create(zipPath);
+      final files = dir.listSync(followLinks: false).whereType<File>();
+      for (final f in files) {
+        await zipEncoder.addFile(f, p.basename(f.path));
+      }
+      await zipEncoder.close();
+
+      final zipFile = File(zipPath);
+      final length = await zipFile.length();
+
+      Stream<List<int>> streamAndCleanup() async* {
+        try {
+          yield* zipFile.openRead();
+        } finally {
+          try {
+            await tempDir.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+
+      return Response.ok(streamAndCleanup(), headers: {
+        'Content-Type': 'application/zip',
+        'Content-Length': '$length',
+        'Content-Disposition': 'attachment; filename="localnode_files.zip"',
+      });
+    } catch (e) {
+      try {
+        await tempDir.delete(recursive: true);
+      } catch (_) {}
+      return Response.internalServerError(body: 'Failed to create zip: $e');
     }
-    final zip = ZipEncoder().encode(archive);
-    if (zip == null) {
-      return Response.internalServerError(body: 'Failed to create zip.');
-    }
-    return Response.ok(zip, headers: {
-      'Content-Type': 'application/zip',
-      'Content-Disposition': 'attachment; filename="localnode_files.zip"',
-    });
   }
 
   Future<Response> _deleteFileHandler(Request req, String id) async {
