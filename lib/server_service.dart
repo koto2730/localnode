@@ -605,29 +605,9 @@ class ServerService {
             !p.isWithin(canonicalRoot, canonicalFile)) {
           return Response.forbidden('Access denied');
         }
-        // フォルダの場合はZIPで返す (#179)
+        // #191: フォルダは個別ダウンロード対象外（download-all のみ使用）
         if (await FileSystemEntity.isDirectory(filePath)) {
-          final dirName = Uri.encodeComponent(p.basename(filePath))
-              .replaceAll("'", '%27');
-          final encoder = ZipEncoder();
-          final archive = Archive();
-          final dir = Directory(filePath);
-          final files =
-              dir.listSync(recursive: true, followLinks: false).whereType<File>();
-          for (final file in files) {
-            final bytes = await file.readAsBytes();
-            final rel = p.relative(file.path, from: filePath);
-            archive.addFile(ArchiveFile(rel, bytes.length, bytes));
-          }
-          final zipData = encoder.encode(archive);
-          if (zipData == null) {
-            return Response.internalServerError(body: 'Failed to create zip.');
-          }
-          return Response.ok(zipData, headers: {
-            'Content-Type': 'application/zip',
-            'Content-Disposition':
-                "attachment; filename*=UTF-8''$dirName.zip",
-          });
+          return Response.notFound('Directory download is not supported.');
         }
         final file = File(filePath);
         if (!await file.exists()) {

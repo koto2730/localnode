@@ -1323,14 +1323,8 @@
                         tdName.appendChild(nameDiv);
                         const tdActions = document.createElement('td');
                         tdActions.className = 'actions';
-                        const dlBtn = document.createElement('button');
-                        dlBtn.className = 'btn-download';
-                        dlBtn.textContent = 'DL';
-                        dlBtn.addEventListener('click', () => downloadFile(item.id, item.name + '.zip'));
-                        tdActions.appendChild(dlBtn);
                         row.append(tdIcon, tdName, tdActions);
-                        row.addEventListener('click', (e) => {
-                            if (e.target.tagName === 'BUTTON') return;
+                        row.addEventListener('click', () => {
                             navigateTo(currentPath ? `${currentPath}/${item.name}` : item.name);
                         });
                     } else {
