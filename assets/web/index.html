@@ -1009,24 +1009,16 @@
                 }
             });
 
-            window.downloadFile = async (id, filename) => {
-                try {
-                    const response = await safeFetch(`/api/download/${id}`);
-                    if (!response.ok) throw new Error('Download failed.');
-
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.style.display = 'none';
-                    a.href = url;
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    a.remove();
-                } catch (error) {
-                    alert(error.message);
-                }
+            window.downloadFile = (id, filename) => {
+                // #194: 直接 <a href> でブラウザの DL マネージャに任せ、
+                // ストリーミングと進捗表示を有効にする
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = `/api/download/${id}`;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
             };
 
             window.deleteFile = async (id, filename) => {
