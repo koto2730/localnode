@@ -700,6 +700,9 @@
                     <div class="section-header">
                         <h2>📋 クリップボード共有</h2>
                         <div class="section-header-actions">
+                            <label id="clipboardNotifyLabel" style="font-size:0.85rem; color:#00695c; user-select:none; cursor:pointer;">
+                                <input type="checkbox" id="clipboardNotifyToggle"> 新着を通知
+                            </label>
                             <button id="downloadClipboardBtn" class="btn-download-clip" style="display: none;">TXTで保存</button>
                             <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
                         </div>
@@ -837,12 +840,12 @@
             const showMainContent = () => {
                 pinModal.style.display = 'none';
                 mainContent.style.display = 'block';
-                fetchFiles();
-                if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
-                applyModeRestrictions();
                 const name = serverInfo.serverName || 'LocalNode';
                 document.title = name;
                 document.querySelector('#main-content h1').textContent = name;
+                fetchFiles();
+                if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
+                applyModeRestrictions();
                 if (serverInfo.version) {
                     document.getElementById('version-badge').textContent = `v${serverInfo.version}`;
                 }
@@ -1098,7 +1101,44 @@
                 }
             };
 
+            // #196: 新着通知 (タブタイトルの先頭に ● を付与)
+            const NOTIFY_PREFIX = '● ';
+            let notifyEnabled = localStorage.getItem('localnode_clipboardNotify') === '1';
+            let baseTitle = document.title;
+            let hasUnread = false;
+            let firstClipboardFetch = true;
+
+            const applyTitleIndicator = () => {
+                const target = hasUnread ? NOTIFY_PREFIX + baseTitle : baseTitle;
+                if (document.title !== target) document.title = target;
+            };
+            const clearUnread = () => {
+                if (!hasUnread) return;
+                hasUnread = false;
+                applyTitleIndicator();
+            };
+            const markUnread = () => {
+                if (!notifyEnabled) return;
+                if (!document.hidden) return; // タブが見えていれば通知不要
+                hasUnread = true;
+                applyTitleIndicator();
+            };
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) clearUnread();
+            });
+            window.addEventListener('focus', clearUnread);
+
+            const notifyToggle = document.getElementById('clipboardNotifyToggle');
+            notifyToggle.checked = notifyEnabled;
+            notifyToggle.addEventListener('change', () => {
+                notifyEnabled = notifyToggle.checked;
+                localStorage.setItem('localnode_clipboardNotify', notifyEnabled ? '1' : '0');
+                if (!notifyEnabled) clearUnread();
+            });
+
             const startClipboardPolling = () => {
+                // タブタイトルが setServerName で更新されたあとの値を基準にする
+                baseTitle = document.title;
                 fetchClipboard();
                 clipboardPollingInterval = setInterval(fetchClipboard, 2000);
             };
@@ -1120,6 +1160,10 @@
                     if (data.lastModified !== clipboardLastModified) {
                         clipboardLastModified = data.lastModified;
                         renderClipboardItems(data.items);
+                        if (!firstClipboardFetch) markUnread();
+                        firstClipboardFetch = false;
+                    } else if (firstClipboardFetch) {
+                        firstClipboardFetch = false;
                     }
                 } catch (error) {
                     if (error.message !== 'Authentication required.') {
