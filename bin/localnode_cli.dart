@@ -735,6 +735,7 @@ class _CliServer {
       ..post('/api/upload', _uploadHandler)
       ..get('/api/download/<id>', _downloadHandler)
       ..get('/api/thumbnail/<id>', _thumbnailHandler)
+      ..get('/api/thumbnail-by-path', _thumbnailByPathHandler)
       ..get('/api/download-all', _downloadAllHandler)
       ..delete('/api/files/<id>', _deleteFileHandler)
       ..post('/api/files/delete-batch', _deleteBatchHandler)
@@ -1258,6 +1259,28 @@ class _CliServer {
     } catch (e) {
       return Response.internalServerError(body: 'Download failed: $e');
     }
+  }
+
+  // #198: @file:<relpath> 用のパスベースサムネイル
+  Future<Response> _thumbnailByPathHandler(Request req) async {
+    final relPath = req.url.queryParameters['path'] ?? '';
+    if (relPath.isEmpty ||
+        relPath.contains('..') ||
+        relPath.startsWith('/') ||
+        relPath.startsWith(r'\') ||
+        relPath.contains(':')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
+    final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+    final file = File(targetPath);
+    if (!await file.exists()) return Response.notFound('File not found.');
+    final canonicalTarget = await file.resolveSymbolicLinks();
+    if (!p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
+    }
+    final id = base64Url.encode(utf8.encode(targetPath));
+    return _thumbnailHandler(req, id);
   }
 
   Future<Response> _thumbnailHandler(Request req, String id) async {

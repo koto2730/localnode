@@ -209,6 +209,7 @@ class ServerService {
     _router.post('/api/upload', _uploadHandler);
     _router.get('/api/download/<id>', _downloadHandler);
     _router.get('/api/thumbnail/<id>', _thumbnailHandler);
+    _router.get('/api/thumbnail-by-path', _thumbnailByPathHandler);
     _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<id>', _deleteFileHandler);
     _router.post('/api/files/delete-batch', _deleteBatchHandler);
@@ -745,6 +746,38 @@ class ServerService {
     }
   }
   
+  // #198: @file:<relpath> 用のパスベースサムネイル取得
+  Future<Response> _thumbnailByPathHandler(Request request) async {
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
+      return Response.internalServerError(body: 'Server directory not initialized.');
+    }
+    final relPath = request.url.queryParameters['path'] ?? '';
+    if (relPath.isEmpty ||
+        relPath.contains('..') ||
+        relPath.startsWith('/') ||
+        relPath.startsWith(r'\') ||
+        relPath.contains(':')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      return Response.notFound('Path-based access not supported on Android SAF.');
+    }
+    final canonicalRoot =
+        await Directory(storagePath).resolveSymbolicLinks();
+    final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+    final file = File(targetPath);
+    if (!await file.exists()) {
+      return Response.notFound('File not found.');
+    }
+    final canonicalTarget = await file.resolveSymbolicLinks();
+    if (!p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
+    }
+    final id = base64Url.encode(utf8.encode(targetPath));
+    return _thumbnailHandler(request, id);
+  }
+
   bool _isImageFile(String filename) {
     final extension = p.extension(filename).toLowerCase();
     const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};

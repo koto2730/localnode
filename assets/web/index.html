@@ -249,6 +249,28 @@
             white-space: pre-wrap;
             margin: 0 0 0.5rem 0;
         }
+        .clipboard-file-thumb {
+            max-width: 80px;
+            max-height: 80px;
+            border-radius: 4px;
+            cursor: pointer;
+            vertical-align: middle;
+            margin: 0 0.2rem;
+            border: 1px solid #b2dfdb;
+        }
+        .clipboard-file-thumb:hover { border-color: #00796b; }
+        .clipboard-file-chip {
+            display: inline-block;
+            padding: 0.1rem 0.5rem;
+            margin: 0 0.2rem;
+            background: #b2dfdb;
+            color: #00695c;
+            border-radius: 3px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            vertical-align: middle;
+        }
+        .clipboard-file-chip:hover { background: #80cbc4; }
         .clipboard-item-meta {
             display: flex;
             align-items: center;
@@ -1193,7 +1215,7 @@
                 clipboardList.innerHTML = items.map(item => `
                     <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
                         <div class="clipboard-item-content">
-                            <p class="clipboard-item-text">${escapeHtml(item.text)}</p>
+                            <p class="clipboard-item-text">${renderClipboardText(item.text)}</p>
                             <div class="clipboard-item-meta">
                                 ${item.tag ? `<span class="clipboard-item-tag">${escapeHtml(item.tag)}</span>` : ''}
                                 <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
@@ -1206,6 +1228,58 @@
                     </div>
                 `).join('');
             };
+
+            // #198: @file:<relpath> をサムネイル/チップに変換（メッセージあたり最大5個）
+            const renderClipboardText = (text) => {
+                const MAX_FILES = 5;
+                const IMAGE_EXTS_FOR_FILE = new Set(['png','jpg','jpeg','gif','webp','bmp']);
+                let fileCount = 0;
+                const parts = [];
+                let lastIndex = 0;
+                const re = /@file:(\S+)/g;
+                let m;
+                while ((m = re.exec(text)) !== null) {
+                    if (m.index > lastIndex) {
+                        parts.push(escapeHtml(text.substring(lastIndex, m.index)));
+                    }
+                    const path = m[1];
+                    const invalid = path.includes('..') ||
+                        path.startsWith('/') ||
+                        path.startsWith('\\') ||
+                        path.includes(':');
+                    if (invalid || fileCount >= MAX_FILES) {
+                        parts.push(escapeHtml(m[0]));
+                    } else {
+                        fileCount++;
+                        const slash = path.lastIndexOf('/');
+                        const folder = slash >= 0 ? path.substring(0, slash) : '';
+                        const filename = slash >= 0 ? path.substring(slash + 1) : path;
+                        const ext = (filename.split('.').pop() || '').toLowerCase();
+                        const isImage = IMAGE_EXTS_FOR_FILE.has(ext);
+                        const folderAttr = escapeHtml(folder);
+                        const pathParam = encodeURIComponent(path);
+                        if (isImage) {
+                            parts.push(`<img class="clipboard-file-thumb" src="/api/thumbnail-by-path?path=${pathParam}" data-folder="${folderAttr}" title="${escapeHtml(filename)}" loading="lazy">`);
+                        } else {
+                            parts.push(`<span class="clipboard-file-chip" data-folder="${folderAttr}" title="${escapeHtml(path)}">📎 ${escapeHtml(filename)}</span>`);
+                        }
+                    }
+                    lastIndex = re.lastIndex;
+                }
+                if (lastIndex < text.length) {
+                    parts.push(escapeHtml(text.substring(lastIndex)));
+                }
+                return parts.join('');
+            };
+
+            // @file リファレンスをクリックしたらファイル一覧でそのフォルダに移動
+            document.getElementById('clipboardList').addEventListener('click', (e) => {
+                const target = e.target.closest('[data-folder]');
+                if (!target) return;
+                const folder = target.dataset.folder || '';
+                navigateTo(folder);
+                document.getElementById('file-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
 
             const formatTime = (isoString) => {
                 const date = new Date(isoString);
@@ -1259,7 +1333,9 @@
                 const item = document.querySelector(`[data-id="${id}"]`);
                 if (!item) return;
 
-                const text = item.querySelector('.clipboard-item-text').textContent;
+                // 原文 (@file: マーカーを含む) を currentClipboardItems から取得
+                const original = currentClipboardItems.find(i => i.id === id);
+                const text = original ? original.text : item.querySelector('.clipboard-item-text').textContent;
 
                 try {
                     await navigator.clipboard.writeText(text);
