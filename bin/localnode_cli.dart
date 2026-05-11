@@ -24,6 +24,9 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 
+// pubspec.yaml の version と一致させる
+const String _appVersion = '1.5.0';
+
 // =============================================================================
 // エントリポイント
 // =============================================================================
@@ -1042,7 +1045,7 @@ class _CliServer {
 
   Response _infoHandler(Request _) => Response.ok(
         json.encode({
-          'version': '1.1.2',
+          'version': _appVersion,
           'name': _serverName,
           'serverName': _serverName,
           'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',

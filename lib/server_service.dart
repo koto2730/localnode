@@ -71,6 +71,7 @@ class ServerService {
   bool _verboseLogging = false;
   bool _clipboardEnabled = true;
   String _serverName = 'LocalNode';
+  String _appVersion = '';
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
@@ -139,6 +140,7 @@ class ServerService {
     if (kIsWeb) return;
     final packageInfo = await PackageInfo.fromPlatform();
     final appName = packageInfo.appName;
+    _appVersion = packageInfo.version;
     final docDir = await getApplicationDocumentsDirectory();
 
     // デフォルトパスを設定
@@ -387,7 +389,7 @@ class ServerService {
 
   Response _infoHandler(Request request) {
     final info = {
-      'version': '1.2.0',
+      'version': _appVersion,
       'name': 'LocalNode Server',
       'serverName': _serverName,
       'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
