@@ -207,6 +207,12 @@ Future<void> main(List<String> args) async {
     stdout.writeln('         -H "x-filename: myfile.txt" \\');
     stdout.writeln('         --data-binary @/path/to/myfile.txt \\');
     stdout.writeln('         $serverUrl/api/upload');
+    stdout.writeln('');
+    stdout.writeln('  curl example (clipboard):');
+    stdout.writeln('    curl -H "Authorization: Bearer $uploadToken" \\');
+    stdout.writeln('         -H "Content-Type: application/json" \\');
+    stdout.writeln('         -d \'{"text":"hello from curl"}\' \\');
+    stdout.writeln('         $serverUrl/api/clipboard');
   }
   stdout.writeln('');
   stdout.writeln('QR Code:');
@@ -967,10 +973,12 @@ class _CliServer {
           }
           if (token != null && _sessions.contains(token)) return inner(req);
 
-          // #173: Bearer トークンによるアップロード認証
+          // #173/#188: Bearer トークンによる API 認証
+          //   - POST /api/upload      … ファイルアップロード（#173）
+          //   - POST /api/clipboard   … クリップボードへの送信（#188）
           if (_uploadToken != null &&
               req.method == 'POST' &&
-              path == 'api/upload') {
+              (path == 'api/upload' || path == 'api/clipboard')) {
             final authHeader = req.headers['authorization'] ?? '';
             if (authHeader == 'Bearer $_uploadToken') return inner(req);
           }
