@@ -423,7 +423,8 @@
             color: white;
             border-color: #1a73e8;
         }
-        #viewerModeBtn {
+        #viewerModeBtn,
+        #refreshBtn {
             padding: 0.35rem 0.8rem;
             border: 1px solid #ccc;
             border-radius: 4px;
@@ -431,6 +432,7 @@
             cursor: pointer;
             font-size: 0.85rem;
         }
+        #refreshBtn { margin-right: 0.3rem; }
         #viewerModeBtn.active {
             background: #1a73e8;
             color: white;
@@ -683,7 +685,10 @@
                         <button id="sortSizeBtn">サイズ</button>
                         <button id="sortOrderBtn" title="昇順/降順">↑</button>
                     </div>
-                    <button id="viewerModeBtn">🖼 グリッド</button>
+                    <div>
+                        <button id="refreshBtn" title="更新">⟳</button>
+                        <button id="viewerModeBtn">🖼 グリッド</button>
+                    </div>
                 </div>
 
                 <div id="file-list"></div>
@@ -1563,6 +1568,9 @@
                 btn.classList.toggle('active', isViewerMode);
                 btn.textContent = isViewerMode ? '☰ リスト' : '🖼 グリッド';
                 renderView();
+            });
+            document.getElementById('refreshBtn').addEventListener('click', () => {
+                fetchFiles();
             });
 
             // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
