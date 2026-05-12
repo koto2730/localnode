@@ -594,6 +594,79 @@
         }
 
         /* 比較ビュー */
+        #text-preview-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 200;
+        }
+        #text-preview-overlay.open { display: flex; }
+        #text-preview-box {
+            background: white;
+            width: 90%;
+            max-width: 900px;
+            height: 85%;
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #text-preview-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 1rem;
+            background: #f0f2f5;
+            border-bottom: 1px solid #ddd;
+        }
+        #text-preview-title {
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #text-preview-close {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0 0.5rem;
+        }
+        #text-preview-controls {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            background: #fafafa;
+            border-bottom: 1px solid #eee;
+            flex-wrap: wrap;
+        }
+        #text-preview-controls label { font-size: 0.85rem; }
+        #text-preview-controls select,
+        #text-preview-controls input { font-size: 0.85rem; padding: 0.2rem 0.4rem; }
+        #text-preview-controls button {
+            padding: 0.3rem 0.8rem;
+            border: 1px solid #ccc;
+            background: white;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        #text-preview-body {
+            flex: 1;
+            margin: 0;
+            padding: 1rem;
+            overflow: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.85rem;
+            white-space: pre;
+            background: #fafafa;
+        }
+
         #comparison-view {
             display: none;
             position: fixed;
@@ -755,6 +828,32 @@
         <div id="lightbox-zoom-hint">スクロールでズーム • 矢印キーで移動</div>
     </div>
 
+    <!-- #193: テキストプレビュー -->
+    <div id="text-preview-overlay">
+        <div id="text-preview-box">
+            <div id="text-preview-header">
+                <span id="text-preview-title"></span>
+                <button id="text-preview-close">✕</button>
+            </div>
+            <div id="text-preview-controls">
+                <label>モード:
+                    <select id="text-preview-mode">
+                        <option value="head">先頭</option>
+                        <option value="tail">末尾</option>
+                        <option value="full">全体</option>
+                    </select>
+                </label>
+                <label>行数:
+                    <input type="number" id="text-preview-lines" value="200" min="10" max="10000" step="50">
+                </label>
+                <button id="text-preview-reload">表示</button>
+                <span id="text-preview-info" style="margin-left:auto; font-size:0.85rem; color:#666;"></span>
+                <button id="text-preview-download">⬇ 保存</button>
+            </div>
+            <pre id="text-preview-body"></pre>
+        </div>
+    </div>
+
     <!-- 比較ビュー -->
     <div id="comparison-view">
         <div id="comparison-header">
@@ -804,6 +903,20 @@
 
             const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp']);
             const isImageFile = (name) => IMAGE_EXTS.has((name.split('.').pop() || '').toLowerCase());
+
+            // #193: テキストファイル判定
+            const TEXT_EXTS = new Set([
+                'txt','md','log','json','csv','tsv','xml',
+                'yaml','yml','ini','conf','toml','env',
+                'sh','bat','ps1','py','js','ts','dart',
+                'html','htm','css','sql','rb','go','rs','java',
+                'c','h','cpp','hpp','cs','swift','kt','php',
+                'gitignore','gitattributes'
+            ]);
+            const isTextFile = (name) => {
+                const ext = (name.split('.').pop() || '').toLowerCase();
+                return TEXT_EXTS.has(ext);
+            };
 
             const renderBreadcrumb = () => {
                 const breadcrumb = document.getElementById('breadcrumb');
@@ -1494,6 +1607,14 @@
                             tdActions.appendChild(delBtn);
                         }
                         row.append(tdIcon, tdName, tdActions);
+                        // #193: テキストファイル行クリックでプレビュー
+                        if (isTextFile(item.name)) {
+                            row.style.cursor = 'pointer';
+                            row.addEventListener('click', (e) => {
+                                if (e.target.tagName === 'BUTTON') return;
+                                openTextPreview(item.id, item.name);
+                            });
+                        }
                     }
                     tbody.appendChild(row);
                 });
@@ -1571,7 +1692,11 @@
                         iconDiv.className = 'viewer-icon';
                         iconDiv.textContent = getFilePreview(item);
                         viewerItem.append(iconDiv, nameDiv);
-                        viewerItem.addEventListener('click', () => downloadFile(item.id, item.name));
+                        if (isTextFile(item.name)) {
+                            viewerItem.addEventListener('click', () => openTextPreview(item.id, item.name));
+                        } else {
+                            viewerItem.addEventListener('click', () => downloadFile(item.id, item.name));
+                        }
                     }
                     grid.appendChild(viewerItem);
                 });
@@ -1639,6 +1764,66 @@
                 if (item) downloadFile(item.id, item.name);
             });
 
+            // #193: テキストプレビュー
+            let textPreviewState = { id: null, name: null };
+            const textPreviewOverlay = document.getElementById('text-preview-overlay');
+            const textPreviewBody = document.getElementById('text-preview-body');
+            const textPreviewInfo = document.getElementById('text-preview-info');
+            const textPreviewTitle = document.getElementById('text-preview-title');
+            const textPreviewMode = document.getElementById('text-preview-mode');
+            const textPreviewLines = document.getElementById('text-preview-lines');
+
+            const loadTextPreview = async () => {
+                if (!textPreviewState.id) return;
+                textPreviewBody.textContent = '読み込み中...';
+                textPreviewInfo.textContent = '';
+                try {
+                    const mode = textPreviewMode.value;
+                    const lines = parseInt(textPreviewLines.value, 10) || 200;
+                    const url = `/api/text-preview/${textPreviewState.id}?mode=${mode}&lines=${lines}`;
+                    const res = await safeFetch(url);
+                    if (!res.ok) {
+                        const msg = await res.text();
+                        textPreviewBody.textContent = `表示できませんでした: ${msg}`;
+                        return;
+                    }
+                    const data = await res.json();
+                    textPreviewBody.textContent = data.content;
+                    const truncatedNote = data.truncated ? `（${mode === 'head' ? '先頭' : '末尾'} ${data.lines} 行のみ）` : '';
+                    textPreviewInfo.textContent = `全 ${data.totalLines} 行 ${truncatedNote}`;
+                } catch (e) {
+                    textPreviewBody.textContent = `エラー: ${e.message}`;
+                }
+            };
+
+            window.openTextPreview = (id, name) => {
+                textPreviewState = { id, name };
+                textPreviewTitle.textContent = name;
+                textPreviewMode.value = 'head';
+                textPreviewLines.value = 200;
+                textPreviewOverlay.classList.add('open');
+                document.body.style.overflow = 'hidden';
+                loadTextPreview();
+            };
+
+            const closeTextPreview = () => {
+                textPreviewOverlay.classList.remove('open');
+                document.body.style.overflow = '';
+                textPreviewBody.textContent = '';
+            };
+
+            document.getElementById('text-preview-close').addEventListener('click', closeTextPreview);
+            textPreviewOverlay.addEventListener('click', (e) => {
+                if (e.target === textPreviewOverlay) closeTextPreview();
+            });
+            document.getElementById('text-preview-reload').addEventListener('click', loadTextPreview);
+            textPreviewMode.addEventListener('change', loadTextPreview);
+            document.getElementById('text-preview-download').addEventListener('click', () => {
+                if (textPreviewState.id && textPreviewState.name) {
+                    downloadFile(textPreviewState.id, textPreviewState.name);
+                }
+            });
+
             document.getElementById('lightbox-prev').addEventListener('click', () => {
                 lightboxIndex = (lightboxIndex - 1 + lightboxImageList.length) % lightboxImageList.length;
                 lightboxScale = 1;
@@ -1660,10 +1845,13 @@
             }, { passive: false });
 
             document.addEventListener('keydown', (e) => {
-                if (!lightboxEl.classList.contains('open')) return;
-                if (e.key === 'ArrowLeft') document.getElementById('lightbox-prev').click();
-                else if (e.key === 'ArrowRight') document.getElementById('lightbox-next').click();
-                else if (e.key === 'Escape') closeLightbox();
+                if (lightboxEl.classList.contains('open')) {
+                    if (e.key === 'ArrowLeft') document.getElementById('lightbox-prev').click();
+                    else if (e.key === 'ArrowRight') document.getElementById('lightbox-next').click();
+                    else if (e.key === 'Escape') closeLightbox();
+                } else if (textPreviewOverlay.classList.contains('open')) {
+                    if (e.key === 'Escape') closeTextPreview();
+                }
             });
 
             // === ソートボタン ===

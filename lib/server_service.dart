@@ -210,6 +210,7 @@ class ServerService {
     _router.get('/api/download/<id>', _downloadHandler);
     _router.get('/api/thumbnail/<id>', _thumbnailHandler);
     _router.get('/api/thumbnail-by-path', _thumbnailByPathHandler);
+    _router.get('/api/text-preview/<id>', _textPreviewHandler);
     _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<id>', _deleteFileHandler);
     _router.post('/api/files/delete-batch', _deleteBatchHandler);
@@ -776,6 +777,64 @@ class ServerService {
     }
     final id = base64Url.encode(utf8.encode(targetPath));
     return _thumbnailHandler(request, id);
+  }
+
+  // #193: テキストファイルのインラインプレビュー（head / tail / full）
+  Future<Response> _textPreviewHandler(Request request, String id) async {
+    const maxFullBytes = 5 * 1024 * 1024; // 5MB
+    final mode = request.url.queryParameters['mode'] ?? 'head';
+    final lines = int.tryParse(request.url.queryParameters['lines'] ?? '') ?? 200;
+    if (lines < 1 || lines > 10000) {
+      return Response.badRequest(body: 'lines out of range');
+    }
+    try {
+      final decoded = utf8.decode(base64Url.decode(id));
+      String content;
+
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
+        if (bytes == null) return Response.notFound('File not found.');
+        if (mode == 'full' && bytes.length > maxFullBytes) {
+          return Response.badRequest(body: 'File too large for full preview (max 5MB).');
+        }
+        content = utf8.decode(bytes, allowMalformed: true);
+      } else {
+        final file = File(decoded);
+        if (!await file.exists()) return Response.notFound('File not found.');
+        final size = await file.length();
+        if (mode == 'full' && size > maxFullBytes) {
+          return Response.badRequest(body: 'File too large for full preview (max 5MB).');
+        }
+        content = await file.readAsString(encoding: utf8);
+      }
+
+      String result;
+      int totalLines = '\n'.allMatches(content).length + 1;
+      if (mode == 'head') {
+        final all = content.split('\n');
+        result = all.take(lines).join('\n');
+      } else if (mode == 'tail') {
+        final all = content.split('\n');
+        result = all.length > lines
+            ? all.sublist(all.length - lines).join('\n')
+            : content;
+      } else {
+        result = content;
+      }
+
+      return Response.ok(
+        json.encode({
+          'content': result,
+          'totalLines': totalLines,
+          'truncated': mode != 'full' && totalLines > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.internalServerError(body: 'Text preview failed: $e');
+    }
   }
 
   bool _isImageFile(String filename) {
