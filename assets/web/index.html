@@ -594,6 +594,59 @@
         }
 
         /* 比較ビュー */
+        #video-player-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            z-index: 200;
+        }
+        #video-player-overlay.open { display: flex; }
+        #video-player {
+            max-width: 95%;
+            max-height: 80%;
+            background: black;
+        }
+        #video-player-close {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            padding: 0.3rem 0.7rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        #video-player-meta {
+            color: white;
+            font-size: 0.85rem;
+            margin-top: 0.75rem;
+            opacity: 0.85;
+        }
+        #video-player-download {
+            margin-top: 0.5rem;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 0.9rem;
+            padding: 0.3rem 0.8rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .viewer-item video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            background: black;
+            cursor: pointer;
+        }
+
         #text-preview-overlay {
             position: fixed;
             top: 0; left: 0;
@@ -828,6 +881,14 @@
         <div id="lightbox-zoom-hint">スクロールでズーム • 矢印キーで移動</div>
     </div>
 
+    <!-- #189: 動画プレイヤー -->
+    <div id="video-player-overlay">
+        <button id="video-player-close">✕</button>
+        <video id="video-player" controls></video>
+        <div id="video-player-meta"></div>
+        <button id="video-player-download">⬇ 保存</button>
+    </div>
+
     <!-- #193: テキストプレビュー -->
     <div id="text-preview-overlay">
         <div id="text-preview-box">
@@ -903,6 +964,10 @@
 
             const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp']);
             const isImageFile = (name) => IMAGE_EXTS.has((name.split('.').pop() || '').toLowerCase());
+
+            // #189: 動画ファイル判定
+            const VIDEO_EXTS = new Set(['mp4','mov','webm','m4v','ogv']);
+            const isVideoFile = (name) => VIDEO_EXTS.has((name.split('.').pop() || '').toLowerCase());
 
             // #193: テキストファイル判定
             const TEXT_EXTS = new Set([
@@ -1607,12 +1672,18 @@
                             tdActions.appendChild(delBtn);
                         }
                         row.append(tdIcon, tdName, tdActions);
-                        // #193: テキストファイル行クリックでプレビュー
+                        // #193/#189: テキスト→プレビュー、動画→プレイヤー
                         if (isTextFile(item.name)) {
                             row.style.cursor = 'pointer';
                             row.addEventListener('click', (e) => {
                                 if (e.target.tagName === 'BUTTON') return;
                                 openTextPreview(item.id, item.name);
+                            });
+                        } else if (isVideoFile(item.name)) {
+                            row.style.cursor = 'pointer';
+                            row.addEventListener('click', (e) => {
+                                if (e.target.tagName === 'BUTTON') return;
+                                openVideoPlayer(item.id, item.name);
                             });
                         }
                     }
@@ -1686,6 +1757,19 @@
                         cmpBtn.textContent = sel ? '✓ 選択済' : '比較選択';
                         cmpBtn.addEventListener('click', () => toggleCompare(item.id, item.name));
                         viewerItem.append(img, nameDiv, cmpBtn);
+                    } else if (isVideoFile(item.name)) {
+                        // #189: ファーストフレームをサムネ表示、クリックでプレイヤー
+                        viewerItem.className = 'viewer-item';
+                        const video = document.createElement('video');
+                        video.src = `/api/download/${item.id}`;
+                        video.preload = 'metadata';
+                        video.muted = true;
+                        video.playsInline = true;
+                        video.addEventListener('loadedmetadata', () => {
+                            try { video.currentTime = 0.1; } catch (_) {}
+                        });
+                        video.addEventListener('click', () => openVideoPlayer(item.id, item.name));
+                        viewerItem.append(video, nameDiv);
                     } else {
                         viewerItem.className = 'viewer-item';
                         const iconDiv = document.createElement('div');
@@ -1762,6 +1846,39 @@
             document.getElementById('lightbox-save').addEventListener('click', () => {
                 const item = lightboxImageList[lightboxIndex];
                 if (item) downloadFile(item.id, item.name);
+            });
+
+            // #189: 動画プレイヤー
+            let videoPlayerState = { id: null, name: null };
+            const videoPlayerOverlay = document.getElementById('video-player-overlay');
+            const videoPlayerEl = document.getElementById('video-player');
+            const videoPlayerMeta = document.getElementById('video-player-meta');
+
+            window.openVideoPlayer = (id, name) => {
+                videoPlayerState = { id, name };
+                videoPlayerEl.src = `/api/download/${id}`;
+                videoPlayerMeta.textContent = name;
+                videoPlayerOverlay.classList.add('open');
+                document.body.style.overflow = 'hidden';
+                videoPlayerEl.play().catch(() => {});
+            };
+
+            const closeVideoPlayer = () => {
+                videoPlayerEl.pause();
+                videoPlayerEl.removeAttribute('src');
+                videoPlayerEl.load();
+                videoPlayerOverlay.classList.remove('open');
+                document.body.style.overflow = '';
+            };
+
+            document.getElementById('video-player-close').addEventListener('click', closeVideoPlayer);
+            videoPlayerOverlay.addEventListener('click', (e) => {
+                if (e.target === videoPlayerOverlay) closeVideoPlayer();
+            });
+            document.getElementById('video-player-download').addEventListener('click', () => {
+                if (videoPlayerState.id && videoPlayerState.name) {
+                    downloadFile(videoPlayerState.id, videoPlayerState.name);
+                }
             });
 
             // #193: テキストプレビュー
@@ -1851,6 +1968,8 @@
                     else if (e.key === 'Escape') closeLightbox();
                 } else if (textPreviewOverlay.classList.contains('open')) {
                     if (e.key === 'Escape') closeTextPreview();
+                } else if (videoPlayerOverlay.classList.contains('open')) {
+                    if (e.key === 'Escape') closeVideoPlayer();
                 }
             });
 
