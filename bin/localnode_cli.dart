@@ -736,6 +736,7 @@ class _CliServer {
       ..get('/api/download/<id>', _downloadHandler)
       ..get('/api/thumbnail/<id>', _thumbnailHandler)
       ..get('/api/thumbnail-by-path', _thumbnailByPathHandler)
+      ..get('/api/text-preview/<id>', _textPreviewHandler)
       ..get('/api/download-all', _downloadAllHandler)
       ..delete('/api/files/<id>', _deleteFileHandler)
       ..post('/api/files/delete-batch', _deleteBatchHandler)
@@ -1258,6 +1259,52 @@ class _CliServer {
           .change(headers: {'Content-Type': _getMimeType(p.basename(filePath))});
     } catch (e) {
       return Response.internalServerError(body: 'Download failed: $e');
+    }
+  }
+
+  // #193: テキストファイルのインラインプレビュー
+  Future<Response> _textPreviewHandler(Request req, String id) async {
+    const maxFullBytes = 5 * 1024 * 1024;
+    final mode = req.url.queryParameters['mode'] ?? 'head';
+    final lines = int.tryParse(req.url.queryParameters['lines'] ?? '') ?? 200;
+    if (lines < 1 || lines > 10000) {
+      return Response.badRequest(body: 'lines out of range');
+    }
+    try {
+      final filePath = utf8.decode(base64Url.decode(id));
+      final file = File(filePath);
+      if (!await file.exists()) return Response.notFound('File not found.');
+      final size = await file.length();
+      if (mode == 'full' && size > maxFullBytes) {
+        return Response.badRequest(body: 'File too large for full preview (max 5MB).');
+      }
+      final content = await file.readAsString(encoding: utf8);
+
+      String result;
+      final totalLines = '\n'.allMatches(content).length + 1;
+      if (mode == 'head') {
+        result = content.split('\n').take(lines).join('\n');
+      } else if (mode == 'tail') {
+        final all = content.split('\n');
+        result = all.length > lines
+            ? all.sublist(all.length - lines).join('\n')
+            : content;
+      } else {
+        result = content;
+      }
+
+      return Response.ok(
+        json.encode({
+          'content': result,
+          'totalLines': totalLines,
+          'truncated': mode != 'full' && totalLines > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.internalServerError(body: 'Text preview failed: $e');
     }
   }
 
