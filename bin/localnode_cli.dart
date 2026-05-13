@@ -1266,38 +1266,84 @@ class _CliServer {
   Future<Response> _textPreviewHandler(Request req, String id) async {
     const maxFullBytes = 5 * 1024 * 1024;
     final mode = req.url.queryParameters['mode'] ?? 'head';
+    if (mode != 'head' && mode != 'tail' && mode != 'full') {
+      return Response.badRequest(body: 'mode must be head|tail|full');
+    }
     final lines = int.tryParse(req.url.queryParameters['lines'] ?? '') ?? 200;
     if (lines < 1 || lines > 10000) {
       return Response.badRequest(body: 'lines out of range');
     }
     try {
       final filePath = utf8.decode(base64Url.decode(id));
+
+      // パストラバーサル検証 (Copilot #199 review)
+      if (await FileSystemEntity.isDirectory(filePath)) {
+        return Response.badRequest(body: 'Target is a directory.');
+      }
+      final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
       final file = File(filePath);
       if (!await file.exists()) return Response.notFound('File not found.');
+      final canonicalFile = await file.resolveSymbolicLinks();
+      if (!p.isWithin(canonicalRoot, canonicalFile)) {
+        return Response.forbidden('Access denied');
+      }
+
+      if (mode == 'head' || mode == 'tail') {
+        // ファイル全体をメモリに乗せず、行をストリームで処理
+        final stream = file
+            .openRead()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter());
+        if (mode == 'head') {
+          final collected = <String>[];
+          var totalLines = 0;
+          await for (final line in stream) {
+            totalLines++;
+            if (collected.length < lines) collected.add(line);
+          }
+          return Response.ok(
+            json.encode({
+              'content': collected.join('\n'),
+              'totalLines': totalLines,
+              'truncated': totalLines > lines,
+              'mode': mode,
+              'lines': lines,
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+        } else {
+          final buf = <String>[];
+          var totalLines = 0;
+          await for (final line in stream) {
+            totalLines++;
+            buf.add(line);
+            if (buf.length > lines) buf.removeAt(0);
+          }
+          return Response.ok(
+            json.encode({
+              'content': buf.join('\n'),
+              'totalLines': totalLines,
+              'truncated': totalLines > lines,
+              'mode': mode,
+              'lines': lines,
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+      }
+
+      // mode == 'full'
       final size = await file.length();
-      if (mode == 'full' && size > maxFullBytes) {
+      if (size > maxFullBytes) {
         return Response.badRequest(body: 'File too large for full preview (max 5MB).');
       }
       final content = await file.readAsString(encoding: utf8);
-
-      String result;
       final totalLines = '\n'.allMatches(content).length + 1;
-      if (mode == 'head') {
-        result = content.split('\n').take(lines).join('\n');
-      } else if (mode == 'tail') {
-        final all = content.split('\n');
-        result = all.length > lines
-            ? all.sublist(all.length - lines).join('\n')
-            : content;
-      } else {
-        result = content;
-      }
-
       return Response.ok(
         json.encode({
-          'content': result,
+          'content': content,
           'totalLines': totalLines,
-          'truncated': mode != 'full' && totalLines > lines,
+          'truncated': false,
           'mode': mode,
           'lines': lines,
         }),
