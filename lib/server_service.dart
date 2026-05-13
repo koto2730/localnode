@@ -205,6 +205,7 @@ class ServerService {
     _router.post('/api/auth', _authHandler);
     _router.get('/api/health', _healthHandler);
     _router.get('/api/info', _infoHandler);
+    _router.get('/api/check-auth', _checkAuthHandler);
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
     _router.get('/api/download/<id>', _downloadHandler);
@@ -386,6 +387,14 @@ class ServerService {
   /// ヘルスチェック: 認証不要。クライアントがサーバ再起動を検知するために使用
   Response _healthHandler(Request request) {
     return Response.ok(json.encode({'startedAt': _startedAt}),
+        headers: {'Content-Type': 'application/json'});
+  }
+
+  // #201: 認証チェック専用エンドポイント。
+  // 認証ミドルウェアがセッション未確立時に 401 を返すので、
+  // 200 で来ればセッションは有効。downloadFile の事前チェック用。
+  Response _checkAuthHandler(Request request) {
+    return Response.ok(json.encode({'ok': true}),
         headers: {'Content-Type': 'application/json'});
   }
 

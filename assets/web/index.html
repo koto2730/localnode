@@ -1229,7 +1229,14 @@
                 }
             });
 
-            window.downloadFile = (id, filename) => {
+            window.downloadFile = async (id, filename) => {
+                // #201: 直接 anchor 起動だとセッション期限切れ時に 401 JSON が
+                // ダウンロードされてしまうので、事前に check-auth で確認する。
+                try {
+                    await safeFetch('/api/check-auth');
+                } catch (_) {
+                    return; // safeFetch が 401 を検知して PIN モーダルを表示済み
+                }
                 // #194: 直接 <a href> でブラウザの DL マネージャに任せ、
                 // ストリーミングと進捗表示を有効にする
                 const a = document.createElement('a');
