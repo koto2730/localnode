@@ -782,51 +782,72 @@ class ServerService {
   // #193: テキストファイルのインラインプレビュー（head / tail / full）
   Future<Response> _textPreviewHandler(Request request, String id) async {
     const maxFullBytes = 5 * 1024 * 1024; // 5MB
-    final mode = request.url.queryParameters['mode'] ?? 'head';
+    final modeRaw = request.url.queryParameters['mode'] ?? 'head';
+    if (modeRaw != 'head' && modeRaw != 'tail' && modeRaw != 'full') {
+      return Response.badRequest(body: 'mode must be head|tail|full');
+    }
+    final mode = modeRaw;
     final lines = int.tryParse(request.url.queryParameters['lines'] ?? '') ?? 200;
     if (lines < 1 || lines > 10000) {
       return Response.badRequest(body: 'lines out of range');
     }
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
+      return Response.internalServerError(body: 'Server directory not initialized.');
+    }
     try {
       final decoded = utf8.decode(base64Url.decode(id));
-      String content;
 
+      // パストラバーサル検証 (Copilot #199 review)
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        if (!decoded.startsWith(_safDirectoryUri!)) {
+          return Response.forbidden('Access denied');
+        }
+      } else {
+        if (await FileSystemEntity.isDirectory(decoded)) {
+          return Response.badRequest(body: 'Target is a directory.');
+        }
+        final canonicalRoot =
+            await Directory(storagePath).resolveSymbolicLinks();
+        final target = File(decoded);
+        if (!await target.exists()) {
+          return Response.notFound('File not found.');
+        }
+        final canonicalFile = await target.resolveSymbolicLinks();
+        if (!p.isWithin(canonicalRoot, canonicalFile)) {
+          return Response.forbidden('Access denied');
+        }
+      }
+
+      // head/tail は全読みせず、行数だけ集める（バウンドメモリ）
+      if (mode == 'head' || mode == 'tail') {
+        return _streamTextLines(decoded, mode, lines);
+      }
+
+      // mode == 'full' は 5MB キャップ
+      String content;
+      int totalLines;
       if (Platform.isAndroid && _safDirectoryUri != null) {
         final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
         if (bytes == null) return Response.notFound('File not found.');
-        if (mode == 'full' && bytes.length > maxFullBytes) {
+        if (bytes.length > maxFullBytes) {
           return Response.badRequest(body: 'File too large for full preview (max 5MB).');
         }
         content = utf8.decode(bytes, allowMalformed: true);
       } else {
         final file = File(decoded);
-        if (!await file.exists()) return Response.notFound('File not found.');
         final size = await file.length();
-        if (mode == 'full' && size > maxFullBytes) {
+        if (size > maxFullBytes) {
           return Response.badRequest(body: 'File too large for full preview (max 5MB).');
         }
         content = await file.readAsString(encoding: utf8);
       }
-
-      String result;
-      int totalLines = '\n'.allMatches(content).length + 1;
-      if (mode == 'head') {
-        final all = content.split('\n');
-        result = all.take(lines).join('\n');
-      } else if (mode == 'tail') {
-        final all = content.split('\n');
-        result = all.length > lines
-            ? all.sublist(all.length - lines).join('\n')
-            : content;
-      } else {
-        result = content;
-      }
-
+      totalLines = '\n'.allMatches(content).length + 1;
       return Response.ok(
         json.encode({
-          'content': result,
+          'content': content,
           'totalLines': totalLines,
-          'truncated': mode != 'full' && totalLines > lines,
+          'truncated': false,
           'mode': mode,
           'lines': lines,
         }),
@@ -834,6 +855,74 @@ class ServerService {
       );
     } catch (e) {
       return Response.internalServerError(body: 'Text preview failed: $e');
+    }
+  }
+
+  // head/tail のストリーミング読み込み（ファイル全体をメモリに乗せない）
+  Future<Response> _streamTextLines(String filePath, String mode, int lines) async {
+    // SAF はストリーミング読み込みが面倒なので、SAFの場合は読み切ってから head/tail
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      final bytes = await _safPlatform.invokeMethod('readFile', {'uri': filePath});
+      if (bytes == null) return Response.notFound('File not found.');
+      final content = utf8.decode(bytes, allowMalformed: true);
+      final all = content.split('\n');
+      final result = mode == 'head'
+          ? all.take(lines).join('\n')
+          : (all.length > lines
+              ? all.sublist(all.length - lines).join('\n')
+              : content);
+      return Response.ok(
+        json.encode({
+          'content': result,
+          'totalLines': all.length,
+          'truncated': all.length > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    final file = File(filePath);
+    final stream = file
+        .openRead()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    if (mode == 'head') {
+      final collected = <String>[];
+      var totalLines = 0;
+      await for (final line in stream) {
+        totalLines++;
+        if (collected.length < lines) collected.add(line);
+      }
+      return Response.ok(
+        json.encode({
+          'content': collected.join('\n'),
+          'totalLines': totalLines,
+          'truncated': totalLines > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } else {
+      // tail: 末尾 N 行を循環バッファで保持
+      final buf = <String>[];
+      var totalLines = 0;
+      await for (final line in stream) {
+        totalLines++;
+        buf.add(line);
+        if (buf.length > lines) buf.removeAt(0);
+      }
+      return Response.ok(
+        json.encode({
+          'content': buf.join('\n'),
+          'totalLines': totalLines,
+          'truncated': totalLines > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
     }
   }
 
@@ -974,7 +1063,11 @@ class ServerService {
     // #195: ZIP を一時ファイルへストリーミングして書き出し、レスポンスとして
     // 流す。これによりサーバ側でも巨大ファイル × 多数を扱える。
     final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
-    final zipPath = p.join(tempDir.path, 'localnode_files.zip');
+    final zipPath = p.join(tempDir.path, 'archive.zip');
+    // ステージング用サブディレクトリ (Copilot #199 review):
+    // ユーザのファイル名と zip 出力名/パス・パス区切り文字の衝突を避ける
+    final stagingDir =
+        await Directory(p.join(tempDir.path, 'staging')).create();
 
     try {
       final zipEncoder = ZipFileEncoder()..create(zipPath);
@@ -990,15 +1083,18 @@ class ServerService {
             return Response.internalServerError(
                 body: 'Failed to list files for zipping.');
           }
+          int stagingSeq = 0;
           for (final fileInfo in files) {
             final String fileUri = fileInfo['uri'];
             final String filename = fileInfo['name'];
             final Uint8List? bytes = await _safPlatform
                 .invokeMethod('readFile', {'uri': fileUri});
             if (bytes != null) {
-              // SAF はバイト列でしか取れないため、一時ファイルへ書いてから
-              // ZipFileEncoder に渡してストリーム圧縮
-              final tmpFile = File(p.join(tempDir.path, filename));
+              // SAF はバイト列でしか取れないため、ステージングディレクトリへ
+              // ユニーク名 (連番) で書いて ZipFileEncoder に渡す。
+              // ZIP 内の entry 名はオリジナル filename を使用する。
+              final tmpFile = File(p.join(stagingDir.path, '$stagingSeq.bin'));
+              stagingSeq++;
               await tmpFile.writeAsBytes(bytes, flush: true);
               await zipEncoder.addFile(tmpFile, filename);
               await tmpFile.delete();
