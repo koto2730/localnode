@@ -581,7 +581,7 @@ class ServerService {
 
     try {
       final decoded = utf8.decode(base64Url.decode(id));
-      
+
       // AndroidでSAF URIが設定されている場合
       if (Platform.isAndroid && _safDirectoryUri != null) {
         final fileUri = decoded;
@@ -590,12 +590,12 @@ class ServerService {
         if (bytes == null) {
           return Response.internalServerError(body: 'Failed to read file.');
         }
-        
+
         final filename = Uri.parse(fileUri).pathSegments.last;
         final mimeType = _getMimeType(filename);
-        return Response.ok(bytes, headers: {'Content-Type': mimeType});
-
-      } 
+        // #200: SAF はメモリ上で範囲スライス（大ファイルは非効率だが互換のため）
+        return _maybeRangeResponseFromBytes(request, bytes, mimeType);
+      }
       // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
       else {
         final filePath = decoded;
@@ -619,12 +619,99 @@ class ServerService {
           return Response.notFound('File not found: $filePath');
         }
         final mimeType = _getMimeType(p.basename(filePath));
-        return Response.ok(file.openRead())
-            .change(headers: {'Content-Type': mimeType});
+        return _maybeRangeResponseFromFile(request, file, mimeType);
       }
     } catch (e) {
       return Response.internalServerError(body: "Failed to process download request: $e");
     }
+  }
+
+  // #200: 単一 Range リクエストの解析。"bytes=start-end" の形式のみ対応。
+  // 戻り値: 範囲 (start, end inclusive) または null（Range ヘッダなし）。
+  // 無効な Range の場合は throw RangeError。
+  ({int start, int end})? _parseRange(String? header, int fileLength) {
+    if (header == null || header.isEmpty) return null;
+    if (!header.startsWith('bytes=')) throw RangeError('Invalid range unit');
+    final spec = header.substring('bytes='.length).trim();
+    if (spec.contains(',')) {
+      // multipart range は未対応 → 全体を返すよう null を返す
+      return null;
+    }
+    final dash = spec.indexOf('-');
+    if (dash < 0) throw RangeError('Invalid range spec');
+    final startStr = spec.substring(0, dash);
+    final endStr = spec.substring(dash + 1);
+    int start, end;
+    if (startStr.isEmpty) {
+      // "bytes=-N" : 末尾 N バイト
+      final suffix = int.tryParse(endStr);
+      if (suffix == null || suffix <= 0) throw RangeError('Invalid suffix');
+      start = (fileLength - suffix).clamp(0, fileLength);
+      end = fileLength - 1;
+    } else {
+      final s = int.tryParse(startStr);
+      if (s == null || s < 0) throw RangeError('Invalid start');
+      start = s;
+      end = endStr.isEmpty ? fileLength - 1 : (int.tryParse(endStr) ?? -1);
+      if (end < 0) throw RangeError('Invalid end');
+      if (end >= fileLength) end = fileLength - 1;
+    }
+    if (start > end || start >= fileLength) throw RangeError('Unsatisfiable');
+    return (start: start, end: end);
+  }
+
+  Future<Response> _maybeRangeResponseFromFile(
+      Request request, File file, String mimeType) async {
+    final length = await file.length();
+    final rangeHeader = request.headers['range'];
+    ({int start, int end})? range;
+    try {
+      range = _parseRange(rangeHeader, length);
+    } on RangeError {
+      return Response(416, body: 'Requested Range Not Satisfiable',
+          headers: {'Content-Range': 'bytes */$length'});
+    }
+    if (range == null) {
+      return Response.ok(file.openRead(), headers: {
+        'Content-Type': mimeType,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': '$length',
+      });
+    }
+    final contentLength = range.end - range.start + 1;
+    return Response(206, body: file.openRead(range.start, range.end + 1),
+        headers: {
+          'Content-Type': mimeType,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': '$contentLength',
+          'Content-Range': 'bytes ${range.start}-${range.end}/$length',
+        });
+  }
+
+  Response _maybeRangeResponseFromBytes(
+      Request request, Uint8List bytes, String mimeType) {
+    final rangeHeader = request.headers['range'];
+    ({int start, int end})? range;
+    try {
+      range = _parseRange(rangeHeader, bytes.length);
+    } on RangeError {
+      return Response(416, body: 'Requested Range Not Satisfiable',
+          headers: {'Content-Range': 'bytes */${bytes.length}'});
+    }
+    if (range == null) {
+      return Response.ok(bytes, headers: {
+        'Content-Type': mimeType,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': '${bytes.length}',
+      });
+    }
+    final slice = bytes.sublist(range.start, range.end + 1);
+    return Response(206, body: slice, headers: {
+      'Content-Type': mimeType,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': '${slice.length}',
+      'Content-Range': 'bytes ${range.start}-${range.end}/${bytes.length}',
+    });
   }
 
   // Android SAF URI から表示用パスを生成するヘルパー

@@ -1255,11 +1255,63 @@ class _CliServer {
       final filePath = utf8.decode(base64Url.decode(id));
       final file = File(filePath);
       if (!await file.exists()) return Response.notFound('File not found.');
-      return Response.ok(file.openRead())
-          .change(headers: {'Content-Type': _getMimeType(p.basename(filePath))});
+      final mimeType = _getMimeType(p.basename(filePath));
+      final length = await file.length();
+      // #200: Range リクエスト対応 (動画サムネ生成等で部分取得を可能に)
+      final rangeHeader = req.headers['range'];
+      ({int start, int end})? range;
+      try {
+        range = _parseHttpRange(rangeHeader, length);
+      } on RangeError {
+        return Response(416, body: 'Requested Range Not Satisfiable',
+            headers: {'Content-Range': 'bytes */$length'});
+      }
+      if (range == null) {
+        return Response.ok(file.openRead(), headers: {
+          'Content-Type': mimeType,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': '$length',
+        });
+      }
+      final contentLength = range.end - range.start + 1;
+      return Response(206, body: file.openRead(range.start, range.end + 1),
+          headers: {
+            'Content-Type': mimeType,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': '$contentLength',
+            'Content-Range': 'bytes ${range.start}-${range.end}/$length',
+          });
     } catch (e) {
       return Response.internalServerError(body: 'Download failed: $e');
     }
+  }
+
+  // #200: Range ヘッダ解析（単一範囲のみ）
+  ({int start, int end})? _parseHttpRange(String? header, int fileLength) {
+    if (header == null || header.isEmpty) return null;
+    if (!header.startsWith('bytes=')) throw RangeError('Invalid range unit');
+    final spec = header.substring('bytes='.length).trim();
+    if (spec.contains(',')) return null;
+    final dash = spec.indexOf('-');
+    if (dash < 0) throw RangeError('Invalid range spec');
+    final startStr = spec.substring(0, dash);
+    final endStr = spec.substring(dash + 1);
+    int start, end;
+    if (startStr.isEmpty) {
+      final suffix = int.tryParse(endStr);
+      if (suffix == null || suffix <= 0) throw RangeError('Invalid suffix');
+      start = (fileLength - suffix).clamp(0, fileLength);
+      end = fileLength - 1;
+    } else {
+      final s = int.tryParse(startStr);
+      if (s == null || s < 0) throw RangeError('Invalid start');
+      start = s;
+      end = endStr.isEmpty ? fileLength - 1 : (int.tryParse(endStr) ?? -1);
+      if (end < 0) throw RangeError('Invalid end');
+      if (end >= fileLength) end = fileLength - 1;
+    }
+    if (start > end || start >= fileLength) throw RangeError('Unsatisfiable');
+    return (start: start, end: end);
   }
 
   // #193: テキストファイルのインラインプレビュー
