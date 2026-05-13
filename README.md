@@ -100,8 +100,8 @@ localnode --cli [options]
 | `--https-key` | Path to TLS private key file (key.pem) |
 | `--post-action` | Script to execute on matching uploads: `pattern=script` (repeatable, glob pattern) |
 | `--mention-action` | Register clipboard mention command: `alias=script` (repeatable) |
-| `--token` | Fixed upload token for Bearer auth (random if not specified) |
-| `--no-token` | Disable token-based upload authentication |
+| `--token` | Fixed Bearer token for upload and clipboard POST (random if not specified) |
+| `--no-token` | Disable token-based authentication for upload and clipboard POST |
 | `--no-pin` | Disable PIN authentication |
 | `--no-clipboard` | Hide clipboard content from console output |
 | `--verbose`, `-v` | Enable verbose request logging |

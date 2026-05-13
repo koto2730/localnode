@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:math';
 
 import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -70,6 +71,7 @@ class ServerService {
   bool _verboseLogging = false;
   bool _clipboardEnabled = true;
   String _serverName = 'LocalNode';
+  String _appVersion = '';
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
@@ -138,6 +140,7 @@ class ServerService {
     if (kIsWeb) return;
     final packageInfo = await PackageInfo.fromPlatform();
     final appName = packageInfo.appName;
+    _appVersion = packageInfo.version;
     final docDir = await getApplicationDocumentsDirectory();
 
     // デフォルトパスを設定
@@ -202,13 +205,16 @@ class ServerService {
     _router.post('/api/auth', _authHandler);
     _router.get('/api/health', _healthHandler);
     _router.get('/api/info', _infoHandler);
+    _router.get('/api/check-auth', _checkAuthHandler);
     _router.get('/api/files', _getFilesHandler);
     _router.post('/api/upload', _uploadHandler);
     _router.get('/api/download/<id>', _downloadHandler);
     _router.get('/api/thumbnail/<id>', _thumbnailHandler);
+    _router.get('/api/thumbnail-by-path', _thumbnailByPathHandler);
+    _router.get('/api/text-preview/<id>', _textPreviewHandler);
     _router.get('/api/download-all', _downloadAllHandler);
     _router.delete('/api/files/<id>', _deleteFileHandler);
-    _router.delete('/api/files', _deleteAllFilesHandler);
+    _router.post('/api/files/delete-batch', _deleteBatchHandler);
     // クリップボード共有API
     _router.get('/api/clipboard', _getClipboardHandler);
     _router.post('/api/clipboard', _postClipboardHandler);
@@ -384,9 +390,17 @@ class ServerService {
         headers: {'Content-Type': 'application/json'});
   }
 
+  // #201: 認証チェック専用エンドポイント。
+  // 認証ミドルウェアがセッション未確立時に 401 を返すので、
+  // 200 で来ればセッションは有効。downloadFile の事前チェック用。
+  Response _checkAuthHandler(Request request) {
+    return Response.ok(json.encode({'ok': true}),
+        headers: {'Content-Type': 'application/json'});
+  }
+
   Response _infoHandler(Request request) {
     final info = {
-      'version': '1.2.0',
+      'version': _appVersion,
       'name': 'LocalNode Server',
       'serverName': _serverName,
       'operationMode': _operationMode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal',
@@ -576,7 +590,7 @@ class ServerService {
 
     try {
       final decoded = utf8.decode(base64Url.decode(id));
-      
+
       // AndroidでSAF URIが設定されている場合
       if (Platform.isAndroid && _safDirectoryUri != null) {
         final fileUri = decoded;
@@ -585,12 +599,12 @@ class ServerService {
         if (bytes == null) {
           return Response.internalServerError(body: 'Failed to read file.');
         }
-        
+
         final filename = Uri.parse(fileUri).pathSegments.last;
         final mimeType = _getMimeType(filename);
-        return Response.ok(bytes, headers: {'Content-Type': mimeType});
-
-      } 
+        // #200: SAF はメモリ上で範囲スライス（大ファイルは非効率だが互換のため）
+        return _maybeRangeResponseFromBytes(request, bytes, mimeType);
+      }
       // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
       else {
         final filePath = decoded;
@@ -605,41 +619,108 @@ class ServerService {
             !p.isWithin(canonicalRoot, canonicalFile)) {
           return Response.forbidden('Access denied');
         }
-        // フォルダの場合はZIPで返す (#179)
+        // #191: フォルダは個別ダウンロード対象外（download-all のみ使用）
         if (await FileSystemEntity.isDirectory(filePath)) {
-          final dirName = Uri.encodeComponent(p.basename(filePath))
-              .replaceAll("'", '%27');
-          final encoder = ZipEncoder();
-          final archive = Archive();
-          final dir = Directory(filePath);
-          final files =
-              dir.listSync(recursive: true, followLinks: false).whereType<File>();
-          for (final file in files) {
-            final bytes = await file.readAsBytes();
-            final rel = p.relative(file.path, from: filePath);
-            archive.addFile(ArchiveFile(rel, bytes.length, bytes));
-          }
-          final zipData = encoder.encode(archive);
-          if (zipData == null) {
-            return Response.internalServerError(body: 'Failed to create zip.');
-          }
-          return Response.ok(zipData, headers: {
-            'Content-Type': 'application/zip',
-            'Content-Disposition':
-                "attachment; filename*=UTF-8''$dirName.zip",
-          });
+          return Response.notFound('Directory download is not supported.');
         }
         final file = File(filePath);
         if (!await file.exists()) {
           return Response.notFound('File not found: $filePath');
         }
         final mimeType = _getMimeType(p.basename(filePath));
-        return Response.ok(file.openRead())
-            .change(headers: {'Content-Type': mimeType});
+        return _maybeRangeResponseFromFile(request, file, mimeType);
       }
     } catch (e) {
       return Response.internalServerError(body: "Failed to process download request: $e");
     }
+  }
+
+  // #200: 単一 Range リクエストの解析。"bytes=start-end" の形式のみ対応。
+  // 戻り値: 範囲 (start, end inclusive) または null（Range ヘッダなし）。
+  // 無効な Range の場合は throw RangeError。
+  ({int start, int end})? _parseRange(String? header, int fileLength) {
+    if (header == null || header.isEmpty) return null;
+    if (!header.startsWith('bytes=')) throw RangeError('Invalid range unit');
+    final spec = header.substring('bytes='.length).trim();
+    if (spec.contains(',')) {
+      // multipart range は未対応 → 全体を返すよう null を返す
+      return null;
+    }
+    final dash = spec.indexOf('-');
+    if (dash < 0) throw RangeError('Invalid range spec');
+    final startStr = spec.substring(0, dash);
+    final endStr = spec.substring(dash + 1);
+    int start, end;
+    if (startStr.isEmpty) {
+      // "bytes=-N" : 末尾 N バイト
+      final suffix = int.tryParse(endStr);
+      if (suffix == null || suffix <= 0) throw RangeError('Invalid suffix');
+      start = (fileLength - suffix).clamp(0, fileLength);
+      end = fileLength - 1;
+    } else {
+      final s = int.tryParse(startStr);
+      if (s == null || s < 0) throw RangeError('Invalid start');
+      start = s;
+      end = endStr.isEmpty ? fileLength - 1 : (int.tryParse(endStr) ?? -1);
+      if (end < 0) throw RangeError('Invalid end');
+      if (end >= fileLength) end = fileLength - 1;
+    }
+    if (start > end || start >= fileLength) throw RangeError('Unsatisfiable');
+    return (start: start, end: end);
+  }
+
+  Future<Response> _maybeRangeResponseFromFile(
+      Request request, File file, String mimeType) async {
+    final length = await file.length();
+    final rangeHeader = request.headers['range'];
+    ({int start, int end})? range;
+    try {
+      range = _parseRange(rangeHeader, length);
+    } on RangeError {
+      return Response(416, body: 'Requested Range Not Satisfiable',
+          headers: {'Content-Range': 'bytes */$length'});
+    }
+    if (range == null) {
+      return Response.ok(file.openRead(), headers: {
+        'Content-Type': mimeType,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': '$length',
+      });
+    }
+    final contentLength = range.end - range.start + 1;
+    return Response(206, body: file.openRead(range.start, range.end + 1),
+        headers: {
+          'Content-Type': mimeType,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': '$contentLength',
+          'Content-Range': 'bytes ${range.start}-${range.end}/$length',
+        });
+  }
+
+  Response _maybeRangeResponseFromBytes(
+      Request request, Uint8List bytes, String mimeType) {
+    final rangeHeader = request.headers['range'];
+    ({int start, int end})? range;
+    try {
+      range = _parseRange(rangeHeader, bytes.length);
+    } on RangeError {
+      return Response(416, body: 'Requested Range Not Satisfiable',
+          headers: {'Content-Range': 'bytes */${bytes.length}'});
+    }
+    if (range == null) {
+      return Response.ok(bytes, headers: {
+        'Content-Type': mimeType,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': '${bytes.length}',
+      });
+    }
+    final slice = bytes.sublist(range.start, range.end + 1);
+    return Response(206, body: slice, headers: {
+      'Content-Type': mimeType,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': '${slice.length}',
+      'Content-Range': 'bytes ${range.start}-${range.end}/${bytes.length}',
+    });
   }
 
   // Android SAF URI から表示用パスを生成するヘルパー
@@ -762,6 +843,185 @@ class ServerService {
     }
   }
   
+  // #198: @file:<relpath> 用のパスベースサムネイル取得
+  Future<Response> _thumbnailByPathHandler(Request request) async {
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
+      return Response.internalServerError(body: 'Server directory not initialized.');
+    }
+    final relPath = request.url.queryParameters['path'] ?? '';
+    if (relPath.isEmpty ||
+        relPath.contains('..') ||
+        relPath.startsWith('/') ||
+        relPath.startsWith(r'\') ||
+        relPath.contains(':')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      return Response.notFound('Path-based access not supported on Android SAF.');
+    }
+    final canonicalRoot =
+        await Directory(storagePath).resolveSymbolicLinks();
+    final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+    final file = File(targetPath);
+    if (!await file.exists()) {
+      return Response.notFound('File not found.');
+    }
+    final canonicalTarget = await file.resolveSymbolicLinks();
+    if (!p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
+    }
+    final id = base64Url.encode(utf8.encode(targetPath));
+    return _thumbnailHandler(request, id);
+  }
+
+  // #193: テキストファイルのインラインプレビュー（head / tail / full）
+  Future<Response> _textPreviewHandler(Request request, String id) async {
+    const maxFullBytes = 5 * 1024 * 1024; // 5MB
+    final modeRaw = request.url.queryParameters['mode'] ?? 'head';
+    if (modeRaw != 'head' && modeRaw != 'tail' && modeRaw != 'full') {
+      return Response.badRequest(body: 'mode must be head|tail|full');
+    }
+    final mode = modeRaw;
+    final lines = int.tryParse(request.url.queryParameters['lines'] ?? '') ?? 200;
+    if (lines < 1 || lines > 10000) {
+      return Response.badRequest(body: 'lines out of range');
+    }
+    final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
+    if (storagePath == null) {
+      return Response.internalServerError(body: 'Server directory not initialized.');
+    }
+    try {
+      final decoded = utf8.decode(base64Url.decode(id));
+
+      // パストラバーサル検証 (Copilot #199 review)
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        if (!decoded.startsWith(_safDirectoryUri!)) {
+          return Response.forbidden('Access denied');
+        }
+      } else {
+        if (await FileSystemEntity.isDirectory(decoded)) {
+          return Response.badRequest(body: 'Target is a directory.');
+        }
+        final canonicalRoot =
+            await Directory(storagePath).resolveSymbolicLinks();
+        final target = File(decoded);
+        if (!await target.exists()) {
+          return Response.notFound('File not found.');
+        }
+        final canonicalFile = await target.resolveSymbolicLinks();
+        if (!p.isWithin(canonicalRoot, canonicalFile)) {
+          return Response.forbidden('Access denied');
+        }
+      }
+
+      // head/tail は全読みせず、行数だけ集める（バウンドメモリ）
+      if (mode == 'head' || mode == 'tail') {
+        return _streamTextLines(decoded, mode, lines);
+      }
+
+      // mode == 'full' は 5MB キャップ
+      String content;
+      int totalLines;
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
+        if (bytes == null) return Response.notFound('File not found.');
+        if (bytes.length > maxFullBytes) {
+          return Response.badRequest(body: 'File too large for full preview (max 5MB).');
+        }
+        content = utf8.decode(bytes, allowMalformed: true);
+      } else {
+        final file = File(decoded);
+        final size = await file.length();
+        if (size > maxFullBytes) {
+          return Response.badRequest(body: 'File too large for full preview (max 5MB).');
+        }
+        content = await file.readAsString(encoding: utf8);
+      }
+      totalLines = '\n'.allMatches(content).length + 1;
+      return Response.ok(
+        json.encode({
+          'content': content,
+          'totalLines': totalLines,
+          'truncated': false,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.internalServerError(body: 'Text preview failed: $e');
+    }
+  }
+
+  // head/tail のストリーミング読み込み（ファイル全体をメモリに乗せない）
+  Future<Response> _streamTextLines(String filePath, String mode, int lines) async {
+    // SAF はストリーミング読み込みが面倒なので、SAFの場合は読み切ってから head/tail
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      final bytes = await _safPlatform.invokeMethod('readFile', {'uri': filePath});
+      if (bytes == null) return Response.notFound('File not found.');
+      final content = utf8.decode(bytes, allowMalformed: true);
+      final all = content.split('\n');
+      final result = mode == 'head'
+          ? all.take(lines).join('\n')
+          : (all.length > lines
+              ? all.sublist(all.length - lines).join('\n')
+              : content);
+      return Response.ok(
+        json.encode({
+          'content': result,
+          'totalLines': all.length,
+          'truncated': all.length > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    final file = File(filePath);
+    final stream = file
+        .openRead()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    if (mode == 'head') {
+      final collected = <String>[];
+      var totalLines = 0;
+      await for (final line in stream) {
+        totalLines++;
+        if (collected.length < lines) collected.add(line);
+      }
+      return Response.ok(
+        json.encode({
+          'content': collected.join('\n'),
+          'totalLines': totalLines,
+          'truncated': totalLines > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } else {
+      // tail: 末尾 N 行を循環バッファで保持
+      final buf = <String>[];
+      var totalLines = 0;
+      await for (final line in stream) {
+        totalLines++;
+        buf.add(line);
+        if (buf.length > lines) buf.removeAt(0);
+      }
+      return Response.ok(
+        json.encode({
+          'content': buf.join('\n'),
+          'totalLines': totalLines,
+          'truncated': totalLines > lines,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  }
+
   bool _isImageFile(String filename) {
     final extension = p.extension(filename).toLowerCase();
     const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};
@@ -814,7 +1074,8 @@ class ServerService {
     }
   }
 
-  Future<Response> _deleteAllFilesHandler(Request request) async {
+  // #190: 表示されているファイル ID のリストを受け取って削除
+  Future<Response> _deleteBatchHandler(Request request) async {
     final guard = _checkDownloadOnlyMode();
     if (guard != null) return guard;
 
@@ -823,64 +1084,70 @@ class ServerService {
       return Response.internalServerError(body: 'Documents directory not initialized.');
     }
 
+    final List<dynamic> ids;
+    try {
+      final body = json.decode(await request.readAsString()) as Map<String, dynamic>;
+      ids = body['ids'] as List<dynamic>? ?? const [];
+    } catch (_) {
+      return Response.badRequest(body: 'Invalid request body.');
+    }
+
     int deleted = 0;
     int failed = 0;
+    final List<String> skipped = [];
 
-    try {
-      // AndroidでSAF URIが設定されている場合
-      if (Platform.isAndroid && _safDirectoryUri != null) {
-        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
-        if (files != null) {
-          for (final fileInfo in files) {
-            try {
-              final String fileUri = fileInfo['uri'];
-              final String filename = fileInfo['name'];
-              final bool? success = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
-              if (success == true) {
-                deleted++;
-                // サムネイルキャッシュも削除
-                final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
-                if (await cacheFile.exists()) {
-                  await cacheFile.delete();
-                }
-              } else {
-                failed++;
-              }
-            } catch (e) {
-              failed++;
-            }
+    // Android SAF
+    if (Platform.isAndroid && _safDirectoryUri != null) {
+      for (final raw in ids) {
+        try {
+          final fileUri = utf8.decode(base64Url.decode(raw as String));
+          if (!fileUri.startsWith(_safDirectoryUri!)) {
+            skipped.add(raw);
+            continue;
           }
+          final filename = Uri.parse(fileUri).pathSegments.last;
+          final success = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
+          if (success == true) {
+            deleted++;
+            final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+            if (await cacheFile.exists()) await cacheFile.delete();
+          } else {
+            failed++;
+          }
+        } catch (_) {
+          failed++;
         }
       }
-      // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
-      else {
-        final directory = Directory(storagePath);
-        if (await directory.exists()) {
-          final files = await directory.list().where((item) => item is File).cast<File>().toList();
-          for (final file in files) {
-            try {
-              final filename = p.basename(file.path);
-              await file.delete();
-              deleted++;
-              // サムネイルキャッシュも削除
-              final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
-              if (await cacheFile.exists()) {
-                await cacheFile.delete();
-              }
-            } catch (e) {
-              failed++;
-            }
+    } else {
+      final canonicalRoot = await Directory(storagePath).resolveSymbolicLinks();
+      for (final raw in ids) {
+        try {
+          final filePath = utf8.decode(base64Url.decode(raw as String));
+          final file = File(filePath);
+          if (!await file.exists()) {
+            failed++;
+            continue;
           }
+          final canonicalFile = await file.resolveSymbolicLinks();
+          if (!p.isWithin(canonicalRoot, canonicalFile)) {
+            skipped.add(raw as String);
+            continue;
+          }
+          final filename = p.basename(filePath);
+          await file.delete();
+          deleted++;
+          final cacheFile = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+          if (await cacheFile.exists()) await cacheFile.delete();
+        } catch (_) {
+          failed++;
         }
       }
-
-      return Response.ok(
-        json.encode({'deleted': deleted, 'failed': failed}),
-        headers: {'Content-Type': 'application/json'},
-      );
-    } catch (e) {
-      return Response.internalServerError(body: "Failed to delete files: $e");
     }
+
+    return Response.ok(
+      json.encode({'deleted': deleted, 'failed': failed, 'skipped': skipped}),
+      headers: {'Content-Type': 'application/json'},
+    );
   }
 
   Future<Response> _downloadAllHandler(Request request) async {
@@ -889,62 +1156,106 @@ class ServerService {
       return Response.internalServerError(body: 'Documents directory not initialized.');
     }
 
-    final encoder = ZipEncoder();
-    final archive = Archive();
+    // #195: ZIP を一時ファイルへストリーミングして書き出し、レスポンスとして
+    // 流す。これによりサーバ側でも巨大ファイル × 多数を扱える。
+    final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
+    final zipPath = p.join(tempDir.path, 'archive.zip');
+    // ステージング用サブディレクトリ (Copilot #199 review):
+    // ユーザのファイル名と zip 出力名/パス・パス区切り文字の衝突を避ける
+    final stagingDir =
+        await Directory(p.join(tempDir.path, 'staging')).create();
 
-    // AndroidでSAF URIが設定されている場合
-    if (Platform.isAndroid && _safDirectoryUri != null) {
-      try {
-        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
-        if (files == null) {
-          return Response.internalServerError(body: 'Failed to list files for zipping.');
-        }
+    try {
+      final zipEncoder = ZipFileEncoder()..create(zipPath);
 
-        for (final fileInfo in files) {
-          final String fileUri = fileInfo['uri'];
-          final String filename = fileInfo['name'];
-          final Uint8List? bytes = await _safPlatform.invokeMethod('readFile', {'uri': fileUri});
-          if (bytes != null) {
-            archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+      // AndroidでSAF URIが設定されている場合
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        try {
+          final List<dynamic>? files = await _safPlatform
+              .invokeMethod('listFiles', {'uri': _safDirectoryUri});
+          if (files == null) {
+            await zipEncoder.close();
+            await tempDir.delete(recursive: true);
+            return Response.internalServerError(
+                body: 'Failed to list files for zipping.');
           }
+          int stagingSeq = 0;
+          for (final fileInfo in files) {
+            final String fileUri = fileInfo['uri'];
+            final String filename = fileInfo['name'];
+            final Uint8List? bytes = await _safPlatform
+                .invokeMethod('readFile', {'uri': fileUri});
+            if (bytes != null) {
+              // SAF はバイト列でしか取れないため、ステージングディレクトリへ
+              // ユニーク名 (連番) で書いて ZipFileEncoder に渡す。
+              // ZIP 内の entry 名はオリジナル filename を使用する。
+              final tmpFile = File(p.join(stagingDir.path, '$stagingSeq.bin'));
+              stagingSeq++;
+              await tmpFile.writeAsBytes(bytes, flush: true);
+              await zipEncoder.addFile(tmpFile, filename);
+              await tmpFile.delete();
+            }
+          }
+        } on PlatformException catch (e) {
+          await zipEncoder.close();
+          await tempDir.delete(recursive: true);
+          return Response.internalServerError(
+              body: 'Failed to read files for zipping: ${e.message}');
         }
-      } on PlatformException catch(e) {
-        return Response.internalServerError(body: 'Failed to read files for zipping: ${e.message}');
+      } else {
+        // ?path= で現在フォルダを指定し、そのフォルダのファイルのみをZIP (#179)
+        final relPath = request.url.queryParameters['path'] ?? '';
+        final canonicalRoot =
+            await Directory(storagePath).resolveSymbolicLinks();
+        final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+        final directory = Directory(targetPath);
+        if (!await directory.exists()) {
+          await zipEncoder.close();
+          await tempDir.delete(recursive: true);
+          return Response.internalServerError(
+              body: 'Documents directory not found.');
+        }
+        final canonicalTarget = await directory.resolveSymbolicLinks();
+        if (canonicalTarget != canonicalRoot &&
+            !p.isWithin(canonicalRoot, canonicalTarget)) {
+          await zipEncoder.close();
+          await tempDir.delete(recursive: true);
+          return Response.forbidden('Access denied');
+        }
+        // 現在フォルダの直下ファイルのみ（再帰なし）
+        final files = directory.listSync(followLinks: false).whereType<File>();
+        for (final file in files) {
+          await zipEncoder.addFile(file, p.basename(file.path));
+        }
       }
-    }
-    // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
-    else {
-      // ?path= で現在フォルダを指定し、そのフォルダのファイルのみをZIP (#179)
-      final relPath = request.url.queryParameters['path'] ?? '';
-      final canonicalRoot = await Directory(storagePath).resolveSymbolicLinks();
-      final targetPath = p.normalize(p.join(canonicalRoot, relPath));
-      final directory = Directory(targetPath);
-      if (!await directory.exists()) {
-        return Response.internalServerError(body: 'Documents directory not found.');
-      }
-      final canonicalTarget = await directory.resolveSymbolicLinks();
-      if (canonicalTarget != canonicalRoot &&
-          !p.isWithin(canonicalRoot, canonicalTarget)) {
-        return Response.forbidden('Access denied');
-      }
-      // 現在フォルダの直下ファイルのみ（再帰なし）
-      final files = directory.listSync(followLinks: false).whereType<File>();
-      for (final file in files) {
-        final bytes = await file.readAsBytes();
-        final filename = p.basename(file.path);
-        archive.addFile(ArchiveFile(filename, bytes.length, bytes));
-      }
-    }
 
-    final zipData = encoder.encode(archive);
-    if (zipData == null) {
-      return Response.internalServerError(body: 'Failed to create zip file.');
-    }
+      await zipEncoder.close();
 
-    return Response.ok(zipData, headers: {
-      'Content-Type': 'application/zip',
-      'Content-Disposition': 'attachment; filename="localnode_files.zip"',
-    });
+      final zipFile = File(zipPath);
+      final length = await zipFile.length();
+
+      // ストリーム完了後（成功・中断問わず）に一時ディレクトリを削除
+      Stream<List<int>> streamAndCleanup() async* {
+        try {
+          yield* zipFile.openRead();
+        } finally {
+          try {
+            await tempDir.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+
+      return Response.ok(streamAndCleanup(), headers: {
+        'Content-Type': 'application/zip',
+        'Content-Length': '$length',
+        'Content-Disposition': 'attachment; filename="localnode_files.zip"',
+      });
+    } catch (e) {
+      try {
+        await tempDir.delete(recursive: true);
+      } catch (_) {}
+      return Response.internalServerError(body: 'Failed to create zip: $e');
+    }
   }
 
   // === Clipboard Handlers ===

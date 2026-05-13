@@ -13,6 +13,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:args/args.dart';
 import 'package:basic_utils/basic_utils.dart';
 import 'package:image/image.dart' as img;
@@ -22,6 +23,9 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
+
+// pubspec.yaml の version と一致させる
+const String _appVersion = '1.5.0';
 
 // =============================================================================
 // エントリポイント
@@ -203,6 +207,12 @@ Future<void> main(List<String> args) async {
     stdout.writeln('         -H "x-filename: myfile.txt" \\');
     stdout.writeln('         --data-binary @/path/to/myfile.txt \\');
     stdout.writeln('         $serverUrl/api/upload');
+    stdout.writeln('');
+    stdout.writeln('  curl example (clipboard):');
+    stdout.writeln('    curl -H "Authorization: Bearer $uploadToken" \\');
+    stdout.writeln('         -H "Content-Type: application/json" \\');
+    stdout.writeln('         -d \'{"text":"hello from curl"}\' \\');
+    stdout.writeln('         $serverUrl/api/clipboard');
   }
   stdout.writeln('');
   stdout.writeln('QR Code:');
@@ -721,13 +731,16 @@ class _CliServer {
       ..post('/api/auth', _authHandler)
       ..get('/api/health', _healthHandler)
       ..get('/api/info', _infoHandler)
+      ..get('/api/check-auth', _checkAuthHandler)
       ..get('/api/files', _getFilesHandler)
       ..post('/api/upload', _uploadHandler)
       ..get('/api/download/<id>', _downloadHandler)
       ..get('/api/thumbnail/<id>', _thumbnailHandler)
+      ..get('/api/thumbnail-by-path', _thumbnailByPathHandler)
+      ..get('/api/text-preview/<id>', _textPreviewHandler)
       ..get('/api/download-all', _downloadAllHandler)
       ..delete('/api/files/<id>', _deleteFileHandler)
-      ..delete('/api/files', _deleteAllFilesHandler)
+      ..post('/api/files/delete-batch', _deleteBatchHandler)
       ..get('/api/clipboard', _getClipboardHandler)
       ..post('/api/clipboard', _postClipboardHandler)
       ..delete('/api/clipboard/<id>', _deleteClipboardItemHandler)
@@ -963,10 +976,12 @@ class _CliServer {
           }
           if (token != null && _sessions.contains(token)) return inner(req);
 
-          // #173: Bearer トークンによるアップロード認証
+          // #173/#188: Bearer トークンによる API 認証
+          //   - POST /api/upload      … ファイルアップロード（#173）
+          //   - POST /api/clipboard   … クリップボードへの送信（#188）
           if (_uploadToken != null &&
               req.method == 'POST' &&
-              path == 'api/upload') {
+              (path == 'api/upload' || path == 'api/clipboard')) {
             final authHeader = req.headers['authorization'] ?? '';
             if (authHeader == 'Bearer $_uploadToken') return inner(req);
           }
@@ -1039,9 +1054,15 @@ class _CliServer {
       Response.ok(json.encode({'startedAt': _startedAt}),
           headers: {'Content-Type': 'application/json'});
 
+  // #201: 認証チェック専用エンドポイント。認証ミドルウェアを通るので、
+  // 200 が返れば有効、401 が返ればセッション切れ。
+  Response _checkAuthHandler(Request _) =>
+      Response.ok(json.encode({'ok': true}),
+          headers: {'Content-Type': 'application/json'});
+
   Response _infoHandler(Request _) => Response.ok(
         json.encode({
-          'version': '1.1.2',
+          'version': _appVersion,
           'name': _serverName,
           'serverName': _serverName,
           'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
@@ -1241,11 +1262,177 @@ class _CliServer {
       final filePath = utf8.decode(base64Url.decode(id));
       final file = File(filePath);
       if (!await file.exists()) return Response.notFound('File not found.');
-      return Response.ok(file.openRead())
-          .change(headers: {'Content-Type': _getMimeType(p.basename(filePath))});
+      final mimeType = _getMimeType(p.basename(filePath));
+      final length = await file.length();
+      // #200: Range リクエスト対応 (動画サムネ生成等で部分取得を可能に)
+      final rangeHeader = req.headers['range'];
+      ({int start, int end})? range;
+      try {
+        range = _parseHttpRange(rangeHeader, length);
+      } on RangeError {
+        return Response(416, body: 'Requested Range Not Satisfiable',
+            headers: {'Content-Range': 'bytes */$length'});
+      }
+      if (range == null) {
+        return Response.ok(file.openRead(), headers: {
+          'Content-Type': mimeType,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': '$length',
+        });
+      }
+      final contentLength = range.end - range.start + 1;
+      return Response(206, body: file.openRead(range.start, range.end + 1),
+          headers: {
+            'Content-Type': mimeType,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': '$contentLength',
+            'Content-Range': 'bytes ${range.start}-${range.end}/$length',
+          });
     } catch (e) {
       return Response.internalServerError(body: 'Download failed: $e');
     }
+  }
+
+  // #200: Range ヘッダ解析（単一範囲のみ）
+  ({int start, int end})? _parseHttpRange(String? header, int fileLength) {
+    if (header == null || header.isEmpty) return null;
+    if (!header.startsWith('bytes=')) throw RangeError('Invalid range unit');
+    final spec = header.substring('bytes='.length).trim();
+    if (spec.contains(',')) return null;
+    final dash = spec.indexOf('-');
+    if (dash < 0) throw RangeError('Invalid range spec');
+    final startStr = spec.substring(0, dash);
+    final endStr = spec.substring(dash + 1);
+    int start, end;
+    if (startStr.isEmpty) {
+      final suffix = int.tryParse(endStr);
+      if (suffix == null || suffix <= 0) throw RangeError('Invalid suffix');
+      start = (fileLength - suffix).clamp(0, fileLength);
+      end = fileLength - 1;
+    } else {
+      final s = int.tryParse(startStr);
+      if (s == null || s < 0) throw RangeError('Invalid start');
+      start = s;
+      end = endStr.isEmpty ? fileLength - 1 : (int.tryParse(endStr) ?? -1);
+      if (end < 0) throw RangeError('Invalid end');
+      if (end >= fileLength) end = fileLength - 1;
+    }
+    if (start > end || start >= fileLength) throw RangeError('Unsatisfiable');
+    return (start: start, end: end);
+  }
+
+  // #193: テキストファイルのインラインプレビュー
+  Future<Response> _textPreviewHandler(Request req, String id) async {
+    const maxFullBytes = 5 * 1024 * 1024;
+    final mode = req.url.queryParameters['mode'] ?? 'head';
+    if (mode != 'head' && mode != 'tail' && mode != 'full') {
+      return Response.badRequest(body: 'mode must be head|tail|full');
+    }
+    final lines = int.tryParse(req.url.queryParameters['lines'] ?? '') ?? 200;
+    if (lines < 1 || lines > 10000) {
+      return Response.badRequest(body: 'lines out of range');
+    }
+    try {
+      final filePath = utf8.decode(base64Url.decode(id));
+
+      // パストラバーサル検証 (Copilot #199 review)
+      if (await FileSystemEntity.isDirectory(filePath)) {
+        return Response.badRequest(body: 'Target is a directory.');
+      }
+      final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
+      final file = File(filePath);
+      if (!await file.exists()) return Response.notFound('File not found.');
+      final canonicalFile = await file.resolveSymbolicLinks();
+      if (!p.isWithin(canonicalRoot, canonicalFile)) {
+        return Response.forbidden('Access denied');
+      }
+
+      if (mode == 'head' || mode == 'tail') {
+        // ファイル全体をメモリに乗せず、行をストリームで処理
+        final stream = file
+            .openRead()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter());
+        if (mode == 'head') {
+          final collected = <String>[];
+          var totalLines = 0;
+          await for (final line in stream) {
+            totalLines++;
+            if (collected.length < lines) collected.add(line);
+          }
+          return Response.ok(
+            json.encode({
+              'content': collected.join('\n'),
+              'totalLines': totalLines,
+              'truncated': totalLines > lines,
+              'mode': mode,
+              'lines': lines,
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+        } else {
+          final buf = <String>[];
+          var totalLines = 0;
+          await for (final line in stream) {
+            totalLines++;
+            buf.add(line);
+            if (buf.length > lines) buf.removeAt(0);
+          }
+          return Response.ok(
+            json.encode({
+              'content': buf.join('\n'),
+              'totalLines': totalLines,
+              'truncated': totalLines > lines,
+              'mode': mode,
+              'lines': lines,
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+      }
+
+      // mode == 'full'
+      final size = await file.length();
+      if (size > maxFullBytes) {
+        return Response.badRequest(body: 'File too large for full preview (max 5MB).');
+      }
+      final content = await file.readAsString(encoding: utf8);
+      final totalLines = '\n'.allMatches(content).length + 1;
+      return Response.ok(
+        json.encode({
+          'content': content,
+          'totalLines': totalLines,
+          'truncated': false,
+          'mode': mode,
+          'lines': lines,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response.internalServerError(body: 'Text preview failed: $e');
+    }
+  }
+
+  // #198: @file:<relpath> 用のパスベースサムネイル
+  Future<Response> _thumbnailByPathHandler(Request req) async {
+    final relPath = req.url.queryParameters['path'] ?? '';
+    if (relPath.isEmpty ||
+        relPath.contains('..') ||
+        relPath.startsWith('/') ||
+        relPath.startsWith(r'\') ||
+        relPath.contains(':')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
+    final targetPath = p.normalize(p.join(canonicalRoot, relPath));
+    final file = File(targetPath);
+    if (!await file.exists()) return Response.notFound('File not found.');
+    final canonicalTarget = await file.resolveSymbolicLinks();
+    if (!p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
+    }
+    final id = base64Url.encode(utf8.encode(targetPath));
+    return _thumbnailHandler(req, id);
   }
 
   Future<Response> _thumbnailHandler(Request req, String id) async {
@@ -1296,20 +1483,42 @@ class _CliServer {
         !p.isWithin(canonicalRoot, canonicalTarget)) {
       return Response.forbidden('Access denied');
     }
-    final archive = Archive();
-    final files = dir.listSync(followLinks: false).whereType<File>();
-    for (final f in files) {
-      final bytes = await f.readAsBytes();
-      archive.addFile(ArchiveFile(p.basename(f.path), bytes.length, bytes));
+
+    // #195: ZIP を一時ファイルへストリーミング書き出ししてレスポンスとして流す
+    final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
+    final zipPath = p.join(tempDir.path, 'localnode_files.zip');
+    try {
+      final zipEncoder = ZipFileEncoder()..create(zipPath);
+      final files = dir.listSync(followLinks: false).whereType<File>();
+      for (final f in files) {
+        await zipEncoder.addFile(f, p.basename(f.path));
+      }
+      await zipEncoder.close();
+
+      final zipFile = File(zipPath);
+      final length = await zipFile.length();
+
+      Stream<List<int>> streamAndCleanup() async* {
+        try {
+          yield* zipFile.openRead();
+        } finally {
+          try {
+            await tempDir.delete(recursive: true);
+          } catch (_) {}
+        }
+      }
+
+      return Response.ok(streamAndCleanup(), headers: {
+        'Content-Type': 'application/zip',
+        'Content-Length': '$length',
+        'Content-Disposition': 'attachment; filename="localnode_files.zip"',
+      });
+    } catch (e) {
+      try {
+        await tempDir.delete(recursive: true);
+      } catch (_) {}
+      return Response.internalServerError(body: 'Failed to create zip: $e');
     }
-    final zip = ZipEncoder().encode(archive);
-    if (zip == null) {
-      return Response.internalServerError(body: 'Failed to create zip.');
-    }
-    return Response.ok(zip, headers: {
-      'Content-Type': 'application/zip',
-      'Content-Disposition': 'attachment; filename="localnode_files.zip"',
-    });
   }
 
   Future<Response> _deleteFileHandler(Request req, String id) async {
@@ -1331,28 +1540,51 @@ class _CliServer {
     }
   }
 
-  Future<Response> _deleteAllFilesHandler(Request req) async {
+  // #190: クライアントが指定したファイル ID のみ削除
+  Future<Response> _deleteBatchHandler(Request req) async {
     final guard = _guardDownloadOnly();
     if (guard != null) return guard;
-    final dir = Directory(_storagePath!);
-    int deleted = 0, failed = 0;
-    if (await dir.exists()) {
-      final files =
-          await dir.list().where((e) => e is File).cast<File>().toList();
-      for (final f in files) {
-        try {
-          await f.delete();
-          deleted++;
-          final cache = File(p.join(
-              _thumbnailCacheDir!.path, '${p.basename(f.path)}.jpg'));
-          if (await cache.exists()) await cache.delete();
-        } catch (_) {
+
+    final List<dynamic> ids;
+    try {
+      final body = json.decode(await req.readAsString()) as Map<String, dynamic>;
+      ids = body['ids'] as List<dynamic>? ?? const [];
+    } catch (_) {
+      return Response.badRequest(body: 'Invalid request body.');
+    }
+
+    int deleted = 0;
+    int failed = 0;
+    final List<String> skipped = [];
+
+    final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
+    for (final raw in ids) {
+      try {
+        final filePath = utf8.decode(base64Url.decode(raw as String));
+        final file = File(filePath);
+        if (!await file.exists()) {
           failed++;
+          continue;
         }
+        final canonicalFile = await file.resolveSymbolicLinks();
+        if (!p.isWithin(canonicalRoot, canonicalFile)) {
+          skipped.add(raw);
+          continue;
+        }
+        final filename = p.basename(filePath);
+        await file.delete();
+        deleted++;
+        final cache = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+        if (await cache.exists()) await cache.delete();
+      } catch (_) {
+        failed++;
       }
     }
-    return Response.ok(json.encode({'deleted': deleted, 'failed': failed}),
-        headers: {'Content-Type': 'application/json'});
+
+    return Response.ok(
+      json.encode({'deleted': deleted, 'failed': failed, 'skipped': skipped}),
+      headers: {'Content-Type': 'application/json'},
+    );
   }
 
   // --- クリップボードハンドラ ---

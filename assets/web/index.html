@@ -23,6 +23,14 @@
             color: #1a73e8;
             text-align: center;
         }
+        #version-badge {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.75rem;
+            font-size: 0.75rem;
+            color: #999;
+        }
+        .container { position: relative; }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -241,6 +249,28 @@
             white-space: pre-wrap;
             margin: 0 0 0.5rem 0;
         }
+        .clipboard-file-thumb {
+            max-width: 80px;
+            max-height: 80px;
+            border-radius: 4px;
+            cursor: pointer;
+            vertical-align: middle;
+            margin: 0 0.2rem;
+            border: 1px solid #b2dfdb;
+        }
+        .clipboard-file-thumb:hover { border-color: #00796b; }
+        .clipboard-file-chip {
+            display: inline-block;
+            padding: 0.1rem 0.5rem;
+            margin: 0 0.2rem;
+            background: #b2dfdb;
+            color: #00695c;
+            border-radius: 3px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            vertical-align: middle;
+        }
+        .clipboard-file-chip:hover { background: #80cbc4; }
         .clipboard-item-meta {
             display: flex;
             align-items: center;
@@ -415,7 +445,8 @@
             color: white;
             border-color: #1a73e8;
         }
-        #viewerModeBtn {
+        #viewerModeBtn,
+        #refreshBtn {
             padding: 0.35rem 0.8rem;
             border: 1px solid #ccc;
             border-radius: 4px;
@@ -423,6 +454,7 @@
             cursor: pointer;
             font-size: 0.85rem;
         }
+        #refreshBtn { margin-right: 0.3rem; }
         #viewerModeBtn.active {
             background: #1a73e8;
             color: white;
@@ -562,6 +594,132 @@
         }
 
         /* 比較ビュー */
+        #video-player-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            z-index: 200;
+        }
+        #video-player-overlay.open { display: flex; }
+        #video-player {
+            max-width: 95%;
+            max-height: 80%;
+            background: black;
+        }
+        #video-player-close {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            padding: 0.3rem 0.7rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        #video-player-meta {
+            color: white;
+            font-size: 0.85rem;
+            margin-top: 0.75rem;
+            opacity: 0.85;
+        }
+        #video-player-download {
+            margin-top: 0.5rem;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 0.9rem;
+            padding: 0.3rem 0.8rem;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .viewer-item video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            background: black;
+            cursor: pointer;
+        }
+
+        #text-preview-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 200;
+        }
+        #text-preview-overlay.open { display: flex; }
+        #text-preview-box {
+            background: white;
+            width: 90%;
+            max-width: 900px;
+            height: 85%;
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #text-preview-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 1rem;
+            background: #f0f2f5;
+            border-bottom: 1px solid #ddd;
+        }
+        #text-preview-title {
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #text-preview-close {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0 0.5rem;
+        }
+        #text-preview-controls {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            background: #fafafa;
+            border-bottom: 1px solid #eee;
+            flex-wrap: wrap;
+        }
+        #text-preview-controls label { font-size: 0.85rem; }
+        #text-preview-controls select,
+        #text-preview-controls input { font-size: 0.85rem; padding: 0.2rem 0.4rem; }
+        #text-preview-controls button {
+            padding: 0.3rem 0.8rem;
+            border: 1px solid #ccc;
+            background: white;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        #text-preview-body {
+            flex: 1;
+            margin: 0;
+            padding: 1rem;
+            overflow: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.85rem;
+            white-space: pre;
+            background: #fafafa;
+        }
+
         #comparison-view {
             display: none;
             position: fixed;
@@ -633,6 +791,7 @@
     <!-- メインコンテンツ -->
     <div id="main-content" style="display: none;">
         <div class="container">
+            <span id="version-badge"></span>
             <h1>LocalNode</h1>
             <div id="mode-indicator" style="display:none; text-align:center; margin-bottom: 1rem;"></div>
 
@@ -661,8 +820,8 @@
                 </div>
 
                 <div class="all-actions-container">
-                    <button id="downloadAllBtn">すべてをzipでダウンロード</button>
-                    <button id="deleteAllBtn">すべてを削除</button>
+                    <button id="downloadAllBtn">このフォルダのファイルをzipでダウンロード</button>
+                    <button id="deleteAllBtn">このフォルダのファイルを削除</button>
                 </div>
 
                 <div id="breadcrumb"></div>
@@ -674,7 +833,10 @@
                         <button id="sortSizeBtn">サイズ</button>
                         <button id="sortOrderBtn" title="昇順/降順">↑</button>
                     </div>
-                    <button id="viewerModeBtn">🖼 グリッド</button>
+                    <div>
+                        <button id="refreshBtn" title="更新">⟳</button>
+                        <button id="viewerModeBtn">🖼 グリッド</button>
+                    </div>
                 </div>
 
                 <div id="file-list"></div>
@@ -686,6 +848,9 @@
                     <div class="section-header">
                         <h2>📋 クリップボード共有</h2>
                         <div class="section-header-actions">
+                            <label id="clipboardNotifyLabel" style="font-size:0.85rem; color:#00695c; user-select:none; cursor:pointer;">
+                                <input type="checkbox" id="clipboardNotifyToggle"> 新着を通知
+                            </label>
                             <button id="downloadClipboardBtn" class="btn-download-clip" style="display: none;">TXTで保存</button>
                             <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
                         </div>
@@ -714,6 +879,40 @@
         <div id="lightbox-meta"></div>
         <button id="lightbox-save">⬇ 保存</button>
         <div id="lightbox-zoom-hint">スクロールでズーム • 矢印キーで移動</div>
+    </div>
+
+    <!-- #189: 動画プレイヤー -->
+    <div id="video-player-overlay">
+        <button id="video-player-close">✕</button>
+        <video id="video-player" controls></video>
+        <div id="video-player-meta"></div>
+        <button id="video-player-download">⬇ 保存</button>
+    </div>
+
+    <!-- #193: テキストプレビュー -->
+    <div id="text-preview-overlay">
+        <div id="text-preview-box">
+            <div id="text-preview-header">
+                <span id="text-preview-title"></span>
+                <button id="text-preview-close">✕</button>
+            </div>
+            <div id="text-preview-controls">
+                <label>モード:
+                    <select id="text-preview-mode">
+                        <option value="head">先頭</option>
+                        <option value="tail">末尾</option>
+                        <option value="full">全体</option>
+                    </select>
+                </label>
+                <label>行数:
+                    <input type="number" id="text-preview-lines" value="200" min="10" max="10000" step="50">
+                </label>
+                <button id="text-preview-reload">表示</button>
+                <span id="text-preview-info" style="margin-left:auto; font-size:0.85rem; color:#666;"></span>
+                <button id="text-preview-download">⬇ 保存</button>
+            </div>
+            <pre id="text-preview-body"></pre>
+        </div>
     </div>
 
     <!-- 比較ビュー -->
@@ -765,6 +964,24 @@
 
             const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp']);
             const isImageFile = (name) => IMAGE_EXTS.has((name.split('.').pop() || '').toLowerCase());
+
+            // #189: 動画ファイル判定
+            const VIDEO_EXTS = new Set(['mp4','mov','webm','m4v','ogv']);
+            const isVideoFile = (name) => VIDEO_EXTS.has((name.split('.').pop() || '').toLowerCase());
+
+            // #193: テキストファイル判定
+            const TEXT_EXTS = new Set([
+                'txt','md','log','json','csv','tsv','xml',
+                'yaml','yml','ini','conf','toml','env',
+                'sh','bat','ps1','py','js','ts','dart',
+                'html','htm','css','sql','rb','go','rs','java',
+                'c','h','cpp','hpp','cs','swift','kt','php',
+                'gitignore','gitattributes'
+            ]);
+            const isTextFile = (name) => {
+                const ext = (name.split('.').pop() || '').toLowerCase();
+                return TEXT_EXTS.has(ext);
+            };
 
             const renderBreadcrumb = () => {
                 const breadcrumb = document.getElementById('breadcrumb');
@@ -823,12 +1040,15 @@
             const showMainContent = () => {
                 pinModal.style.display = 'none';
                 mainContent.style.display = 'block';
-                fetchFiles();
-                if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
-                applyModeRestrictions();
                 const name = serverInfo.serverName || 'LocalNode';
                 document.title = name;
                 document.querySelector('#main-content h1').textContent = name;
+                fetchFiles();
+                if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
+                applyModeRestrictions();
+                if (serverInfo.version) {
+                    document.getElementById('version-badge').textContent = `v${serverInfo.version}`;
+                }
             };
 
             // ダウンロード専用モード時にUI要素を非表示にする
@@ -956,10 +1176,18 @@
 
             // 全ファイル削除処理
             deleteAllBtn.addEventListener('click', async () => {
-                if (!confirm('本当にすべてのファイルを削除しますか？この操作は取り消せません。')) return;
+                const fileIds = allItems
+                    .filter(i => i.type !== 'directory')
+                    .map(i => i.id);
+                if (fileIds.length === 0) return;
+                if (!confirm(`このフォルダの${fileIds.length}個のファイルを削除します。よろしいですか？この操作は取り消せません。`)) return;
 
                 try {
-                    const response = await safeFetch('/api/files', { method: 'DELETE' });
+                    const response = await safeFetch('/api/files/delete-batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: fileIds }),
+                    });
                     if (!response.ok) throw new Error('削除に失敗しました。');
                     const result = await response.json();
                     alert(`${result.deleted}個のファイルを削除しました。`);
@@ -1002,23 +1230,22 @@
             });
 
             window.downloadFile = async (id, filename) => {
+                // #201: 直接 anchor 起動だとセッション期限切れ時に 401 JSON が
+                // ダウンロードされてしまうので、事前に check-auth で確認する。
                 try {
-                    const response = await safeFetch(`/api/download/${id}`);
-                    if (!response.ok) throw new Error('Download failed.');
-
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.style.display = 'none';
-                    a.href = url;
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    a.remove();
-                } catch (error) {
-                    alert(error.message);
+                    await safeFetch('/api/check-auth');
+                } catch (_) {
+                    return; // safeFetch が 401 を検知して PIN モーダルを表示済み
                 }
+                // #194: 直接 <a href> でブラウザの DL マネージャに任せ、
+                // ストリーミングと進捗表示を有効にする
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = `/api/download/${id}`;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
             };
 
             window.deleteFile = async (id, filename) => {
@@ -1081,7 +1308,44 @@
                 }
             };
 
+            // #196: 新着通知 (タブタイトルの先頭に ● を付与)
+            const NOTIFY_PREFIX = '● ';
+            let notifyEnabled = localStorage.getItem('localnode_clipboardNotify') === '1';
+            let baseTitle = document.title;
+            let hasUnread = false;
+            let firstClipboardFetch = true;
+
+            const applyTitleIndicator = () => {
+                const target = hasUnread ? NOTIFY_PREFIX + baseTitle : baseTitle;
+                if (document.title !== target) document.title = target;
+            };
+            const clearUnread = () => {
+                if (!hasUnread) return;
+                hasUnread = false;
+                applyTitleIndicator();
+            };
+            const markUnread = () => {
+                if (!notifyEnabled) return;
+                if (!document.hidden) return; // タブが見えていれば通知不要
+                hasUnread = true;
+                applyTitleIndicator();
+            };
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) clearUnread();
+            });
+            window.addEventListener('focus', clearUnread);
+
+            const notifyToggle = document.getElementById('clipboardNotifyToggle');
+            notifyToggle.checked = notifyEnabled;
+            notifyToggle.addEventListener('change', () => {
+                notifyEnabled = notifyToggle.checked;
+                localStorage.setItem('localnode_clipboardNotify', notifyEnabled ? '1' : '0');
+                if (!notifyEnabled) clearUnread();
+            });
+
             const startClipboardPolling = () => {
+                // タブタイトルが setServerName で更新されたあとの値を基準にする
+                baseTitle = document.title;
                 fetchClipboard();
                 clipboardPollingInterval = setInterval(fetchClipboard, 2000);
             };
@@ -1103,6 +1367,10 @@
                     if (data.lastModified !== clipboardLastModified) {
                         clipboardLastModified = data.lastModified;
                         renderClipboardItems(data.items);
+                        if (!firstClipboardFetch) markUnread();
+                        firstClipboardFetch = false;
+                    } else if (firstClipboardFetch) {
+                        firstClipboardFetch = false;
                     }
                 } catch (error) {
                     if (error.message !== 'Authentication required.') {
@@ -1132,7 +1400,7 @@
                 clipboardList.innerHTML = items.map(item => `
                     <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
                         <div class="clipboard-item-content">
-                            <p class="clipboard-item-text">${escapeHtml(item.text)}</p>
+                            <p class="clipboard-item-text">${renderClipboardText(item.text)}</p>
                             <div class="clipboard-item-meta">
                                 ${item.tag ? `<span class="clipboard-item-tag">${escapeHtml(item.tag)}</span>` : ''}
                                 <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
@@ -1145,6 +1413,58 @@
                     </div>
                 `).join('');
             };
+
+            // #198: @file:<relpath> をサムネイル/チップに変換（メッセージあたり最大5個）
+            const renderClipboardText = (text) => {
+                const MAX_FILES = 5;
+                const IMAGE_EXTS_FOR_FILE = new Set(['png','jpg','jpeg','gif','webp','bmp']);
+                let fileCount = 0;
+                const parts = [];
+                let lastIndex = 0;
+                const re = /@file:(\S+)/g;
+                let m;
+                while ((m = re.exec(text)) !== null) {
+                    if (m.index > lastIndex) {
+                        parts.push(escapeHtml(text.substring(lastIndex, m.index)));
+                    }
+                    const path = m[1];
+                    const invalid = path.includes('..') ||
+                        path.startsWith('/') ||
+                        path.startsWith('\\') ||
+                        path.includes(':');
+                    if (invalid || fileCount >= MAX_FILES) {
+                        parts.push(escapeHtml(m[0]));
+                    } else {
+                        fileCount++;
+                        const slash = path.lastIndexOf('/');
+                        const folder = slash >= 0 ? path.substring(0, slash) : '';
+                        const filename = slash >= 0 ? path.substring(slash + 1) : path;
+                        const ext = (filename.split('.').pop() || '').toLowerCase();
+                        const isImage = IMAGE_EXTS_FOR_FILE.has(ext);
+                        const folderAttr = escapeHtml(folder);
+                        const pathParam = encodeURIComponent(path);
+                        if (isImage) {
+                            parts.push(`<img class="clipboard-file-thumb" src="/api/thumbnail-by-path?path=${pathParam}" data-folder="${folderAttr}" title="${escapeHtml(filename)}" loading="lazy">`);
+                        } else {
+                            parts.push(`<span class="clipboard-file-chip" data-folder="${folderAttr}" title="${escapeHtml(path)}">📎 ${escapeHtml(filename)}</span>`);
+                        }
+                    }
+                    lastIndex = re.lastIndex;
+                }
+                if (lastIndex < text.length) {
+                    parts.push(escapeHtml(text.substring(lastIndex)));
+                }
+                return parts.join('');
+            };
+
+            // @file リファレンスをクリックしたらファイル一覧でそのフォルダに移動
+            document.getElementById('clipboardList').addEventListener('click', (e) => {
+                const target = e.target.closest('[data-folder]');
+                if (!target) return;
+                const folder = target.dataset.folder || '';
+                navigateTo(folder);
+                document.getElementById('file-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
 
             const formatTime = (isoString) => {
                 const date = new Date(isoString);
@@ -1198,7 +1518,9 @@
                 const item = document.querySelector(`[data-id="${id}"]`);
                 if (!item) return;
 
-                const text = item.querySelector('.clipboard-item-text').textContent;
+                // 原文 (@file: マーカーを含む) を currentClipboardItems から取得
+                const original = currentClipboardItems.find(i => i.id === id);
+                const text = original ? original.text : item.querySelector('.clipboard-item-text').textContent;
 
                 try {
                     await navigator.clipboard.writeText(text);
@@ -1315,14 +1637,8 @@
                         tdName.appendChild(nameDiv);
                         const tdActions = document.createElement('td');
                         tdActions.className = 'actions';
-                        const dlBtn = document.createElement('button');
-                        dlBtn.className = 'btn-download';
-                        dlBtn.textContent = 'DL';
-                        dlBtn.addEventListener('click', () => downloadFile(item.id, item.name + '.zip'));
-                        tdActions.appendChild(dlBtn);
                         row.append(tdIcon, tdName, tdActions);
-                        row.addEventListener('click', (e) => {
-                            if (e.target.tagName === 'BUTTON') return;
+                        row.addEventListener('click', () => {
                             navigateTo(currentPath ? `${currentPath}/${item.name}` : item.name);
                         });
                     } else {
@@ -1363,6 +1679,20 @@
                             tdActions.appendChild(delBtn);
                         }
                         row.append(tdIcon, tdName, tdActions);
+                        // #193/#189: テキスト→プレビュー、動画→プレイヤー
+                        if (isTextFile(item.name)) {
+                            row.style.cursor = 'pointer';
+                            row.addEventListener('click', (e) => {
+                                if (e.target.tagName === 'BUTTON') return;
+                                openTextPreview(item.id, item.name);
+                            });
+                        } else if (isVideoFile(item.name)) {
+                            row.style.cursor = 'pointer';
+                            row.addEventListener('click', (e) => {
+                                if (e.target.tagName === 'BUTTON') return;
+                                openVideoPlayer(item.id, item.name);
+                            });
+                        }
                     }
                     tbody.appendChild(row);
                 });
@@ -1434,13 +1764,30 @@
                         cmpBtn.textContent = sel ? '✓ 選択済' : '比較選択';
                         cmpBtn.addEventListener('click', () => toggleCompare(item.id, item.name));
                         viewerItem.append(img, nameDiv, cmpBtn);
+                    } else if (isVideoFile(item.name)) {
+                        // #189: ファーストフレームをサムネ表示、クリックでプレイヤー
+                        viewerItem.className = 'viewer-item';
+                        const video = document.createElement('video');
+                        video.src = `/api/download/${item.id}`;
+                        video.preload = 'metadata';
+                        video.muted = true;
+                        video.playsInline = true;
+                        video.addEventListener('loadedmetadata', () => {
+                            try { video.currentTime = 0.1; } catch (_) {}
+                        });
+                        video.addEventListener('click', () => openVideoPlayer(item.id, item.name));
+                        viewerItem.append(video, nameDiv);
                     } else {
                         viewerItem.className = 'viewer-item';
                         const iconDiv = document.createElement('div');
                         iconDiv.className = 'viewer-icon';
                         iconDiv.textContent = getFilePreview(item);
                         viewerItem.append(iconDiv, nameDiv);
-                        viewerItem.addEventListener('click', () => downloadFile(item.id, item.name));
+                        if (isTextFile(item.name)) {
+                            viewerItem.addEventListener('click', () => openTextPreview(item.id, item.name));
+                        } else {
+                            viewerItem.addEventListener('click', () => downloadFile(item.id, item.name));
+                        }
                     }
                     grid.appendChild(viewerItem);
                 });
@@ -1508,6 +1855,99 @@
                 if (item) downloadFile(item.id, item.name);
             });
 
+            // #189: 動画プレイヤー
+            let videoPlayerState = { id: null, name: null };
+            const videoPlayerOverlay = document.getElementById('video-player-overlay');
+            const videoPlayerEl = document.getElementById('video-player');
+            const videoPlayerMeta = document.getElementById('video-player-meta');
+
+            window.openVideoPlayer = (id, name) => {
+                videoPlayerState = { id, name };
+                videoPlayerEl.src = `/api/download/${id}`;
+                videoPlayerMeta.textContent = name;
+                videoPlayerOverlay.classList.add('open');
+                document.body.style.overflow = 'hidden';
+                videoPlayerEl.play().catch(() => {});
+            };
+
+            const closeVideoPlayer = () => {
+                videoPlayerEl.pause();
+                videoPlayerEl.removeAttribute('src');
+                videoPlayerEl.load();
+                videoPlayerOverlay.classList.remove('open');
+                document.body.style.overflow = '';
+            };
+
+            document.getElementById('video-player-close').addEventListener('click', closeVideoPlayer);
+            videoPlayerOverlay.addEventListener('click', (e) => {
+                if (e.target === videoPlayerOverlay) closeVideoPlayer();
+            });
+            document.getElementById('video-player-download').addEventListener('click', () => {
+                if (videoPlayerState.id && videoPlayerState.name) {
+                    downloadFile(videoPlayerState.id, videoPlayerState.name);
+                }
+            });
+
+            // #193: テキストプレビュー
+            let textPreviewState = { id: null, name: null };
+            const textPreviewOverlay = document.getElementById('text-preview-overlay');
+            const textPreviewBody = document.getElementById('text-preview-body');
+            const textPreviewInfo = document.getElementById('text-preview-info');
+            const textPreviewTitle = document.getElementById('text-preview-title');
+            const textPreviewMode = document.getElementById('text-preview-mode');
+            const textPreviewLines = document.getElementById('text-preview-lines');
+
+            const loadTextPreview = async () => {
+                if (!textPreviewState.id) return;
+                textPreviewBody.textContent = '読み込み中...';
+                textPreviewInfo.textContent = '';
+                try {
+                    const mode = textPreviewMode.value;
+                    const lines = parseInt(textPreviewLines.value, 10) || 200;
+                    const url = `/api/text-preview/${textPreviewState.id}?mode=${mode}&lines=${lines}`;
+                    const res = await safeFetch(url);
+                    if (!res.ok) {
+                        const msg = await res.text();
+                        textPreviewBody.textContent = `表示できませんでした: ${msg}`;
+                        return;
+                    }
+                    const data = await res.json();
+                    textPreviewBody.textContent = data.content;
+                    const truncatedNote = data.truncated ? `（${mode === 'head' ? '先頭' : '末尾'} ${data.lines} 行のみ）` : '';
+                    textPreviewInfo.textContent = `全 ${data.totalLines} 行 ${truncatedNote}`;
+                } catch (e) {
+                    textPreviewBody.textContent = `エラー: ${e.message}`;
+                }
+            };
+
+            window.openTextPreview = (id, name) => {
+                textPreviewState = { id, name };
+                textPreviewTitle.textContent = name;
+                textPreviewMode.value = 'head';
+                textPreviewLines.value = 200;
+                textPreviewOverlay.classList.add('open');
+                document.body.style.overflow = 'hidden';
+                loadTextPreview();
+            };
+
+            const closeTextPreview = () => {
+                textPreviewOverlay.classList.remove('open');
+                document.body.style.overflow = '';
+                textPreviewBody.textContent = '';
+            };
+
+            document.getElementById('text-preview-close').addEventListener('click', closeTextPreview);
+            textPreviewOverlay.addEventListener('click', (e) => {
+                if (e.target === textPreviewOverlay) closeTextPreview();
+            });
+            document.getElementById('text-preview-reload').addEventListener('click', loadTextPreview);
+            textPreviewMode.addEventListener('change', loadTextPreview);
+            document.getElementById('text-preview-download').addEventListener('click', () => {
+                if (textPreviewState.id && textPreviewState.name) {
+                    downloadFile(textPreviewState.id, textPreviewState.name);
+                }
+            });
+
             document.getElementById('lightbox-prev').addEventListener('click', () => {
                 lightboxIndex = (lightboxIndex - 1 + lightboxImageList.length) % lightboxImageList.length;
                 lightboxScale = 1;
@@ -1529,10 +1969,15 @@
             }, { passive: false });
 
             document.addEventListener('keydown', (e) => {
-                if (!lightboxEl.classList.contains('open')) return;
-                if (e.key === 'ArrowLeft') document.getElementById('lightbox-prev').click();
-                else if (e.key === 'ArrowRight') document.getElementById('lightbox-next').click();
-                else if (e.key === 'Escape') closeLightbox();
+                if (lightboxEl.classList.contains('open')) {
+                    if (e.key === 'ArrowLeft') document.getElementById('lightbox-prev').click();
+                    else if (e.key === 'ArrowRight') document.getElementById('lightbox-next').click();
+                    else if (e.key === 'Escape') closeLightbox();
+                } else if (textPreviewOverlay.classList.contains('open')) {
+                    if (e.key === 'Escape') closeTextPreview();
+                } else if (videoPlayerOverlay.classList.contains('open')) {
+                    if (e.key === 'Escape') closeVideoPlayer();
+                }
             });
 
             // === ソートボタン ===
@@ -1557,6 +2002,9 @@
                 btn.classList.toggle('active', isViewerMode);
                 btn.textContent = isViewerMode ? '☰ リスト' : '🖼 グリッド';
                 renderView();
+            });
+            document.getElementById('refreshBtn').addEventListener('click', () => {
+                fetchFiles();
             });
 
             // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
