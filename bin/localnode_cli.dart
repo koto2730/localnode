@@ -731,6 +731,7 @@ class _CliServer {
       ..post('/api/auth', _authHandler)
       ..get('/api/health', _healthHandler)
       ..get('/api/info', _infoHandler)
+      ..get('/api/check-auth', _checkAuthHandler)
       ..get('/api/files', _getFilesHandler)
       ..post('/api/upload', _uploadHandler)
       ..get('/api/download/<id>', _downloadHandler)
@@ -1051,6 +1052,12 @@ class _CliServer {
 
   Response _healthHandler(Request _) =>
       Response.ok(json.encode({'startedAt': _startedAt}),
+          headers: {'Content-Type': 'application/json'});
+
+  // #201: 認証チェック専用エンドポイント。認証ミドルウェアを通るので、
+  // 200 が返れば有効、401 が返ればセッション切れ。
+  Response _checkAuthHandler(Request _) =>
+      Response.ok(json.encode({'ok': true}),
           headers: {'Content-Type': 'application/json'});
 
   Response _infoHandler(Request _) => Response.ok(
