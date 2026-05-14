@@ -207,6 +207,8 @@ Future<void> main(List<String> args) async {
     stdout.writeln('         -H "x-filename: myfile.txt" \\');
     stdout.writeln('         --data-binary @/path/to/myfile.txt \\');
     stdout.writeln('         $serverUrl/api/upload');
+    stdout.writeln('    # subfolder upload: append ?path=<relpath>');
+    stdout.writeln('    #   $serverUrl/api/upload?path=photos%2F2026');
     stdout.writeln('');
     stdout.writeln('  curl example (clipboard):');
     stdout.writeln('    curl -H "Authorization: Bearer $uploadToken" \\');
@@ -1127,9 +1129,31 @@ class _CliServer {
       return Response.badRequest(body: 'x-filename header is required.');
     }
     final filename = p.basename(Uri.decodeComponent(encodedName));
-    final dir = Directory(_storagePath!);
-    if (!await dir.exists()) {
+
+    // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
+    // (Copilot #207 review): セグメント単位で .. のみ拒否
+    final relPath = req.url.queryParameters['path'] ?? '';
+    if (relPath.startsWith('/') || relPath.startsWith(r'\')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    if (p.split(relPath).contains('..')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    // (Copilot #207 review): root 不在を resolveSymbolicLinks より先に検出
+    final rootDir = Directory(_storagePath!);
+    if (!await rootDir.exists()) {
       return Response.internalServerError(body: 'Storage directory not found.');
+    }
+    final canonicalRoot = await rootDir.resolveSymbolicLinks();
+    final targetDirPath = p.normalize(p.join(canonicalRoot, relPath));
+    final dir = Directory(targetDirPath);
+    if (!await dir.exists()) {
+      return Response.notFound('Target directory not found.');
+    }
+    final canonicalTarget = await dir.resolveSymbolicLinks();
+    if (canonicalTarget != canonicalRoot &&
+        !p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
     }
 
     final file = await _uniqueFile(dir, filename);

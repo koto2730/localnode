@@ -512,8 +512,16 @@ class ServerService {
     final filename = Uri.decodeComponent(encodedFilename);
     final sanitizedFilename = p.basename(filename);
 
+    final relPath = request.url.queryParameters['path'] ?? '';
+
     // AndroidでSAF URIが設定されている場合
     if (Platform.isAndroid && _safDirectoryUri != null) {
+      // SAF はサブディレクトリ URI 解決が未実装なので、path 指定はサポートしない
+      // (Copilot #207 review): silent root fallback を避け、明示的に 400 を返す
+      if (relPath.isNotEmpty) {
+        return Response.badRequest(
+            body: 'Subfolder upload is not supported on Android SAF.');
+      }
       try {
         final bytes = await request.read().fold<List<int>>([], (prev, chunk) => prev..addAll(chunk));
         final mimeType = _getMimeType(sanitizedFilename);
@@ -536,10 +544,31 @@ class ServerService {
     }
     // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
     else {
-      final directory = Directory(storagePath);
-      if (!await directory.exists()) {
+      // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
+      // (Copilot #207 review): セグメント単位で .. のみ拒否 (`..backup` 等は許可)
+      if (relPath.startsWith('/') || relPath.startsWith(r'\')) {
+        return Response.badRequest(body: 'Invalid path.');
+      }
+      if (p.split(relPath).contains('..')) {
+        return Response.badRequest(body: 'Invalid path.');
+      }
+      // (Copilot #207 review): root ディレクトリ消失を resolveSymbolicLinks より先に検出
+      final rootDir = Directory(storagePath);
+      if (!await rootDir.exists()) {
         _log('Upload error: storage directory missing -> $storagePath');
         return Response.internalServerError(body: 'Documents directory not found.');
+      }
+      final canonicalRoot = await rootDir.resolveSymbolicLinks();
+      final targetDirPath = p.normalize(p.join(canonicalRoot, relPath));
+      final directory = Directory(targetDirPath);
+      if (!await directory.exists()) {
+        _log('Upload error: target directory missing -> $targetDirPath');
+        return Response.notFound('Target directory not found.');
+      }
+      final canonicalTarget = await directory.resolveSymbolicLinks();
+      if (canonicalTarget != canonicalRoot &&
+          !p.isWithin(canonicalRoot, canonicalTarget)) {
+        return Response.forbidden('Access denied');
       }
 
       final file = await _getUniqueFilePath(directory, sanitizedFilename);
