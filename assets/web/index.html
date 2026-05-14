@@ -396,6 +396,17 @@
             vertical-align: middle;
         }
         .tab-unread-dot[hidden] { display: none; }
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
         .tab-content {
             display: none;
         }
@@ -811,10 +822,11 @@
                     <span class="tab-icon">📁</span>
                     <span>ファイル</span>
                 </button>
-                <button class="tab-btn" data-tab="clipboard">
+                <button class="tab-btn" data-tab="clipboard" id="clipboardTabBtn">
                     <span class="tab-icon">📋</span>
                     <span>クリップボード</span>
-                    <span class="tab-unread-dot" id="clipboardTabUnreadDot" hidden></span>
+                    <span class="tab-unread-dot" id="clipboardTabUnreadDot" hidden aria-hidden="true"></span>
+                    <span class="visually-hidden" id="clipboardTabUnreadSr" hidden>新着あり</span>
                 </button>
             </div>
 
@@ -1339,8 +1351,17 @@
                 const target = hasUnread ? NOTIFY_PREFIX + baseTitle : baseTitle;
                 if (document.title !== target) document.title = target;
             };
+            const clipboardTabBtn = document.getElementById('clipboardTabBtn');
+            const clipboardTabSr = document.getElementById('clipboardTabUnreadSr');
             const applyTabDot = () => {
                 clipboardTabDot.hidden = !tabUnread;
+                clipboardTabSr.hidden = !tabUnread;
+                // (Copilot #207 review): スクリーンリーダ向けに状態を露出
+                if (tabUnread) {
+                    clipboardTabBtn.setAttribute('aria-label', 'クリップボード（新着あり）');
+                } else {
+                    clipboardTabBtn.removeAttribute('aria-label');
+                }
             };
             const clearUnread = () => {
                 if (hasUnread) {
@@ -1357,16 +1378,15 @@
             const isClipboardTabActive = () =>
                 document.querySelector('.tab-btn[data-tab="clipboard"]').classList.contains('active');
             const markUnread = () => {
-                if (!notifyEnabled) return;
-                // ブラウザタブが裏ならタイトルに ●
-                if (document.hidden) {
-                    hasUnread = true;
-                    applyTitleIndicator();
-                }
-                // ページ内のクリップボードタブが非アクティブならドット表示
+                // (Copilot #207 review): ページ内ドットはトグルと独立 - 常にON
                 if (!isClipboardTabActive()) {
                     tabUnread = true;
                     applyTabDot();
+                }
+                // ブラウザタブタイトルの ● は notifyEnabled トグルでON/OFF
+                if (notifyEnabled && document.hidden) {
+                    hasUnread = true;
+                    applyTitleIndicator();
                 }
             };
             document.addEventListener('visibilitychange', () => {
@@ -1379,10 +1399,9 @@
             notifyToggle.addEventListener('change', () => {
                 notifyEnabled = notifyToggle.checked;
                 localStorage.setItem('localnode_clipboardNotify', notifyEnabled ? '1' : '0');
-                if (!notifyEnabled) {
-                    clearUnread();
-                    clearTabUnread();
-                }
+                // (Copilot #207 review): タブドットはトグルと独立。ブラウザタブ
+                // タイトルの ● のみここでクリア。
+                if (!notifyEnabled) clearUnread();
             });
 
             const startClipboardPolling = () => {
