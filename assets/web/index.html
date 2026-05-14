@@ -386,6 +386,16 @@
         .tab-btn .tab-icon {
             font-size: 1.2rem;
         }
+        .tab-unread-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #e53935;
+            border-radius: 50%;
+            margin-left: 0.25rem;
+            vertical-align: middle;
+        }
+        .tab-unread-dot[hidden] { display: none; }
         .tab-content {
             display: none;
         }
@@ -804,6 +814,7 @@
                 <button class="tab-btn" data-tab="clipboard">
                     <span class="tab-icon">📋</span>
                     <span>クリップボード</span>
+                    <span class="tab-unread-dot" id="clipboardTabUnreadDot" hidden></span>
                 </button>
             </div>
 
@@ -1093,6 +1104,9 @@
                     tabContents.forEach(content => content.classList.remove('active'));
                     // 対象のタブコンテンツを表示
                     document.getElementById(`tab-${targetTab}`).classList.add('active');
+
+                    // #204: クリップボードタブに切り替えた時点でドットを消す
+                    if (targetTab === 'clipboard') clearTabUnread();
                 });
             });
 
@@ -1312,27 +1326,48 @@
                 }
             };
 
-            // #196: 新着通知 (タブタイトルの先頭に ● を付与)
+            // #196/#204: 新着通知 (タブタイトルの ● とページ内タブのドット)
             const NOTIFY_PREFIX = '● ';
             let notifyEnabled = localStorage.getItem('localnode_clipboardNotify') === '1';
             let baseTitle = document.title;
-            let hasUnread = false;
+            let hasUnread = false;        // タブタイトル用 (ブラウザタブが裏のとき)
+            let tabUnread = false;        // ページ内タブのドット用
             let firstClipboardFetch = true;
+            const clipboardTabDot = document.getElementById('clipboardTabUnreadDot');
 
             const applyTitleIndicator = () => {
                 const target = hasUnread ? NOTIFY_PREFIX + baseTitle : baseTitle;
                 if (document.title !== target) document.title = target;
             };
-            const clearUnread = () => {
-                if (!hasUnread) return;
-                hasUnread = false;
-                applyTitleIndicator();
+            const applyTabDot = () => {
+                clipboardTabDot.hidden = !tabUnread;
             };
+            const clearUnread = () => {
+                if (hasUnread) {
+                    hasUnread = false;
+                    applyTitleIndicator();
+                }
+            };
+            const clearTabUnread = () => {
+                if (tabUnread) {
+                    tabUnread = false;
+                    applyTabDot();
+                }
+            };
+            const isClipboardTabActive = () =>
+                document.querySelector('.tab-btn[data-tab="clipboard"]').classList.contains('active');
             const markUnread = () => {
                 if (!notifyEnabled) return;
-                if (!document.hidden) return; // タブが見えていれば通知不要
-                hasUnread = true;
-                applyTitleIndicator();
+                // ブラウザタブが裏ならタイトルに ●
+                if (document.hidden) {
+                    hasUnread = true;
+                    applyTitleIndicator();
+                }
+                // ページ内のクリップボードタブが非アクティブならドット表示
+                if (!isClipboardTabActive()) {
+                    tabUnread = true;
+                    applyTabDot();
+                }
             };
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden) clearUnread();
@@ -1344,7 +1379,10 @@
             notifyToggle.addEventListener('change', () => {
                 notifyEnabled = notifyToggle.checked;
                 localStorage.setItem('localnode_clipboardNotify', notifyEnabled ? '1' : '0');
-                if (!notifyEnabled) clearUnread();
+                if (!notifyEnabled) {
+                    clearUnread();
+                    clearTabUnread();
+                }
             });
 
             const startClipboardPolling = () => {
