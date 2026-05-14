@@ -207,6 +207,8 @@ Future<void> main(List<String> args) async {
     stdout.writeln('         -H "x-filename: myfile.txt" \\');
     stdout.writeln('         --data-binary @/path/to/myfile.txt \\');
     stdout.writeln('         $serverUrl/api/upload');
+    stdout.writeln('    # subfolder upload: append ?path=<relpath>');
+    stdout.writeln('    #   $serverUrl/api/upload?path=photos%2F2026');
     stdout.writeln('');
     stdout.writeln('  curl example (clipboard):');
     stdout.writeln('    curl -H "Authorization: Bearer $uploadToken" \\');
@@ -1127,9 +1129,25 @@ class _CliServer {
       return Response.badRequest(body: 'x-filename header is required.');
     }
     final filename = p.basename(Uri.decodeComponent(encodedName));
-    final dir = Directory(_storagePath!);
+
+    // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
+    final relPath = req.url.queryParameters['path'] ?? '';
+    if (relPath.contains('..') ||
+        relPath.startsWith('/') ||
+        relPath.startsWith(r'\') ||
+        relPath.contains(':')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
+    final targetDirPath = p.normalize(p.join(canonicalRoot, relPath));
+    final dir = Directory(targetDirPath);
     if (!await dir.exists()) {
-      return Response.internalServerError(body: 'Storage directory not found.');
+      return Response.notFound('Target directory not found.');
+    }
+    final canonicalTarget = await dir.resolveSymbolicLinks();
+    if (canonicalTarget != canonicalRoot &&
+        !p.isWithin(canonicalRoot, canonicalTarget)) {
+      return Response.forbidden('Access denied');
     }
 
     final file = await _uniqueFile(dir, filename);

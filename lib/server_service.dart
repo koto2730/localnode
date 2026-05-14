@@ -536,10 +536,26 @@ class ServerService {
     }
     // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合
     else {
-      final directory = Directory(storagePath);
+      // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
+      final relPath = request.url.queryParameters['path'] ?? '';
+      if (relPath.contains('..') ||
+          relPath.startsWith('/') ||
+          relPath.startsWith(r'\') ||
+          relPath.contains(':')) {
+        return Response.badRequest(body: 'Invalid path.');
+      }
+      final canonicalRoot =
+          await Directory(storagePath).resolveSymbolicLinks();
+      final targetDirPath = p.normalize(p.join(canonicalRoot, relPath));
+      final directory = Directory(targetDirPath);
       if (!await directory.exists()) {
-        _log('Upload error: storage directory missing -> $storagePath');
-        return Response.internalServerError(body: 'Documents directory not found.');
+        _log('Upload error: target directory missing -> $targetDirPath');
+        return Response.notFound('Target directory not found.');
+      }
+      final canonicalTarget = await directory.resolveSymbolicLinks();
+      if (canonicalTarget != canonicalRoot &&
+          !p.isWithin(canonicalRoot, canonicalTarget)) {
+        return Response.forbidden('Access denied');
       }
 
       final file = await _getUniqueFilePath(directory, sanitizedFilename);
