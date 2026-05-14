@@ -1131,14 +1131,20 @@ class _CliServer {
     final filename = p.basename(Uri.decodeComponent(encodedName));
 
     // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
+    // (Copilot #207 review): セグメント単位で .. のみ拒否
     final relPath = req.url.queryParameters['path'] ?? '';
-    if (relPath.contains('..') ||
-        relPath.startsWith('/') ||
-        relPath.startsWith(r'\') ||
-        relPath.contains(':')) {
+    if (relPath.startsWith('/') || relPath.startsWith(r'\')) {
       return Response.badRequest(body: 'Invalid path.');
     }
-    final canonicalRoot = await Directory(_storagePath!).resolveSymbolicLinks();
+    if (p.split(relPath).contains('..')) {
+      return Response.badRequest(body: 'Invalid path.');
+    }
+    // (Copilot #207 review): root 不在を resolveSymbolicLinks より先に検出
+    final rootDir = Directory(_storagePath!);
+    if (!await rootDir.exists()) {
+      return Response.internalServerError(body: 'Storage directory not found.');
+    }
+    final canonicalRoot = await rootDir.resolveSymbolicLinks();
     final targetDirPath = p.normalize(p.join(canonicalRoot, relPath));
     final dir = Directory(targetDirPath);
     if (!await dir.exists()) {
