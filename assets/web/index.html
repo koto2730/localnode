@@ -1461,8 +1461,14 @@
             document.getElementById('clipboardList').addEventListener('click', (e) => {
                 const target = e.target.closest('[data-folder]');
                 if (!target) return;
+                // dataset.folder は HTML エンティティをデコードした生の文字列が入る
                 const folder = target.dataset.folder || '';
                 navigateTo(folder);
+                // #202: クリップボードタブにいる場合があるので、ファイルタブへ強制切替
+                const filesTabBtn = document.querySelector('.tab-btn[data-tab="files"]');
+                if (filesTabBtn && !filesTabBtn.classList.contains('active')) {
+                    filesTabBtn.click();
+                }
                 document.getElementById('file-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
             });
 
