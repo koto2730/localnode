@@ -439,7 +439,7 @@ class ServerService {
     // 他のプラットフォーム、またはSAFが設定されていないAndroidの場合は、従来のdart:ioを使用
     else {
       // ?path= パラメータで相対パスを受け取りサブフォルダナビゲーションに対応 (#178, #179)
-      final relPath = request.url.queryParameters['path'] ?? '';
+      final relPath = request.requestedUri.queryParameters['path'] ?? '';
       final rootDir = Directory(storagePath);
       if (!await rootDir.exists()) {
         return Response.internalServerError(body: 'Documents directory not found.');
@@ -512,7 +512,7 @@ class ServerService {
     final filename = Uri.decodeComponent(encodedFilename);
     final sanitizedFilename = p.basename(filename);
 
-    final relPath = request.url.queryParameters['path'] ?? '';
+    final relPath = request.requestedUri.queryParameters['path'] ?? '';
 
     // AndroidでSAF URIが設定されている場合
     if (Platform.isAndroid && _safDirectoryUri != null) {
@@ -878,7 +878,7 @@ class ServerService {
     if (storagePath == null) {
       return Response.internalServerError(body: 'Server directory not initialized.');
     }
-    final relPath = request.url.queryParameters['path'] ?? '';
+    final relPath = request.requestedUri.queryParameters['path'] ?? '';
     if (relPath.isEmpty ||
         relPath.contains('..') ||
         relPath.startsWith('/') ||
@@ -907,12 +907,12 @@ class ServerService {
   // #193: テキストファイルのインラインプレビュー（head / tail / full）
   Future<Response> _textPreviewHandler(Request request, String id) async {
     const maxFullBytes = 5 * 1024 * 1024; // 5MB
-    final modeRaw = request.url.queryParameters['mode'] ?? 'head';
+    final modeRaw = request.requestedUri.queryParameters['mode'] ?? 'head';
     if (modeRaw != 'head' && modeRaw != 'tail' && modeRaw != 'full') {
       return Response.badRequest(body: 'mode must be head|tail|full');
     }
     final mode = modeRaw;
-    final lines = int.tryParse(request.url.queryParameters['lines'] ?? '') ?? 200;
+    final lines = int.tryParse(request.requestedUri.queryParameters['lines'] ?? '') ?? 200;
     if (lines < 1 || lines > 10000) {
       return Response.badRequest(body: 'lines out of range');
     }
@@ -1233,7 +1233,7 @@ class ServerService {
         }
       } else {
         // ?path= で現在フォルダを指定し、そのフォルダのファイルのみをZIP (#179)
-        final relPath = request.url.queryParameters['path'] ?? '';
+        final relPath = request.requestedUri.queryParameters['path'] ?? '';
         final canonicalRoot =
             await Directory(storagePath).resolveSymbolicLinks();
         final targetPath = p.normalize(p.join(canonicalRoot, relPath));

@@ -25,7 +25,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.5.0';
+const String _appVersion = '1.5.1';
 
 // =============================================================================
 // エントリポイント
@@ -1084,7 +1084,7 @@ class _CliServer {
     if (!await root.exists()) {
       return Response.internalServerError(body: 'Storage directory not found.');
     }
-    final relPath = req.url.queryParameters['path'] ?? '';
+    final relPath = req.requestedUri.queryParameters['path'] ?? '';
     final canonicalRoot = await root.resolveSymbolicLinks();
     final targetPath = p.normalize(p.join(canonicalRoot, relPath));
     final dir = Directory(targetPath);
@@ -1132,7 +1132,7 @@ class _CliServer {
 
     // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
     // (Copilot #207 review): セグメント単位で .. のみ拒否
-    final relPath = req.url.queryParameters['path'] ?? '';
+    final relPath = req.requestedUri.queryParameters['path'] ?? '';
     if (relPath.startsWith('/') || relPath.startsWith(r'\')) {
       return Response.badRequest(body: 'Invalid path.');
     }
@@ -1348,11 +1348,11 @@ class _CliServer {
   // #193: テキストファイルのインラインプレビュー
   Future<Response> _textPreviewHandler(Request req, String id) async {
     const maxFullBytes = 5 * 1024 * 1024;
-    final mode = req.url.queryParameters['mode'] ?? 'head';
+    final mode = req.requestedUri.queryParameters['mode'] ?? 'head';
     if (mode != 'head' && mode != 'tail' && mode != 'full') {
       return Response.badRequest(body: 'mode must be head|tail|full');
     }
-    final lines = int.tryParse(req.url.queryParameters['lines'] ?? '') ?? 200;
+    final lines = int.tryParse(req.requestedUri.queryParameters['lines'] ?? '') ?? 200;
     if (lines < 1 || lines > 10000) {
       return Response.badRequest(body: 'lines out of range');
     }
@@ -1439,7 +1439,7 @@ class _CliServer {
 
   // #198: @file:<relpath> 用のパスベースサムネイル
   Future<Response> _thumbnailByPathHandler(Request req) async {
-    final relPath = req.url.queryParameters['path'] ?? '';
+    final relPath = req.requestedUri.queryParameters['path'] ?? '';
     if (relPath.isEmpty ||
         relPath.contains('..') ||
         relPath.startsWith('/') ||
@@ -1495,7 +1495,7 @@ class _CliServer {
     if (!await root.exists()) {
       return Response.internalServerError(body: 'Storage directory not found.');
     }
-    final relPath = req.url.queryParameters['path'] ?? '';
+    final relPath = req.requestedUri.queryParameters['path'] ?? '';
     final canonicalRoot = await root.resolveSymbolicLinks();
     final targetPath = p.normalize(p.join(canonicalRoot, relPath));
     final dir = Directory(targetPath);
