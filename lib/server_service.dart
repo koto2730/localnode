@@ -77,7 +77,10 @@ class ServerService {
   // クリップボード共有用
   final List<ClipboardItem> _clipboardItems = [];
   int _clipboardLastModified = 0;
-  static const int _maxClipboardItems = 10;
+  // #227: 1.6.0 で 10 → 1000 にデフォルト値を引き上げ
+  // GUI アプリは現状 YAML config を読み込まないので hardcoded。
+  // federation (#218) で GUI 側の config 配線が入った時点で設定化される予定。
+  static const int _maxClipboardItems = 1000;
   static const int _maxTextLength = 10000;
 
   // クリップボードアイテムへの外部アクセス用ゲッター
