@@ -429,7 +429,32 @@ Future<void> main(List<String> args) async {
       ? (fixedToken ?? _generateUploadToken())
       : null;
 
-  final server = _CliServer(verbose: verbose);
+  // #227: clipboard 設定を config から読む (config.clipboard.max_items / max_text_length)
+  final clipboardCfg = cfg?.clipboardRaw;
+  int maxClipboardItems = 1000;
+  int maxTextLength = 10000;
+  if (clipboardCfg != null) {
+    final mi = clipboardCfg['max_items'];
+    if (mi is int && mi > 0 && mi <= 100000) {
+      maxClipboardItems = mi;
+    } else if (mi != null) {
+      stderr.writeln('Error: clipboard.max_items must be a positive integer (1-100000).');
+      exit(1);
+    }
+    final ml = clipboardCfg['max_text_length'];
+    if (ml is int && ml > 0 && ml <= 1000000) {
+      maxTextLength = ml;
+    } else if (ml != null) {
+      stderr.writeln('Error: clipboard.max_text_length must be a positive integer (1-1000000).');
+      exit(1);
+    }
+  }
+
+  final server = _CliServer(
+    verbose: verbose,
+    maxClipboardItems: maxClipboardItems,
+    maxTextLength: maxTextLength,
+  );
 
   try {
     await server.start(
@@ -979,8 +1004,9 @@ class _ClipboardItem {
 // =============================================================================
 
 class _CliServer {
-  static const int _maxClipboardItems = 10;
-  static const int _maxTextLength = 10000;
+  // #227: clipboard 件数 / 文字長は config から指定可能 (デフォルト 1000 / 10000)
+  final int _maxClipboardItems;
+  final int _maxTextLength;
   static const int _maxFailedAttempts = 5;
   static const Duration _lockoutDuration = Duration(minutes: 5);
 
@@ -1013,7 +1039,12 @@ class _CliServer {
   List<_ClipboardItem> get clipboardItems => List.unmodifiable(_clipboardItems);
   int get clipboardLastModified => _clipboardLastModified;
 
-  _CliServer({required this.verbose}) {
+  _CliServer({
+    required this.verbose,
+    int maxClipboardItems = 1000,
+    int maxTextLength = 10000,
+  })  : _maxClipboardItems = maxClipboardItems,
+        _maxTextLength = maxTextLength {
     _router = Router()
       ..post('/api/auth', _authHandler)
       ..get('/api/health', _healthHandler)
