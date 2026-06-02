@@ -91,6 +91,7 @@ localnode --cli [options]
 | Option | Description |
 |--------|-------------|
 | `--config`, `-c` | Path to YAML config file (overridden by CLI args, see [examples/config.example.yaml](examples/config.example.yaml)) |
+| `--state-file` | Path to persistent state file (device_id for federation). Default: `$XDG_STATE_HOME/localnode-cli/state.json` on POSIX, `%LOCALAPPDATA%\localnode-cli\state.json` on Windows |
 | `--port`, `-p` | Server port (default: 8080) |
 | `--ip` | IP address to advertise (skip auto-detection) |
 | `--name`, `-n` | Custom server name (shown in browser tab/title) |

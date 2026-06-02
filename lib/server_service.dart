@@ -49,6 +49,16 @@ class ClipboardItem {
   };
 }
 
+// #218: UUID v4 (random) を生成して `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx` 形式で返す
+String _generateUuidV4() {
+  final r = Random.secure();
+  final bytes = List<int>.generate(16, (_) => r.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
+
 class ServerService {
   static const _safPlatform = MethodChannel('com.ictglab.localnode/saf_storage');
   static const _folderPlatform = MethodChannel('com.ictglab.localnode/folder');
@@ -72,6 +82,8 @@ class ServerService {
   bool _clipboardEnabled = true;
   String _serverName = 'LocalNode';
   String _appVersion = '';
+  // #218 / §1.11: 端末識別 UUID。SharedPreferences で永続化。
+  String _deviceId = '';
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
@@ -144,6 +156,17 @@ class ServerService {
     final packageInfo = await PackageInfo.fromPlatform();
     final appName = packageInfo.appName;
     _appVersion = packageInfo.version;
+
+    // #218: 端末識別 UUID を SharedPreferences から復元、無ければ生成して保存
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString('device_id');
+    if (stored != null && stored.isNotEmpty) {
+      _deviceId = stored;
+    } else {
+      _deviceId = _generateUuidV4();
+      await prefs.setString('device_id', _deviceId);
+    }
+
     final docDir = await getApplicationDocumentsDirectory();
 
     // デフォルトパスを設定
@@ -410,6 +433,8 @@ class ServerService {
       'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
       'requiresAuth': _authMode != AuthMode.noPin,
       'clipboardEnabled': _clipboardEnabled,
+      // #218: federation 識別子
+      'deviceId': _deviceId,
     };
     return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
