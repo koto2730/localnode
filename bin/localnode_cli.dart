@@ -25,7 +25,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.5.1';
+const String _appVersion = '1.6.0';
 
 // =============================================================================
 // エントリポイント
