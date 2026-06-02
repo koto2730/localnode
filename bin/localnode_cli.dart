@@ -23,9 +23,227 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
+import 'package:yaml/yaml.dart';
 
 // pubspec.yaml の version と一致させる
 const String _appVersion = '1.6.0';
+
+// =============================================================================
+// 設定ファイル (#185)
+// =============================================================================
+//
+// YAML 構造 (1.6.0 spec §2.1):
+//
+//   server:
+//     port: 8080
+//     ip: 192.168.1.100
+//     name: home-pi
+//     dir: /srv/share
+//     pin: "1234"
+//     mode: normal              # or download-only
+//     no-pin: false
+//     no-clipboard: false
+//     verbose: false
+//     https-cert: /path/cert.pem
+//     https-key: /path/key.pem
+//     token: mytoken
+//     no-token: false
+//     pin-length: 4             # 1.6.0 #206 (parsed; consumed by #206)
+//     pin-charset: digits       # 1.6.0 #206
+//
+//   mention_actions:
+//     - alias: backup
+//       script: ./backup.sh
+//       description: ...        # 1.6.0 #224
+//
+//   post_actions:
+//     - pattern: "*.png"
+//       script: ./move-pic.sh
+//
+//   clipboard:                  # 1.6.0 #227 (parsed; consumed by #227)
+//     max_items: 1000
+//     max_text_length: 10000
+//
+//   children: [...]             # 1.6.0 #218 federation (parsed; consumed there)
+//   parent: {...}               # 1.6.0 #218 federation
+//
+// 解決優先順位: CLI 引数 > config ファイル > 既定値
+
+class _LoadedMentionAction {
+  final String alias;
+  final String script;
+  final String? description;
+  _LoadedMentionAction(this.alias, this.script, this.description);
+}
+
+class _LoadedPostAction {
+  final String pattern;
+  final String script;
+  _LoadedPostAction(this.pattern, this.script);
+}
+
+class _LoadedConfig {
+  // server section
+  int? port;
+  String? ip;
+  String? pin;
+  String? dir;
+  String? mode;
+  String? name;
+  String? httpsCert;
+  String? httpsKey;
+  String? token;
+  bool? noPin;
+  bool? noClipboard;
+  bool? verbose;
+  bool? noToken;
+  // #206 hooks (consumed by #206)
+  int? pinLength;
+  String? pinCharset;
+  // lists
+  List<_LoadedMentionAction>? mentionActions;
+  List<_LoadedPostAction>? postActions;
+  // future sections, parsed-but-not-consumed-yet
+  Map<dynamic, dynamic>? clipboardRaw;       // #227
+  List<dynamic>? childrenRaw;                // #218 federation
+  Map<dynamic, dynamic>? parentRaw;          // #218 federation
+}
+
+/// Read and validate a YAML config file. Throws on fatal errors (unreadable,
+/// syntax, type mismatch). Unknown top-level keys produce a warning to stderr.
+_LoadedConfig _loadConfig(String path) {
+  final file = File(path);
+  if (!file.existsSync()) {
+    stderr.writeln('Error: Config file not found: $path');
+    exit(1);
+  }
+  final dynamic doc;
+  try {
+    doc = loadYaml(file.readAsStringSync());
+  } catch (e) {
+    stderr.writeln('Error: Failed to parse config file: $e');
+    exit(1);
+  }
+  if (doc == null) return _LoadedConfig();
+  if (doc is! YamlMap) {
+    stderr.writeln('Error: Config file root must be a YAML mapping.');
+    exit(1);
+  }
+
+  final cfg = _LoadedConfig();
+  const knownTop = {
+    'server', 'mention_actions', 'post_actions', 'clipboard',
+    'children', 'parent',
+  };
+  for (final key in doc.keys) {
+    if (!knownTop.contains(key)) {
+      stderr.writeln('Warning: Unknown top-level key in config: $key');
+    }
+  }
+
+  // server section
+  final server = doc['server'];
+  if (server is YamlMap) {
+    cfg.port = _yamlInt(server, 'port');
+    cfg.ip = _yamlString(server, 'ip');
+    cfg.pin = _yamlString(server, 'pin');
+    cfg.dir = _yamlString(server, 'dir');
+    cfg.mode = _yamlString(server, 'mode');
+    cfg.name = _yamlString(server, 'name');
+    cfg.httpsCert = _yamlString(server, 'https-cert');
+    cfg.httpsKey = _yamlString(server, 'https-key');
+    cfg.token = _yamlString(server, 'token');
+    cfg.noPin = _yamlBool(server, 'no-pin');
+    cfg.noClipboard = _yamlBool(server, 'no-clipboard');
+    cfg.verbose = _yamlBool(server, 'verbose');
+    cfg.noToken = _yamlBool(server, 'no-token');
+    cfg.pinLength = _yamlInt(server, 'pin-length');
+    cfg.pinCharset = _yamlString(server, 'pin-charset');
+  } else if (server != null) {
+    stderr.writeln('Error: server section must be a mapping.');
+    exit(1);
+  }
+
+  // mention_actions
+  final ma = doc['mention_actions'];
+  if (ma is YamlList) {
+    final list = <_LoadedMentionAction>[];
+    for (final entry in ma) {
+      if (entry is! YamlMap) {
+        stderr.writeln('Error: mention_actions entry must be a mapping.');
+        exit(1);
+      }
+      final alias = _yamlString(entry, 'alias');
+      final script = _yamlString(entry, 'script');
+      if (alias == null || alias.isEmpty || script == null || script.isEmpty) {
+        stderr.writeln('Error: mention_actions entry requires alias and script.');
+        exit(1);
+      }
+      list.add(_LoadedMentionAction(alias, script, _yamlString(entry, 'description')));
+    }
+    cfg.mentionActions = list;
+  } else if (ma != null) {
+    stderr.writeln('Error: mention_actions must be a list.');
+    exit(1);
+  }
+
+  // post_actions
+  final pa = doc['post_actions'];
+  if (pa is YamlList) {
+    final list = <_LoadedPostAction>[];
+    for (final entry in pa) {
+      if (entry is! YamlMap) {
+        stderr.writeln('Error: post_actions entry must be a mapping.');
+        exit(1);
+      }
+      final pattern = _yamlString(entry, 'pattern');
+      final script = _yamlString(entry, 'script');
+      if (pattern == null || pattern.isEmpty || script == null || script.isEmpty) {
+        stderr.writeln('Error: post_actions entry requires pattern and script.');
+        exit(1);
+      }
+      list.add(_LoadedPostAction(pattern, script));
+    }
+    cfg.postActions = list;
+  } else if (pa != null) {
+    stderr.writeln('Error: post_actions must be a list.');
+    exit(1);
+  }
+
+  // forward-compat sections — parsed and stored but not consumed yet
+  final clip = doc['clipboard'];
+  if (clip is YamlMap) cfg.clipboardRaw = Map.from(clip);
+  final ch = doc['children'];
+  if (ch is YamlList) cfg.childrenRaw = List.from(ch);
+  final pa2 = doc['parent'];
+  if (pa2 is YamlMap) cfg.parentRaw = Map.from(pa2);
+
+  return cfg;
+}
+
+String? _yamlString(YamlMap m, String key) {
+  final v = m[key];
+  if (v == null) return null;
+  return v.toString();
+}
+
+int? _yamlInt(YamlMap m, String key) {
+  final v = m[key];
+  if (v == null) return null;
+  if (v is int) return v;
+  final s = v.toString();
+  return int.tryParse(s);
+}
+
+bool? _yamlBool(YamlMap m, String key) {
+  final v = m[key];
+  if (v == null) return null;
+  if (v is bool) return v;
+  final s = v.toString().toLowerCase();
+  if (s == 'true' || s == 'yes' || s == '1') return true;
+  if (s == 'false' || s == 'no' || s == '0') return false;
+  return null;
+}
 
 // =============================================================================
 // エントリポイント
@@ -50,28 +268,73 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 
-  final port = int.tryParse(results['port'] as String);
+  // #185: --config が指定されていれば YAML を読み込む。
+  // 解決優先順位: CLI 引数 > config > 既定値
+  _LoadedConfig? cfg;
+  if (results.wasParsed('config')) {
+    cfg = _loadConfig(results['config'] as String);
+  }
+
+  // port: CLI > config > '8080'
+  final portStr = results.wasParsed('port')
+      ? results['port'] as String
+      : (cfg?.port?.toString() ?? results['port'] as String);
+  final port = int.tryParse(portStr);
   if (port == null || port < 1 || port > 65535) {
     stderr.writeln('Error: Invalid port number. Must be between 1 and 65535.');
     exit(1);
   }
 
-  final dir = results['dir'] as String?;
+  final dir = results.wasParsed('dir')
+      ? results['dir'] as String?
+      : (cfg?.dir ?? results['dir'] as String?);
   if (dir != null && !Directory(dir).existsSync()) {
     stderr.writeln('Error: Directory does not exist: $dir');
     exit(1);
   }
 
-  final specifiedIp = results['ip'] as String?;
-  final noClipboard = results['no-clipboard'] as bool;
-  final verbose = results['verbose'] as bool;
-  final downloadOnly = (results['mode'] as String) == 'download-only';
-  final noPin = results['no-pin'] as bool;
-  final fixedPin = results['pin'] as String?;
-  final serverName = results['name'] as String;
-  final noToken = results['no-token'] as bool;
-  final fixedToken = results['token'] as String?;
-  final postActionRaw = results['post-action'] as List<String>;
+  final specifiedIp = results.wasParsed('ip')
+      ? results['ip'] as String?
+      : (cfg?.ip ?? results['ip'] as String?);
+  final noClipboard = results.wasParsed('no-clipboard')
+      ? results['no-clipboard'] as bool
+      : (cfg?.noClipboard ?? results['no-clipboard'] as bool);
+  final verbose = results.wasParsed('verbose')
+      ? results['verbose'] as bool
+      : (cfg?.verbose ?? results['verbose'] as bool);
+  final modeStr = results.wasParsed('mode')
+      ? results['mode'] as String
+      : (cfg?.mode ?? results['mode'] as String);
+  if (modeStr != 'normal' && modeStr != 'download-only') {
+    stderr.writeln('Error: Invalid mode: $modeStr. Must be normal or download-only.');
+    exit(1);
+  }
+  final downloadOnly = modeStr == 'download-only';
+  final noPin = results.wasParsed('no-pin')
+      ? results['no-pin'] as bool
+      : (cfg?.noPin ?? results['no-pin'] as bool);
+  final fixedPin = results.wasParsed('pin')
+      ? results['pin'] as String?
+      : (cfg?.pin ?? results['pin'] as String?);
+  final serverName = results.wasParsed('name')
+      ? results['name'] as String
+      : (cfg?.name ?? results['name'] as String);
+  final noToken = results.wasParsed('no-token')
+      ? results['no-token'] as bool
+      : (cfg?.noToken ?? results['no-token'] as bool);
+  final fixedToken = results.wasParsed('token')
+      ? results['token'] as String?
+      : (cfg?.token ?? results['token'] as String?);
+
+  // post_actions: CLI > config (どちらかが存在すればその全体を使う)
+  final List<String> postActionRaw;
+  if (results.wasParsed('post-action')) {
+    postActionRaw = results['post-action'] as List<String>;
+  } else if (cfg?.postActions != null) {
+    postActionRaw = cfg!.postActions!.map((a) => '${a.pattern}=${a.script}').toList();
+  } else {
+    postActionRaw = results['post-action'] as List<String>;
+  }
   final postActions = <({String pattern, String script})>[];
   for (final entry in postActionRaw) {
     final eq = entry.indexOf('=');
@@ -87,28 +350,43 @@ Future<void> main(List<String> args) async {
     }
     postActions.add((pattern: pattern, script: script));
   }
-  final mentionActionRaw = results['mention-action'] as List<String>;
+  // mention_actions: CLI > config
   final mentionActions = <String, String>{};
-  for (final entry in mentionActionRaw) {
-    final eq = entry.indexOf('=');
-    if (eq <= 0) {
-      stderr.writeln('Error: --mention-action must be in <alias>=<script> format: $entry');
-      exit(1);
+  if (results.wasParsed('mention-action')) {
+    final raw = results['mention-action'] as List<String>;
+    for (final entry in raw) {
+      final eq = entry.indexOf('=');
+      if (eq <= 0) {
+        stderr.writeln('Error: --mention-action must be in <alias>=<script> format: $entry');
+        exit(1);
+      }
+      final alias = entry.substring(0, eq).trim();
+      final script = entry.substring(eq + 1).trim();
+      if (alias.isEmpty || script.isEmpty) {
+        stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
+        exit(1);
+      }
+      if (alias == 'list') {
+        stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
+        exit(1);
+      }
+      mentionActions[alias] = script;
     }
-    final alias = entry.substring(0, eq).trim();
-    final script = entry.substring(eq + 1).trim();
-    if (alias.isEmpty || script.isEmpty) {
-      stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
-      exit(1);
+  } else if (cfg?.mentionActions != null) {
+    for (final m in cfg!.mentionActions!) {
+      if (m.alias == 'list') {
+        stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
+        exit(1);
+      }
+      mentionActions[m.alias] = m.script;
     }
-    if (alias == 'list') {
-      stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
-      exit(1);
-    }
-    mentionActions[alias] = script;
   }
-  final httpsCertPath = results['https-cert'] as String?;
-  final httpsKeyPath = results['https-key'] as String?;
+  final httpsCertPath = results.wasParsed('https-cert')
+      ? results['https-cert'] as String?
+      : (cfg?.httpsCert ?? results['https-cert'] as String?);
+  final httpsKeyPath = results.wasParsed('https-key')
+      ? results['https-key'] as String?
+      : (cfg?.httpsKey ?? results['https-key'] as String?);
   if ((httpsCertPath == null) != (httpsKeyPath == null)) {
     stderr.writeln('Error: --https-cert and --https-key must be specified together.');
     exit(1);
@@ -240,6 +518,9 @@ Future<void> main(List<String> args) async {
 
 ArgParser _buildParser() {
   return ArgParser()
+    ..addOption('config',
+        abbr: 'c',
+        help: 'Path to YAML config file (overridden by CLI args)')
     ..addOption('port',
         abbr: 'p', help: 'Server port number', defaultsTo: '8080')
     ..addOption('ip', help: 'IP address to bind (skip auto-detection)')
@@ -297,6 +578,10 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem');
   stdout.writeln('  localnode-cli --post-action "*.png=./resize.sh" --post-action "*.zip=./unzip.sh"');
   stdout.writeln('  localnode-cli --mention-action backup=./backup.sh --mention-action notify=./notify.sh');
+  stdout.writeln('  localnode-cli --config /etc/localnode/config.yaml');
+  stdout.writeln('');
+  stdout.writeln('Config file (YAML, see docs):');
+  stdout.writeln('  Supports server.*, mention_actions[], post_actions[]; CLI args override config.');
   stdout.writeln('');
   stdout.writeln('Security note (--post-action / --mention-action):');
   stdout.writeln('  Scripts run with the same user privileges as the LocalNode process.');

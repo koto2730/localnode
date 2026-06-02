@@ -58,6 +58,7 @@ dependencies:
   path: ^1.9.0
   basic_utils: ^5.8.2
   window_manager: ^0.4.3
+  yaml: ^3.1.2
 
 dev_dependencies:
   flutter_test:
