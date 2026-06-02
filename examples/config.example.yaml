@@ -1,0 +1,66 @@
+# LocalNode CLI 設定ファイル例 (#185)
+#
+# 使い方:
+#   localnode-cli --config /path/to/this/config.yaml
+#
+# 優先順位: CLI 引数 > config ファイル > 既定値
+
+# サーバー設定 — 既存 CLI オプションに対応
+server:
+  port: 8080
+  ip: 192.168.1.100              # 省略可（自動選択）
+  name: home-server              # ブラウザタブに表示する名前
+  dir: /srv/share                # 共有フォルダ
+  pin: "1234"                    # 固定 PIN（省略するとランダム生成）
+  mode: normal                   # normal / download-only
+  no-pin: false                  # PIN 認証を無効化（信頼ネットワーク用）
+  no-clipboard: false            # クリップボード共有を無効化
+  verbose: false                 # 詳細ログを有効化
+  https-cert: /etc/letsencrypt/live/example.com/fullchain.pem
+  https-key: /etc/letsencrypt/live/example.com/privkey.pem
+  token: mytoken-for-upload      # 固定 Bearer トークン
+  no-token: false                # トークン認証を無効化
+
+  # 1.6.0 PIN 強化 (#206) — 1.6.0 で実装予定。スキーマは予約
+  pin-length: 4                  # 4-8
+  pin-charset: digits            # digits / alnum / alnum_symbols
+
+# メンションアクション (alias 形式) — #185 + description は @list で表示 (#224)
+mention_actions:
+  - alias: backup
+    script: /usr/local/bin/backup.sh
+    description: バックアップを実行
+  - alias: notify
+    script: /usr/local/bin/notify.sh
+    description: 通知を送る
+
+# post-action (アップロード後にパターン一致したファイルでスクリプト実行)
+post_actions:
+  - pattern: "*.png"
+    script: /usr/local/bin/move-pic.sh
+  - pattern: "*.zip"
+    script: /usr/local/bin/unzip.sh
+
+# === 以下は 1.6.0 の federation / clipboard scalability で使用 ===
+# 現時点ではスキーマだけ予約。中身は対応 issue で反映される。
+
+# クリップボード共有のチューニング (#227 で実装)
+clipboard:
+  max_items: 1000                # デフォルト 10 → 1000
+  max_text_length: 10000
+
+# 親子連携: 自分が「親」のとき子の一覧を書く (#218 で実装)
+children:
+  - name: watcher-pi
+    url: https://watcher-pi.tail-xxxx.ts.net:8080
+    token: <child-issued-token>
+    relation: friendly           # friendly / equally
+    max_upload_size: 100MB
+
+# 親子連携: 自分が「子」のとき親を書く (#218 で実装)
+parent:
+  name: home-server
+  url: https://home-server.tail-xxxx.ts.net:8080
+  token: <parent-issued-token>
+  relation: friendly
+  trust: true                    # 親に転送したファイルを子側で保持しない
