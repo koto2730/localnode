@@ -407,6 +407,74 @@ Future<void> main(List<String> args) async {
           ? _AuthMode.fixedPin
           : _AuthMode.randomPin;
 
+  // #218 / §1.11: 端末識別 UUID。federation 参加時の固定 ID として使う。
+  final statePath = results['state-file'] as String? ?? _defaultStateFilePath();
+  final deviceId = _loadOrCreateDeviceId(statePath);
+
+  // #218: federation 設定 (parent / children) があるなら、構成の整合性を検証
+  final hasFederation =
+      (cfg?.childrenRaw?.isNotEmpty ?? false) || (cfg?.parentRaw != null);
+  if (hasFederation) {
+    final problems = <String>[];
+    // (a) HTTPS が必須
+    if (!httpsMode) {
+      problems.add('federation requires HTTPS — set https-cert and https-key '
+          'in config or pass --https-cert / --https-key');
+    }
+    // (b) --token は固定であること（ランダムだと再起動で切れる）
+    if (noToken) {
+      problems.add('federation requires a fixed Bearer token — remove no-token');
+    } else if (fixedToken == null || fixedToken.isEmpty) {
+      problems.add('federation requires a fixed Bearer token — set server.token '
+          'in config or pass --token <value>');
+    }
+    // (c) children の各エントリを軽く検証
+    final children = cfg?.childrenRaw ?? const [];
+    for (final entry in children) {
+      if (entry is! Map) {
+        problems.add('children[]: each entry must be a mapping');
+        continue;
+      }
+      final name = entry['name'];
+      final url = entry['url'];
+      final token = entry['token'];
+      final relation = entry['relation'];
+      if (name is! String || name.isEmpty) problems.add('children[]: name is required');
+      if (url is! String || !url.startsWith('https://')) {
+        problems.add('children[]: url must start with https:// (was: $url)');
+      }
+      if (token is! String || token.isEmpty) {
+        problems.add('children[$name]: token is required (issued by the child)');
+      }
+      if (relation != 'friendly' && relation != 'equally') {
+        problems.add('children[$name]: relation must be friendly or equally');
+      }
+    }
+    // (d) parent エントリを検証
+    final parent = cfg?.parentRaw;
+    if (parent != null) {
+      final url = parent['url'];
+      final token = parent['token'];
+      final relation = parent['relation'];
+      if (url is! String || !url.startsWith('https://')) {
+        problems.add('parent.url must start with https:// (was: $url)');
+      }
+      if (token is! String || token.isEmpty) {
+        problems.add('parent.token is required (issued by the parent)');
+      }
+      if (relation != 'friendly' && relation != 'equally') {
+        problems.add('parent.relation must be friendly or equally');
+      }
+    }
+    if (problems.isNotEmpty) {
+      stderr.writeln('Error: federation config is incomplete:');
+      for (final p in problems) {
+        stderr.writeln('  - $p');
+      }
+      exit(1);
+    }
+  }
+
   // #177/#169: HTTPS モードで SAN→ホスト名→IP 解決フロー
   String ipAddress;
   String advertisedHost; // QR/URL に使うホスト名またはIP
@@ -454,6 +522,7 @@ Future<void> main(List<String> args) async {
     verbose: verbose,
     maxClipboardItems: maxClipboardItems,
     maxTextLength: maxTextLength,
+    deviceId: deviceId,
   );
 
   try {
@@ -490,6 +559,22 @@ Future<void> main(List<String> args) async {
   }
   stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
+  if (hasFederation) {
+    stdout.writeln('  DeviceID: $deviceId');
+    stdout.writeln('  Federation:');
+    if (cfg?.childrenRaw != null && cfg!.childrenRaw!.isNotEmpty) {
+      stdout.writeln('    children:');
+      for (final ch in cfg.childrenRaw!) {
+        if (ch is Map) {
+          stdout.writeln('      ${ch['name']} <${ch['url']}> [${ch['relation']}]');
+        }
+      }
+    }
+    if (cfg?.parentRaw != null) {
+      final pr = cfg!.parentRaw!;
+      stdout.writeln('    parent: ${pr['name']} <${pr['url']}> [${pr['relation']}${pr['trust'] == true ? ', trust' : ''}]');
+    }
+  }
   if (postActions.isNotEmpty) {
     stdout.writeln('  Post-action(s):');
     for (final a in postActions) {
@@ -546,6 +631,9 @@ ArgParser _buildParser() {
     ..addOption('config',
         abbr: 'c',
         help: 'Path to YAML config file (overridden by CLI args)')
+    ..addOption('state-file',
+        help: 'Path to state file for persistent device_id '
+            '(default: platform-specific user state dir, see docs)')
     ..addOption('port',
         abbr: 'p', help: 'Server port number', defaultsTo: '8080')
     ..addOption('ip', help: 'IP address to bind (skip auto-detection)')
@@ -920,6 +1008,71 @@ Future<_HttpsHostResult> _resolveHttpsHost({
   return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
 }
 
+// =============================================================================
+// 端末識別 UUID (#218 / §1.11)
+// =============================================================================
+//
+// federation 参加時の固定識別子。初回起動で生成し、再起動越しに保持する。
+// 表示名（`server.name`）は mutable だが、UUID は immutable。federation
+// イベントの `origin_device_id` / `seen_by` (#221) や、peer 認証時の
+// 内部キーとして使う。
+//
+// 保存先:
+//   POSIX: $XDG_STATE_HOME/localnode-cli/state.json （無ければ ~/.local/state/...）
+//   Win:   %LOCALAPPDATA%\localnode-cli\state.json
+//   または --state-file <path> で明示指定
+
+String _defaultStateFilePath() {
+  if (Platform.isWindows) {
+    final base = Platform.environment['LOCALAPPDATA'] ??
+        p.join(Platform.environment['USERPROFILE'] ?? '.', 'AppData', 'Local');
+    return p.join(base, 'localnode-cli', 'state.json');
+  }
+  final xdg = Platform.environment['XDG_STATE_HOME'];
+  if (xdg != null && xdg.isNotEmpty) {
+    return p.join(xdg, 'localnode-cli', 'state.json');
+  }
+  final home = Platform.environment['HOME'] ?? '.';
+  return p.join(home, '.local', 'state', 'localnode-cli', 'state.json');
+}
+
+/// UUID v4 (random) を生成して `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx` 形式で返す。
+String _generateUuidV4() {
+  final r = Random.secure();
+  final bytes = List<int>.generate(16, (_) => r.nextInt(256));
+  // version (4) と variant (10xx)
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
+
+/// state.json から `device_id` を読む。無ければ生成して書き、書いた値を返す。
+String _loadOrCreateDeviceId(String statePath) {
+  final file = File(statePath);
+  if (file.existsSync()) {
+    try {
+      final raw = file.readAsStringSync();
+      final dec = json.decode(raw);
+      if (dec is Map && dec['device_id'] is String) {
+        final id = dec['device_id'] as String;
+        if (id.isNotEmpty) return id;
+      }
+    } catch (_) {
+      // 破損していたら作り直す
+    }
+  }
+  final id = _generateUuidV4();
+  try {
+    file.parent.createSync(recursive: true);
+    file.writeAsStringSync(json.encode({'device_id': id}), flush: true);
+  } catch (e) {
+    stderr.writeln('Warning: Could not persist device_id to $statePath: $e');
+    stderr.writeln('Federation pairing may not survive a restart with this server.');
+  }
+  return id;
+}
+
 /// ランダムなアップロードトークンを生成する（32文字の16進数）
 String _generateUploadToken() {
   final r = Random.secure();
@@ -1010,6 +1163,9 @@ class _CliServer {
   static const int _maxFailedAttempts = 5;
   static const Duration _lockoutDuration = Duration(minutes: 5);
 
+  // #218 / §1.11: 端末識別 UUID
+  final String _deviceId;
+
   final bool verbose;
   HttpServer? _server;
   String? _pin;
@@ -1043,8 +1199,10 @@ class _CliServer {
     required this.verbose,
     int maxClipboardItems = 1000,
     int maxTextLength = 10000,
+    String? deviceId,
   })  : _maxClipboardItems = maxClipboardItems,
-        _maxTextLength = maxTextLength {
+        _maxTextLength = maxTextLength,
+        _deviceId = deviceId ?? '' {
     _router = Router()
       ..post('/api/auth', _authHandler)
       ..get('/api/health', _healthHandler)
@@ -1391,6 +1549,9 @@ class _CliServer {
                   : 'randomPin',
           'requiresAuth': _authMode != _AuthMode.noPin,
           'clipboardEnabled': _clipboardEnabled,
+          // #218: federation 識別子。public エンドポイントなので未認証で見える。
+          // peer 同士の identity 確認に使うが、機密ではない。
+          'deviceId': _deviceId,
         }),
         headers: {'Content-Type': 'application/json'},
       );
