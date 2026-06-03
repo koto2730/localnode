@@ -1464,6 +1464,44 @@ class ServerService {
 
   // === Middleware ===
 
+  // #221: federation ループ防止
+  static const String _kFedOrigin = 'x-fed-origin';
+  static const String _kFedSeenBy = 'x-fed-seen-by';
+
+  Middleware get _federationLoopGuard => (innerHandler) {
+        return (request) {
+          final seenByRaw = request.headers[_kFedSeenBy];
+          if (seenByRaw != null && _deviceId.isNotEmpty) {
+            final ids = seenByRaw
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toSet();
+            if (ids.contains(_deviceId)) {
+              final origin = request.headers[_kFedOrigin] ?? '?';
+              _log('[fed] loop-drop origin=$origin seen_by_count=${ids.length}');
+              return Response.ok(
+                json.encode({'dropped': 'loop', 'device_id': _deviceId}),
+                headers: {'Content-Type': 'application/json'},
+              );
+            }
+          }
+          return innerHandler(request);
+        };
+      };
+
+  /// #219 から使うヘルパ: federation event 転送時の seen_by 構築
+  // ignore: unused_element
+  List<String> _appendSelfToSeenBy(String? incomingHeader) {
+    final ids = (incomingHeader ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (_deviceId.isNotEmpty && !ids.contains(_deviceId)) ids.add(_deviceId);
+    return ids;
+  }
+
   Middleware get _authMiddleware => (innerHandler) {
     return (request) {
       final path = request.url.path;
@@ -1664,7 +1702,7 @@ class ServerService {
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
       final apiHandler =
-          const Pipeline().addMiddleware(_authMiddleware).addHandler(_router.call);
+          const Pipeline().addMiddleware(_federationLoopGuard).addMiddleware(_authMiddleware).addHandler(_router.call);
 
       final cascade = Cascade().add(apiHandler).add(staticHandler);
 
@@ -1745,7 +1783,7 @@ class ServerService {
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
       final apiHandler =
-          const Pipeline().addMiddleware(_authMiddleware).addHandler(_router.call);
+          const Pipeline().addMiddleware(_federationLoopGuard).addMiddleware(_authMiddleware).addHandler(_router.call);
 
       final cascade = Cascade().add(apiHandler).add(staticHandler);
 
