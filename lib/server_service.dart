@@ -89,6 +89,19 @@ class ServerService {
   // クリップボード共有用
   final List<ClipboardItem> _clipboardItems = [];
   int _clipboardLastModified = 0;
+  // #228: 削除リングバッファ
+  static const int _maxDeletionLog = 200;
+  final List<({String id, int deletedAtMs})> _clipboardDeletes = [];
+
+  void _recordDeletion(String id) {
+    _clipboardDeletes.add((
+      id: id,
+      deletedAtMs: DateTime.now().millisecondsSinceEpoch,
+    ));
+    if (_clipboardDeletes.length > _maxDeletionLog) {
+      _clipboardDeletes.removeAt(0);
+    }
+  }
   // #227: 1.6.0 で 10 → 1000 にデフォルト値を引き上げ
   // GUI アプリは現状 YAML config を読み込まないので hardcoded。
   // federation (#218) で GUI 側の config 配線が入った時点で設定化される予定。
@@ -1317,14 +1330,66 @@ class ServerService {
 
   // === Clipboard Handlers ===
 
-  /// GET /api/clipboard - クリップボード履歴取得
+  /// GET /api/clipboard - クリップボード履歴取得 (#228 差分対応)
   Response _getClipboardHandler(Request request) {
-    final response = {
-      'items': _clipboardItems.map((item) => item.toJson()).toList(),
-      'lastModified': _clipboardLastModified,
-    };
+    final q = request.requestedUri.queryParameters;
+    final hasQuery = q.containsKey('since') ||
+        q.containsKey('before') ||
+        q.containsKey('limit');
+
+    if (!hasQuery) {
+      // 後方互換: 全件返す
+      return Response.ok(
+        json.encode({
+          'items': _clipboardItems.map((item) => item.toJson()).toList(),
+          'lastModified': _clipboardLastModified,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final since = int.tryParse(q['since'] ?? '');
+    final before = int.tryParse(q['before'] ?? '');
+    final limit = int.tryParse(q['limit'] ?? '');
+    if (limit != null && (limit < 1 || limit > 2000)) {
+      return Response.badRequest(body: 'limit must be 1..2000');
+    }
+
+    bool refresh = false;
+    List<String> deletedSince = const [];
+    if (since != null) {
+      if (_clipboardDeletes.length >= _maxDeletionLog &&
+          _clipboardDeletes.first.deletedAtMs > since) {
+        refresh = true;
+      }
+      deletedSince = _clipboardDeletes
+          .where((d) => d.deletedAtMs > since)
+          .map((d) => d.id)
+          .toList();
+    }
+
+    Iterable<ClipboardItem> filtered = _clipboardItems;
+    if (since != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch > since);
+    }
+    if (before != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch < before);
+    }
+    final list = filtered.toList();
+    final cap = limit ?? list.length;
+    final returned = list.length > cap ? list.sublist(0, cap) : list;
+    final hasMore = list.length > cap;
+
     return Response.ok(
-      json.encode(response),
+      json.encode({
+        'items': returned.map((i) => i.toJson()).toList(),
+        'deleted': deletedSince,
+        'lastModified': _clipboardLastModified,
+        'hasMore': hasMore,
+        'refresh': refresh,
+      }),
       headers: {'Content-Type': 'application/json'},
     );
   }
@@ -1361,9 +1426,10 @@ class ServerService {
 
       _clipboardItems.insert(0, item);
 
-      // 最大件数を超えたら古いものを削除
+      // 最大件数を超えたら古いものを削除 (#228 でリングバッファに記録)
       while (_clipboardItems.length > _maxClipboardItems) {
-        _clipboardItems.removeLast();
+        final evicted = _clipboardItems.removeLast();
+        _recordDeletion(evicted.id);
       }
 
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
@@ -1390,7 +1456,8 @@ class ServerService {
       );
     }
 
-    _clipboardItems.removeAt(index);
+    final removed = _clipboardItems.removeAt(index);
+    _recordDeletion(removed.id);
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
 
     return Response.ok(
@@ -1402,6 +1469,9 @@ class ServerService {
   /// DELETE /api/clipboard - 全アイテム削除
   Response _clearClipboardHandler(Request request) {
     final count = _clipboardItems.length;
+    for (final it in _clipboardItems) {
+      _recordDeletion(it.id);
+    }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
 
@@ -1449,7 +1519,8 @@ class ServerService {
     final index = _clipboardItems.indexWhere((item) => item.id == id);
     if (index == -1) return false;
 
-    _clipboardItems.removeAt(index);
+    final removed = _clipboardItems.removeAt(index);
+    _recordDeletion(removed.id);
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return true;
   }
@@ -1457,6 +1528,9 @@ class ServerService {
   /// クリップボードをクリア（Flutter UIから直接呼び出し用）
   int clearClipboard() {
     final count = _clipboardItems.length;
+    for (final it in _clipboardItems) {
+      _recordDeletion(it.id);
+    }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return count;
