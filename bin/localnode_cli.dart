@@ -1268,6 +1268,7 @@ class _CliServer {
     final staticHandler =
         createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
     final apiHandler = const Pipeline()
+        .addMiddleware(_federationLoopGuard)  // #221
         .addMiddleware(_authMiddleware)
         .addHandler(_router.call);
     final cascade = Cascade().add(apiHandler).add(staticHandler);
@@ -1427,6 +1428,48 @@ class _CliServer {
   }
 
   // --- 認証ミドルウェア ---
+
+  // #221: federation ループ防止
+  // 受信 request に `x-fed-seen-by` ヘッダがあり、自分の device_id が含まれて
+  // いれば破棄。送信側がループに気付けるよう 200 OK + JSON ペイロードを返す
+  // （HTTP エラー扱いにすると意味のないリトライを誘発しかねないため）。
+  static const String _kFedOrigin = 'x-fed-origin';
+  static const String _kFedSeenBy = 'x-fed-seen-by';
+
+  Middleware get _federationLoopGuard => (inner) {
+        return (req) {
+          final seenByRaw = req.headers[_kFedSeenBy];
+          if (seenByRaw != null && _deviceId.isNotEmpty) {
+            final ids = seenByRaw
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toSet();
+            if (ids.contains(_deviceId)) {
+              final origin = req.headers[_kFedOrigin] ?? '?';
+              _log('[fed] loop-drop origin=$origin seen_by_count=${ids.length}');
+              return Response.ok(
+                json.encode({'dropped': 'loop', 'device_id': _deviceId}),
+                headers: {'Content-Type': 'application/json'},
+              );
+            }
+          }
+          return inner(req);
+        };
+      };
+
+  /// #219 から使うヘルパ: federation event を転送するときの seen_by 構築。
+  /// 受信時の seen_by に自分の device_id を追加して返す（既に入っていたら追加しない）。
+  // ignore: unused_element
+  List<String> _appendSelfToSeenBy(String? incomingHeader) {
+    final ids = (incomingHeader ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (_deviceId.isNotEmpty && !ids.contains(_deviceId)) ids.add(_deviceId);
+    return ids;
+  }
 
   Middleware get _authMiddleware => (inner) {
         return (req) {
