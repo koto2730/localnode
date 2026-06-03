@@ -23,6 +23,20 @@
             color: #1a73e8;
             text-align: center;
         }
+        #fed-status .fed-peer {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            margin: 0 0.25rem;
+            border-radius: 10px;
+            background: #eee;
+            color: #444;
+            font-size: 0.8rem;
+        }
+        #fed-status .fed-connected { background: #c8e6c9; color: #1b5e20; }
+        #fed-status .fed-offline { background: #ffcdd2; color: #b71c1c; }
+        #fed-status .fed-paused { background: #fff3cd; color: #856404; }
+        #fed-status .fed-unknown { background: #eee; color: #555; }
+
         #version-badge {
             position: absolute;
             top: 0.5rem;
@@ -814,6 +828,8 @@
         <div class="container">
             <span id="version-badge"></span>
             <h1>LocalNode</h1>
+            <!-- #222: federation 接続状態 -->
+            <div id="fed-status" style="display:none; text-align:center; margin: 0 0 0.75rem; font-size: 0.85rem;"></div>
             <div id="mode-indicator" style="display:none; text-align:center; margin-bottom: 1rem;"></div>
 
             <!-- タブナビゲーション -->
@@ -1072,6 +1088,42 @@
                 if (serverInfo.version) {
                     document.getElementById('version-badge').textContent = `v${serverInfo.version}`;
                 }
+                // #222: federation 状態を定期取得
+                startFederationStatusPolling();
+            };
+
+            // #222: federation 状態ポーリング
+            const fedStatusEl = document.getElementById('fed-status');
+            let fedStatusInterval = null;
+            const refreshFederationStatus = async () => {
+                try {
+                    const res = await safeFetch('/api/federation/status');
+                    if (!res.ok) {
+                        // 404 等: federation 設定なし -> 非表示
+                        fedStatusEl.style.display = 'none';
+                        return;
+                    }
+                    const data = await res.json();
+                    const peers = Array.isArray(data.peers) ? data.peers : [];
+                    if (peers.length === 0) {
+                        fedStatusEl.style.display = 'none';
+                        return;
+                    }
+                    const chips = peers.map(p => {
+                        const cls = `fed-peer fed-${p.status || 'unknown'}`;
+                        const title = `${p.kind} • ${p.relation}${p.lastError ? ' • ' + p.lastError : ''}`;
+                        return `<span class="${cls}" title="${title}">${p.name}: ${p.status || 'unknown'}</span>`;
+                    }).join('');
+                    fedStatusEl.innerHTML = `Federation: ${chips}`;
+                    fedStatusEl.style.display = 'block';
+                } catch (_) {
+                    fedStatusEl.style.display = 'none';
+                }
+            };
+            const startFederationStatusPolling = () => {
+                refreshFederationStatus();
+                if (fedStatusInterval) clearInterval(fedStatusInterval);
+                fedStatusInterval = setInterval(refreshFederationStatus, 30000);
             };
 
             // ダウンロード専用モード時にUI要素を非表示にする
