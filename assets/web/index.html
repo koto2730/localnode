@@ -1418,29 +1418,71 @@
                 }
             };
 
+            // #228: 差分ポーリング
+            // 初回は ?limit=1000 で取得、以降は ?since=<lastModified> で差分のみ取得。
+            // refresh:true (サーバ削除リングバッファの外) のとき full re-fetch。
+            let currentClipboardItems = [];
+
             const fetchClipboard = async () => {
                 try {
-                    const response = await safeFetch('/api/clipboard');
+                    let url;
+                    if (clipboardLastModified === 0) {
+                        // 初回 (or refresh 後): 全件取得 (上限 1000)
+                        url = '/api/clipboard?limit=1000';
+                    } else {
+                        url = `/api/clipboard?since=${clipboardLastModified}`;
+                    }
+                    const response = await safeFetch(url);
                     if (!response.ok) throw new Error('Failed to fetch clipboard.');
-
                     const data = await response.json();
+
+                    if (data.refresh) {
+                        // サーバが「削除リングの外」と判断 → 全件取り直し
+                        clipboardLastModified = 0;
+                        currentClipboardItems = [];
+                        // 次の poll で初回扱いとして fetch
+                        return fetchClipboard();
+                    }
+
+                    const incoming = Array.isArray(data.items) ? data.items : [];
+                    const deletedIds = Array.isArray(data.deleted) ? data.deleted : null;
+                    const isDifferential = url.includes('?since=');
+
+                    let changed = false;
+                    if (isDifferential) {
+                        // 差分マージ: 新規追加 + 削除適用
+                        if (deletedIds && deletedIds.length > 0) {
+                            const delSet = new Set(deletedIds);
+                            currentClipboardItems = currentClipboardItems.filter(i => !delSet.has(i.id));
+                            changed = true;
+                        }
+                        if (incoming.length > 0) {
+                            // incoming は新しい順。既存と被るものは置き換え (id 一意前提)
+                            const incomingIds = new Set(incoming.map(i => i.id));
+                            currentClipboardItems = currentClipboardItems.filter(i => !incomingIds.has(i.id));
+                            currentClipboardItems = [...incoming, ...currentClipboardItems];
+                            changed = true;
+                        }
+                    } else {
+                        // 初回 / refresh: 全件置き換え
+                        currentClipboardItems = incoming;
+                        changed = true;
+                    }
 
                     if (data.lastModified !== clipboardLastModified) {
                         clipboardLastModified = data.lastModified;
-                        renderClipboardItems(data.items);
-                        if (!firstClipboardFetch) markUnread();
-                        firstClipboardFetch = false;
-                    } else if (firstClipboardFetch) {
-                        firstClipboardFetch = false;
                     }
+                    if (changed) {
+                        renderClipboardItems(currentClipboardItems);
+                        if (!firstClipboardFetch) markUnread();
+                    }
+                    firstClipboardFetch = false;
                 } catch (error) {
                     if (error.message !== 'Authentication required.') {
                         console.error('Clipboard fetch error:', error);
                     }
                 }
             };
-
-            let currentClipboardItems = [];
 
             const renderClipboardItems = (items) => {
                 currentClipboardItems = items;

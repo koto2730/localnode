@@ -1181,6 +1181,20 @@ class _CliServer {
 
   final List<_ClipboardItem> _clipboardItems = [];
   int _clipboardLastModified = 0;
+  // #228: 削除リングバッファ。?since= で「自分が見た時刻以降」の削除を返す。
+  // bound あり (200)。これより古い削除があるとクライアントは full refresh。
+  static const int _maxDeletionLog = 200;
+  final List<({String id, int deletedAtMs})> _clipboardDeletes = [];
+
+  void _recordDeletion(String id) {
+    _clipboardDeletes.add((
+      id: id,
+      deletedAtMs: DateTime.now().millisecondsSinceEpoch,
+    ));
+    if (_clipboardDeletes.length > _maxDeletionLog) {
+      _clipboardDeletes.removeAt(0);
+    }
+  }
 
   final Set<String> _sessions = {};
   final Map<String, int> _failedAttempts = {};
@@ -1774,7 +1788,8 @@ class _CliServer {
     );
     _clipboardItems.insert(0, item);
     while (_clipboardItems.length > _maxClipboardItems) {
-      _clipboardItems.removeLast();
+      final evicted = _clipboardItems.removeLast();
+      _recordDeletion(evicted.id);
     }
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
   }
@@ -2133,13 +2148,75 @@ class _CliServer {
 
   // --- クリップボードハンドラ ---
 
-  Response _getClipboardHandler(Request _) => Response.ok(
+  // #228: 差分 / paginated GET
+  // クエリ:
+  //   ?since=<ms>      これより新しい item と、これ以降の削除 id を返す
+  //   ?before=<ms>     これより古い item を返す（古い方ページング）
+  //   ?limit=N         返す item 数の上限 (1..2000)
+  // 全て省略時は従来通り全件返す。
+  // since が削除リングバッファより古い → refresh:true で full re-fetch を促す。
+  Response _getClipboardHandler(Request req) {
+    final q = req.requestedUri.queryParameters;
+    final hasQuery = q.containsKey('since') || q.containsKey('before') || q.containsKey('limit');
+
+    if (!hasQuery) {
+      // 後方互換: 全件返す
+      return Response.ok(
         json.encode({
           'items': _clipboardItems.map((i) => i.toJson()).toList(),
           'lastModified': _clipboardLastModified,
         }),
         headers: {'Content-Type': 'application/json'},
       );
+    }
+
+    final since = int.tryParse(q['since'] ?? '');
+    final before = int.tryParse(q['before'] ?? '');
+    final limit = int.tryParse(q['limit'] ?? '');
+    if (limit != null && (limit < 1 || limit > 2000)) {
+      return Response.badRequest(body: 'limit must be 1..2000');
+    }
+
+    bool refresh = false;
+    List<String> deletedSince = const [];
+    if (since != null) {
+      // ring buffer が満杯で、その最古より since が古ければ full refresh
+      if (_clipboardDeletes.length >= _maxDeletionLog &&
+          _clipboardDeletes.first.deletedAtMs > since) {
+        refresh = true;
+      }
+      deletedSince = _clipboardDeletes
+          .where((d) => d.deletedAtMs > since)
+          .map((d) => d.id)
+          .toList();
+    }
+
+    // items は createdAt の新しい順に並んでいる（insert(0, ...) なので）
+    Iterable<_ClipboardItem> filtered = _clipboardItems;
+    if (since != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch > since);
+    }
+    if (before != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch < before);
+    }
+    final list = filtered.toList();
+    final cap = limit ?? list.length;
+    final returned = list.length > cap ? list.sublist(0, cap) : list;
+    final hasMore = list.length > cap;
+
+    return Response.ok(
+      json.encode({
+        'items': returned.map((i) => i.toJson()).toList(),
+        'deleted': deletedSince,
+        'lastModified': _clipboardLastModified,
+        'hasMore': hasMore,
+        'refresh': refresh,
+      }),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
 
   Future<Response> _postClipboardHandler(Request req) async {
     try {
@@ -2204,7 +2281,8 @@ class _CliServer {
       return Response.notFound(json.encode({'error': 'Item not found.'}),
           headers: {'Content-Type': 'application/json'});
     }
-    _clipboardItems.removeAt(idx);
+    final removed = _clipboardItems.removeAt(idx);
+    _recordDeletion(removed.id);
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return Response.ok(json.encode({'status': 'deleted'}),
         headers: {'Content-Type': 'application/json'});
@@ -2212,6 +2290,9 @@ class _CliServer {
 
   Response _clearClipboardHandler(Request req) {
     final count = _clipboardItems.length;
+    for (final it in _clipboardItems) {
+      _recordDeletion(it.id);
+    }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return Response.ok(json.encode({'status': 'cleared', 'count': count}),
