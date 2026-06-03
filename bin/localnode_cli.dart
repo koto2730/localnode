@@ -611,6 +611,34 @@ Future<void> main(List<String> args) async {
   stdout.writeln('Press Ctrl+C to stop.');
   stdout.writeln('');
 
+  // #222: federation peer を登録してハートビート開始
+  if (hasFederation) {
+    if (cfg?.childrenRaw != null) {
+      for (final ch in cfg!.childrenRaw!) {
+        if (ch is Map) {
+          server.registerFederationPeer(_FederationPeer(
+            kind: 'child',
+            name: ch['name'] as String,
+            url: ch['url'] as String,
+            token: ch['token'] as String,
+            relation: ch['relation'] as String,
+          ));
+        }
+      }
+    }
+    if (cfg?.parentRaw != null) {
+      final pr = cfg!.parentRaw!;
+      server.registerFederationPeer(_FederationPeer(
+        kind: 'parent',
+        name: pr['name'] as String,
+        url: pr['url'] as String,
+        token: pr['token'] as String,
+        relation: pr['relation'] as String,
+      ));
+    }
+    server._startHeartbeat();
+  }
+
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
   // Windows: disable echo/line-input to prevent typed chars from appearing (#139)
@@ -1156,6 +1184,40 @@ class _ClipboardItem {
 // CLI サーバー（GTK/Flutter 非依存）
 // =============================================================================
 
+/// #222: federation peer の動的状態
+class _FederationPeer {
+  final String kind; // 'child' or 'parent'
+  final String name;
+  final String url;
+  final String token;
+  final String relation;
+  String? learnedDeviceId; // /api/info から学習
+  String status = 'unknown'; // 'connected' / 'offline' / 'paused'
+  int lastOkMs = 0;
+  int lastTryMs = 0;
+  String? lastError;
+
+  _FederationPeer({
+    required this.kind,
+    required this.name,
+    required this.url,
+    required this.token,
+    required this.relation,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'kind': kind,
+        'name': name,
+        'url': url,
+        'relation': relation,
+        'status': status,
+        'lastOkMs': lastOkMs,
+        'lastTryMs': lastTryMs,
+        'learnedDeviceId': learnedDeviceId,
+        'lastError': lastError,
+      };
+}
+
 class _CliServer {
   // #227: clipboard 件数 / 文字長は config から指定可能 (デフォルト 1000 / 10000)
   final int _maxClipboardItems;
@@ -1165,6 +1227,12 @@ class _CliServer {
 
   // #218 / §1.11: 端末識別 UUID
   final String _deviceId;
+
+  // #222: federation peer の動的状態とハートビートタイマ
+  final List<_FederationPeer> _federationPeers = [];
+  Timer? _heartbeatTimer;
+  HttpClient? _heartbeatClient;
+  static const Duration _heartbeatInterval = Duration(seconds: 45);
 
   final bool verbose;
   HttpServer? _server;
@@ -1234,7 +1302,87 @@ class _CliServer {
       ..get('/api/clipboard', _getClipboardHandler)
       ..post('/api/clipboard', _postClipboardHandler)
       ..delete('/api/clipboard/<id>', _deleteClipboardItemHandler)
-      ..delete('/api/clipboard', _clearClipboardHandler);
+      ..delete('/api/clipboard', _clearClipboardHandler)
+      // #222: federation 状態（peer 一覧と接続状態）
+      ..get('/api/federation/status', _federationStatusHandler);
+  }
+
+  /// #222: federation peer を起動前に登録する
+  void registerFederationPeer(_FederationPeer peer) {
+    _federationPeers.add(peer);
+  }
+
+  Response _federationStatusHandler(Request _) => Response.ok(
+        json.encode({
+          'deviceId': _deviceId,
+          'peers': _federationPeers.map((p) => p.toJson()).toList(),
+          'heartbeatIntervalSec': _heartbeatInterval.inSeconds,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+  /// #222: 全 peer に GET /api/health を投げて状態を更新
+  Future<void> _heartbeatTick() async {
+    if (_federationPeers.isEmpty) return;
+    _heartbeatClient ??= HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    for (final peer in _federationPeers) {
+      // pause 中は heartbeat だけ続ける（生死表示用）
+      try {
+        peer.lastTryMs = DateTime.now().millisecondsSinceEpoch;
+        final uri = Uri.parse('${peer.url}/api/health');
+        final req = await _heartbeatClient!.getUrl(uri);
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        // #221: ループ防止のため自分の id を seen_by に乗せる
+        req.headers.set(_kFedOrigin, _deviceId);
+        req.headers.set(_kFedSeenBy, _deviceId);
+        final res = await req.close().timeout(const Duration(seconds: 10));
+        await res.drain();
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          peer.lastOkMs = DateTime.now().millisecondsSinceEpoch;
+          if (peer.status != 'paused') peer.status = 'connected';
+          peer.lastError = null;
+        } else {
+          peer.status = 'offline';
+          peer.lastError = 'HTTP ${res.statusCode}';
+        }
+        // peer の deviceId を学習（/api/info を別途叩く）。負荷軽減のためおおむね 10 回に1回
+        if (peer.learnedDeviceId == null) {
+          try {
+            final iReq = await _heartbeatClient!.getUrl(Uri.parse('${peer.url}/api/info'));
+            iReq.headers.set('Authorization', 'Bearer ${peer.token}');
+            final iRes = await iReq.close().timeout(const Duration(seconds: 5));
+            if (iRes.statusCode == 200) {
+              final body = await iRes.transform(utf8.decoder).join();
+              final dec = json.decode(body);
+              if (dec is Map && dec['deviceId'] is String) {
+                peer.learnedDeviceId = dec['deviceId'] as String;
+              }
+            } else {
+              await iRes.drain();
+            }
+          } catch (_) {}
+        }
+        _log('[fed] heartbeat ${peer.name} ${peer.status}');
+      } catch (e) {
+        peer.status = 'offline';
+        peer.lastError = e.toString();
+        _log('[fed] heartbeat ${peer.name} offline: $e');
+      }
+    }
+  }
+
+  void _startHeartbeat() {
+    if (_federationPeers.isEmpty) return;
+    // 起動直後に 1 回 + 以降周期実行
+    Future.microtask(_heartbeatTick);
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _heartbeatTick());
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _heartbeatClient?.close(force: true);
+    _heartbeatClient = null;
   }
 
   void _log(String message) {
@@ -1309,6 +1457,7 @@ class _CliServer {
   }
 
   Future<void> stop() async {
+    _stopHeartbeat();
     await _server?.close(force: true);
     _server = null;
   }
