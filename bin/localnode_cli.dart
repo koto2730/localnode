@@ -622,6 +622,8 @@ Future<void> main(List<String> args) async {
             url: ch['url'] as String,
             token: ch['token'] as String,
             relation: ch['relation'] as String,
+            // #219: 親側設定。子から来るアップロードの上限
+            maxUploadSizeBytes: _parseSizeBytes(ch['max_upload_size']),
           ));
         }
       }
@@ -634,6 +636,8 @@ Future<void> main(List<String> args) async {
         url: pr['url'] as String,
         token: pr['token'] as String,
         relation: pr['relation'] as String,
+        // #219: 子側設定。trust:true で「親に転送したらローカル削除」
+        trust: pr['trust'] == true,
       ));
     }
     server._startHeartbeat();
@@ -1191,6 +1195,10 @@ class _FederationPeer {
   final String url;
   final String token;
   final String relation;
+  // #219: friendly + trust:true で「親に渡したら子側削除」 (parent peer 設定のみ意味あり)
+  final bool trust;
+  // #219: 子→親アップロードの 1 回の最大バイト数 (child peer 設定のみ意味あり)
+  final int? maxUploadSizeBytes;
   String? learnedDeviceId; // /api/info から学習
   String status = 'unknown'; // 'connected' / 'offline' / 'paused'
   int lastOkMs = 0;
@@ -1203,6 +1211,8 @@ class _FederationPeer {
     required this.url,
     required this.token,
     required this.relation,
+    this.trust = false,
+    this.maxUploadSizeBytes,
   });
 
   Map<String, dynamic> toJson() => {
@@ -1210,12 +1220,27 @@ class _FederationPeer {
         'name': name,
         'url': url,
         'relation': relation,
+        'trust': trust,
+        if (maxUploadSizeBytes != null) 'maxUploadSizeBytes': maxUploadSizeBytes,
         'status': status,
         'lastOkMs': lastOkMs,
         'lastTryMs': lastTryMs,
         'learnedDeviceId': learnedDeviceId,
         'lastError': lastError,
       };
+}
+
+/// #219: "100MB" / "5GB" / "1024" 等を bytes に変換 (大文字小文字無視)
+int? _parseSizeBytes(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is int) return raw;
+  final s = raw.toString().trim();
+  final m = RegExp(r'^(\d+(?:\.\d+)?)\s*([kmgtKMGT]?)[bB]?$').firstMatch(s);
+  if (m == null) return null;
+  final num = double.parse(m.group(1)!);
+  final unit = m.group(2)!.toUpperCase();
+  const mult = {'': 1, 'K': 1024, 'M': 1024 * 1024, 'G': 1024 * 1024 * 1024, 'T': 1024 * 1024 * 1024 * 1024};
+  return (num * mult[unit]!).toInt();
 }
 
 class _CliServer {
@@ -1383,6 +1408,206 @@ class _CliServer {
     _heartbeatTimer = null;
     _heartbeatClient?.close(force: true);
     _heartbeatClient = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // #219: federation event 転送 (子 → 親)
+  // ---------------------------------------------------------------------------
+
+  static const String _kFedEvent = 'x-fed-event';
+
+  bool _isUpItem(String text) => text.trimLeft().startsWith('@up ');
+
+  bool _comesFromFederation(Request req) =>
+      req.headers[_kFedSeenBy] != null;
+
+  /// 子→親の clipboard 転送 (fire-and-forget)
+  /// - 受信時に federation 由来 (seen_by あり) なら再転送しない
+  /// - peer.kind=='parent' のみ
+  /// - relation=='equally' は `@up` 付きだけ転送
+  void _forwardClipboardToParents(_ClipboardItem item, Request originReq) {
+    if (_comesFromFederation(originReq)) return;
+    if (_deviceId.isEmpty) return;
+    if (_federationPeers.isEmpty) return;
+
+    final isUp = _isUpItem(item.text);
+    for (final peer in _federationPeers) {
+      if (peer.kind != 'parent') continue;
+      if (peer.relation == 'equally' && !isUp) continue;
+      // fire-and-forget
+      () async {
+        try {
+          await _sendClipboardToPeer(peer, item, isUp);
+        } catch (e) {
+          _log('[fed] forward-clip ${peer.name} unexpected: $e');
+        }
+      }();
+    }
+  }
+
+  /// 子→親の file upload 転送 (fire-and-forget)
+  /// - friendly: 実ファイルを送信。成功 + trust なら local 削除
+  /// - equally: 「@up file uploaded: <name>」を clipboard 通知のみ
+  void _forwardFileToParents(File file, Request originReq) {
+    if (_comesFromFederation(originReq)) return;
+    if (_deviceId.isEmpty) return;
+    if (_federationPeers.isEmpty) return;
+
+    for (final peer in _federationPeers) {
+      if (peer.kind != 'parent') continue;
+      () async {
+        try {
+          if (peer.relation == 'equally') {
+            // 通知のみ
+            final basename = p.basename(file.path);
+            final notice = _ClipboardItem(
+              id: _generateId(),
+              text: '@up file uploaded: $basename',
+              tag: _serverName,
+              createdAt: DateTime.now(),
+            );
+            await _sendClipboardToPeer(peer, notice, true);
+            return;
+          }
+          // friendly: 実ファイル送信
+          final ok = await _sendFileToPeer(peer, file);
+          if (ok && peer.trust) {
+            try {
+              await file.delete();
+              _log('[fed] forward-file ${peer.name} ok, local deleted (trust)');
+            } catch (e) {
+              _log('[fed] forward-file ${peer.name} local-delete fail: $e');
+            }
+          }
+        } catch (e) {
+          _log('[fed] forward-file ${peer.name} unexpected: $e');
+        }
+      }();
+    }
+  }
+
+  Future<void> _sendClipboardToPeer(
+      _FederationPeer peer, _ClipboardItem item, bool isUp) async {
+    _heartbeatClient ??=
+        HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final uri = Uri.parse('${peer.url}/api/clipboard');
+
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final req = await _heartbeatClient!.postUrl(uri);
+        req.headers.set('Content-Type', 'application/json');
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        req.headers.set(_kFedOrigin, _deviceId);
+        req.headers.set(_kFedSeenBy, _deviceId);
+        req.headers.set(_kFedEvent, 'clipboard');
+        req.write(json.encode({
+          'text': item.text,
+          // tag: 親側で「どの子から」かが分かるよう自サーバ名を入れる
+          'tag': _serverName,
+        }));
+        final res = await req.close().timeout(const Duration(seconds: 15));
+        await res.drain();
+
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          _log('[fed] forward-clip ${peer.name} ok attempt=$attempt up=$isUp');
+          return;
+        }
+        _log('[fed] forward-clip ${peer.name} HTTP ${res.statusCode} attempt=$attempt');
+        // 4xx (408 除く) は retry しない
+        if (res.statusCode >= 400 &&
+            res.statusCode < 500 &&
+            res.statusCode != 408) {
+          break;
+        }
+      } catch (e) {
+        _log('[fed] forward-clip ${peer.name} error attempt=$attempt: $e');
+      }
+      if (attempt < 3) {
+        await Future.delayed(Duration(seconds: 2 * attempt));
+      }
+    }
+    _log('[fed] forward-clip ${peer.name} gave-up');
+  }
+
+  Future<bool> _sendFileToPeer(_FederationPeer peer, File file) async {
+    _heartbeatClient ??=
+        HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final filename = p.basename(file.path);
+    final pathParam = Uri.encodeComponent('children/$_serverName');
+    final uri = Uri.parse('${peer.url}/api/upload?path=$pathParam');
+
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final length = await file.length();
+        final req = await _heartbeatClient!.postUrl(uri);
+        req.headers.set('Content-Type', 'application/octet-stream');
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        req.headers.set('x-filename', Uri.encodeComponent(filename));
+        req.headers.set(_kFedOrigin, _deviceId);
+        req.headers.set(_kFedSeenBy, _deviceId);
+        req.headers.set(_kFedEvent, 'upload');
+        req.contentLength = length;
+        await req.addStream(file.openRead());
+        final res = await req.close().timeout(const Duration(minutes: 5));
+        await res.drain();
+
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          _log('[fed] forward-file ${peer.name} ok attempt=$attempt bytes=$length');
+          return true;
+        }
+        _log('[fed] forward-file ${peer.name} HTTP ${res.statusCode} attempt=$attempt');
+        if (res.statusCode == 413) {
+          _log('[fed] over-quota ${peer.name} (skip)');
+          return false;
+        }
+        if (res.statusCode >= 400 &&
+            res.statusCode < 500 &&
+            res.statusCode != 408) {
+          return false;
+        }
+      } catch (e) {
+        _log('[fed] forward-file ${peer.name} error attempt=$attempt: $e');
+      }
+      if (attempt < 3) {
+        await Future.delayed(Duration(seconds: 2 * attempt));
+      }
+    }
+    _log('[fed] forward-file ${peer.name} gave-up');
+    return false;
+  }
+
+  /// 親側: 受信したアップロードが federation 由来 + サイズ超過なら 413
+  /// child の deviceId と peer 学習結果を突き合わせて配下の max_upload_size を引く。
+  /// 学習未了なら制限なしとして通す。
+  Response? _checkFederationUploadQuota(Request req, int contentLength) {
+    final origin = req.headers[_kFedOrigin];
+    if (origin == null || origin.isEmpty) return null;
+    for (final peer in _federationPeers) {
+      if (peer.kind != 'child') continue;
+      if (peer.learnedDeviceId != origin) continue;
+      final cap = peer.maxUploadSizeBytes;
+      if (cap != null && contentLength > cap) {
+        _log('[fed] over-quota ${peer.name} bytes=$contentLength cap=$cap');
+        // 通知: 自分の clipboard に 1 件残す (受信者側で気付けるように)
+        _clipboardItems.insert(
+          0,
+          _ClipboardItem(
+            id: _generateId(),
+            text:
+                '@up over-quota from ${peer.name}: bytes=$contentLength cap=$cap',
+            tag: 'federation',
+            createdAt: DateTime.now(),
+          ),
+        );
+        while (_clipboardItems.length > _maxClipboardItems) {
+          final ev = _clipboardItems.removeLast();
+          _recordDeletion(ev.id);
+        }
+        _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+        return Response(413, body: 'Federation upload over quota.');
+      }
+    }
+    return null;
   }
 
   void _log(String message) {
@@ -1813,6 +2038,15 @@ class _CliServer {
     }
     final filename = p.basename(Uri.decodeComponent(encodedName));
 
+    // #219: federation 由来のアップロードなら、送信元 child の
+    // max_upload_size を Content-Length で先に検査
+    final clHeader = req.headers['content-length'];
+    final cl = clHeader != null ? int.tryParse(clHeader) : null;
+    if (cl != null) {
+      final quotaResp = _checkFederationUploadQuota(req, cl);
+      if (quotaResp != null) return quotaResp;
+    }
+
     // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
     // (Copilot #207 review): セグメント単位で .. のみ拒否
     final relPath = req.requestedUri.queryParameters['path'] ?? '';
@@ -1849,6 +2083,8 @@ class _CliServer {
       if (_postActions.isNotEmpty) {
         _runPostActions(file.path);
       }
+      // #219: 親への転送 (自分が子のとき、かつ受信が federation 由来でない場合)
+      _forwardFileToParents(file, req);
       return Response.ok('File uploaded: ${p.basename(file.path)}');
     } catch (e) {
       await sink.close();
@@ -2396,9 +2632,13 @@ class _CliServer {
       );
       _clipboardItems.insert(0, item);
       while (_clipboardItems.length > _maxClipboardItems) {
-        _clipboardItems.removeLast();
+        final ev = _clipboardItems.removeLast();
+        _recordDeletion(ev.id);
       }
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+
+      // #219: 親への転送 (自分が子のとき、かつ受信が federation 由来でない場合)
+      _forwardClipboardToParents(item, req);
 
       // #174: メンションコマンド検出
       if (text == '@list') {
