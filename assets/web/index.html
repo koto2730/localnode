@@ -31,7 +31,9 @@
             background: #eee;
             color: #444;
             font-size: 0.8rem;
+            cursor: pointer;
         }
+        #fed-status .fed-peer:hover { opacity: 0.8; }
         #fed-status .fed-connected { background: #c8e6c9; color: #1b5e20; }
         #fed-status .fed-offline { background: #ffcdd2; color: #b71c1c; }
         #fed-status .fed-paused { background: #fff3cd; color: #856404; }
@@ -1109,7 +1111,6 @@
                 try {
                     const res = await safeFetch('/api/federation/status');
                     if (!res.ok) {
-                        // 404 等: federation 設定なし -> 非表示
                         fedStatusEl.style.display = 'none';
                         return;
                     }
@@ -1119,10 +1120,19 @@
                         fedStatusEl.style.display = 'none';
                         return;
                     }
+                    const now = Date.now();
                     const chips = peers.map(p => {
                         const cls = `fed-peer fed-${p.status || 'unknown'}`;
+                        let label = `${p.name}: ${p.status || 'unknown'}`;
+                        if (p.pauseUntilMs && p.pauseUntilMs > now) {
+                            const remainSec = Math.round((p.pauseUntilMs - now) / 1000);
+                            const remainStr = remainSec > 3600
+                                ? `${Math.round(remainSec / 3600)}h`
+                                : `${Math.round(remainSec / 60)}min`;
+                            label += ` (${remainStr})`;
+                        }
                         const title = `${p.kind} • ${p.relation}${p.lastError ? ' • ' + p.lastError : ''}`;
-                        return `<span class="${cls}" title="${title}">${p.name}: ${p.status || 'unknown'}</span>`;
+                        return `<span class="${cls}" title="${title}" data-peer-name="${escapeHtml(p.name)}" data-paused="${p.pauseUntilMs && p.pauseUntilMs > now ? '1' : '0'}">${label}</span>`;
                     }).join('');
                     fedStatusEl.innerHTML = `Federation: ${chips}`;
                     fedStatusEl.style.display = 'block';
@@ -1130,6 +1140,38 @@
                     fedStatusEl.style.display = 'none';
                 }
             };
+
+            // #223: peer chip クリックで pause/resume 操作
+            fedStatusEl.addEventListener('click', async (e) => {
+                const chip = e.target.closest('[data-peer-name]');
+                if (!chip) return;
+                const name = chip.dataset.peerName;
+                const isPaused = chip.dataset.paused === '1';
+                if (isPaused) {
+                    if (!confirm(`${name} の pause を解除しますか？`)) return;
+                    try {
+                        await safeFetch(`/api/federation/peers/${encodeURIComponent(name)}/pause`, { method: 'DELETE' });
+                        refreshFederationStatus();
+                    } catch (_) { alert('解除に失敗しました'); }
+                    return;
+                }
+                // pause メニュー
+                const choice = prompt(
+                    `${name} を pause します。秒数を選択してください:\n  1800 = 30分\n  3600 = 1時間\n  10800 = 3時間\n  43200 = 12時間\n  86400 = 24時間`,
+                    '3600'
+                );
+                if (!choice) return;
+                try {
+                    const r = await safeFetch(`/api/federation/peers/${encodeURIComponent(name)}/pause?duration=${encodeURIComponent(choice)}`, { method: 'POST' });
+                    if (!r.ok) {
+                        const txt = await r.text();
+                        alert(`pause 失敗: ${txt}`);
+                        return;
+                    }
+                    refreshFederationStatus();
+                } catch (_) { alert('pause に失敗しました'); }
+            });
+
             const startFederationStatusPolling = () => {
                 refreshFederationStatus();
                 if (fedStatusInterval) clearInterval(fedStatusInterval);

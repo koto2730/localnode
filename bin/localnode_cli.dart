@@ -1230,6 +1230,13 @@ class _FederationPeer {
   int lastOkMs = 0;
   int lastTryMs = 0;
   String? lastError;
+  // #223: pause まで有効な時刻 (epoch ms)。0 なら pause していない。
+  int pauseUntilMs = 0;
+
+  bool isPaused() {
+    if (pauseUntilMs == 0) return false;
+    return DateTime.now().millisecondsSinceEpoch < pauseUntilMs;
+  }
 
   _FederationPeer({
     required this.kind,
@@ -1253,6 +1260,7 @@ class _FederationPeer {
         'lastTryMs': lastTryMs,
         'learnedDeviceId': learnedDeviceId,
         'lastError': lastError,
+        'pauseUntilMs': pauseUntilMs,
       };
 }
 
@@ -1370,7 +1378,9 @@ class _CliServer {
       ..delete('/api/clipboard/<id>', _deleteClipboardItemHandler)
       ..delete('/api/clipboard', _clearClipboardHandler)
       // #222: federation 状態（peer 一覧と接続状態）
-      ..get('/api/federation/status', _federationStatusHandler);
+      ..get('/api/federation/status', _federationStatusHandler)
+      ..post('/api/federation/peers/<name>/pause', _federationPausePeerHandler)  // #223
+      ..delete('/api/federation/peers/<name>/pause', _federationResumePeerHandler);  // #223
   }
 
   /// #222: federation peer を起動前に登録する
@@ -1386,6 +1396,41 @@ class _CliServer {
         }),
         headers: {'Content-Type': 'application/json'},
       );
+
+  // #223: peer pause / resume
+  Response _federationPausePeerHandler(Request req, String name) {
+    final peer = _federationPeers.firstWhereOrNullExt((p) => p.name == name);
+    if (peer == null) return Response.notFound('Peer not found.');
+    final durStr = req.requestedUri.queryParameters['duration'];
+    final dur = int.tryParse(durStr ?? '');
+    // 許容プリセット (秒): 30min / 1h / 3h / 12h / 24h
+    const allowed = {1800, 3600, 10800, 43200, 86400};
+    if (dur == null || !allowed.contains(dur)) {
+      return Response.badRequest(
+          body: 'duration must be one of 1800/3600/10800/43200/86400 (seconds)');
+    }
+    peer.pauseUntilMs =
+        DateTime.now().millisecondsSinceEpoch + dur * 1000;
+    peer.status = 'paused';
+    _log('[fed] pause ${peer.name} until=${peer.pauseUntilMs}');
+    return Response.ok(
+      json.encode({'paused': true, 'pauseUntilMs': peer.pauseUntilMs}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  Response _federationResumePeerHandler(Request _, String name) {
+    final peer = _federationPeers.firstWhereOrNullExt((p) => p.name == name);
+    if (peer == null) return Response.notFound('Peer not found.');
+    peer.pauseUntilMs = 0;
+    // 次の heartbeat で正しい status に更新される
+    peer.status = 'unknown';
+    _log('[fed] resume ${peer.name}');
+    return Response.ok(
+      json.encode({'paused': false}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
 
   /// #222: 全 peer に GET /api/health を投げて状態を更新
   Future<void> _heartbeatTick() async {
@@ -1405,10 +1450,11 @@ class _CliServer {
         await res.drain();
         if (res.statusCode >= 200 && res.statusCode < 300) {
           peer.lastOkMs = DateTime.now().millisecondsSinceEpoch;
-          if (peer.status != 'paused') peer.status = 'connected';
+          // #223: pause 中はその表示を優先
+          peer.status = peer.isPaused() ? 'paused' : 'connected';
           peer.lastError = null;
         } else {
-          peer.status = 'offline';
+          peer.status = peer.isPaused() ? 'paused' : 'offline';
           peer.lastError = 'HTTP ${res.statusCode}';
         }
         // peer の deviceId を学習（/api/info を別途叩く）。負荷軽減のためおおむね 10 回に1回
@@ -1430,7 +1476,9 @@ class _CliServer {
         }
         _log('[fed] heartbeat ${peer.name} ${peer.status}');
       } catch (e) {
-        peer.status = 'offline';
+        // pause 中でも heartbeat 自体は流す。失敗時は status を offline にするが、
+        // pause が有効ならその表示を優先
+        peer.status = peer.isPaused() ? 'paused' : 'offline';
         peer.lastError = e.toString();
         _log('[fed] heartbeat ${peer.name} offline: $e');
       }
@@ -1529,6 +1577,11 @@ class _CliServer {
 
   Future<void> _sendClipboardToPeer(
       _FederationPeer peer, _ClipboardItem item, bool isUp) async {
+    // #223: pause 中はサイレントに skip
+    if (peer.isPaused()) {
+      _log('[fed] paused-skip clip ${peer.name}');
+      return;
+    }
     _heartbeatClient ??=
         HttpClient()..connectionTimeout = const Duration(seconds: 10);
     final uri = Uri.parse('${peer.url}/api/clipboard');
@@ -1571,6 +1624,11 @@ class _CliServer {
   }
 
   Future<bool> _sendFileToPeer(_FederationPeer peer, File file) async {
+    // #223: pause 中は skip
+    if (peer.isPaused()) {
+      _log('[fed] paused-skip file ${peer.name}');
+      return false;
+    }
     _heartbeatClient ??=
         HttpClient()..connectionTimeout = const Duration(seconds: 10);
     final filename = p.basename(file.path);
@@ -1881,6 +1939,25 @@ class _CliServer {
                 json.encode({'dropped': 'loop', 'device_id': _deviceId}),
                 headers: {'Content-Type': 'application/json'},
               );
+            }
+          }
+          // #223: federation 由来 (x-fed-origin あり) かつ送信元 peer が pause 中なら遮断。
+          //       heartbeat (/api/health) は pause 中でも通す (生死表示用)。
+          final origin = req.headers[_kFedOrigin];
+          if (origin != null && origin.isNotEmpty) {
+            final path = req.url.path;
+            if (path != 'api/health' && path != 'api/info') {
+              final peer = _federationPeers
+                  .firstWhereOrNullExt((p) => p.learnedDeviceId == origin);
+              if (peer != null && peer.isPaused()) {
+                _log('[fed] paused-block ${peer.name} path=$path');
+                return Response(503,
+                    body: json.encode({
+                      'paused': true,
+                      'pauseUntilMs': peer.pauseUntilMs,
+                    }),
+                    headers: {'Content-Type': 'application/json'});
+              }
             }
           }
           return inner(req);
@@ -2854,6 +2931,10 @@ class _CliServer {
 
   /// 任意のテキストを peer の /api/clipboard に送る (リトライ込み)
   Future<void> _sendBareTextToPeer(_FederationPeer peer, String text) async {
+    if (peer.isPaused()) {
+      _log('[fed] paused-skip text ${peer.name}');
+      throw StateError('peer paused');
+    }
     _heartbeatClient ??=
         HttpClient()..connectionTimeout = const Duration(seconds: 10);
     final uri = Uri.parse('${peer.url}/api/clipboard');
