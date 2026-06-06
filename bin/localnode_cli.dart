@@ -28,6 +28,27 @@ import 'package:yaml/yaml.dart';
 // pubspec.yaml の version と一致させる
 const String _appVersion = '1.6.0';
 
+// #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
+// 登録できない。
+//   list      自分のメンション一覧 (既存)
+//   list <child>  (federation #220) 子のメンション一覧。引数なしと曖昧解消
+//   run       script 実行 (既存; --mention-action で登録するのが alias)
+//   to        親→子へ clipboard post を送る (federation #220)
+//   run_to    親→子へ mention 実行を依頼する (federation #220)
+//   up        子→親への重要マーカー (federation #220)
+const Set<String> _kReservedMentionNames = {
+  'list', 'run', 'to', 'run_to', 'up',
+};
+
+extension _FirstWhereOrNullExt<E> on Iterable<E> {
+  E? firstWhereOrNullExt(bool Function(E) test) {
+    for (final e in this) {
+      if (test(e)) return e;
+    }
+    return null;
+  }
+}
+
 // =============================================================================
 // 設定ファイル (#185)
 // =============================================================================
@@ -366,16 +387,17 @@ Future<void> main(List<String> args) async {
         stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
         exit(1);
       }
-      if (alias == 'list') {
-        stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
+      // #174 + #220: 予約名 list / run / to / run_to / up
+      if (_kReservedMentionNames.contains(alias)) {
+        stderr.writeln('Error: "$alias" is a reserved mention name and cannot be used as an alias.');
         exit(1);
       }
       mentionActions[alias] = script;
     }
   } else if (cfg?.mentionActions != null) {
     for (final m in cfg!.mentionActions!) {
-      if (m.alias == 'list') {
-        stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
+      if (_kReservedMentionNames.contains(m.alias)) {
+        stderr.writeln('Error: "${m.alias}" is a reserved mention name and cannot be used as an alias.');
         exit(1);
       }
       mentionActions[m.alias] = m.script;
@@ -1168,12 +1190,15 @@ class _ClipboardItem {
   final String text;
   final String? tag;
   final DateTime createdAt;
+  // #220 / #230: @up でマーク済みの重要アイテム
+  final bool important;
 
   _ClipboardItem({
     required this.id,
     required this.text,
     this.tag,
     required this.createdAt,
+    this.important = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -1181,6 +1206,7 @@ class _ClipboardItem {
         'text': text,
         'tag': tag,
         'createdAt': createdAt.toUtc().toIso8601String(),
+        'important': important,
       };
 }
 
@@ -2607,7 +2633,7 @@ class _CliServer {
     try {
       final params =
           json.decode(await req.readAsString()) as Map<String, dynamic>;
-      final text = (params['text'] as String?)?.trim();
+      var text = (params['text'] as String?)?.trim();
       final rawTag = (params['tag'] as String?)?.trim();
       final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
 
@@ -2624,11 +2650,28 @@ class _CliServer {
         );
       }
 
+      // #220: 受信時 (federation 由来) に `@up ` で始まっていれば
+      //   - important フラグを立てる
+      //   - 表示テキストから `@up ` を剥がす
+      //   ローカル直接投稿でも同様に重要フラグだけ立てる (剥がしは行わない方が
+      //   送信側の意図が見えるが、spec §1.4 で「受信側で剥がす」とあるので剥がす)
+      bool important = false;
+      if (_isUpText(text)) {
+        important = true;
+        text = text.substring(4).trimLeft();
+        if (text.isEmpty) {
+          // @up だけのメッセージは空になる -> 体裁悪いのでマーク前に戻す
+          text = '@up';
+          important = false;
+        }
+      }
+
       final item = _ClipboardItem(
         id: _generateId(),
         text: text,
         tag: tag,
         createdAt: DateTime.now(),
+        important: important,
       );
       _clipboardItems.insert(0, item);
       while (_clipboardItems.length > _maxClipboardItems) {
@@ -2638,20 +2681,18 @@ class _CliServer {
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
 
       // #219: 親への転送 (自分が子のとき、かつ受信が federation 由来でない場合)
-      _forwardClipboardToParents(item, req);
+      // 注: important フラグの判定は転送時にもう一度 _isUpItem で行う。
+      //     しかし剥がした後 (`text` から `@up ` が消えている) なので、
+      //     重要度を保つために item.text ではなく元の判定情報を渡す必要がある。
+      //     ここでは「重要フラグ」を考慮した転送ヘルパを呼び分ける。
+      _forwardClipboardItemWithImportance(item, req, important);
 
-      // #174: メンションコマンド検出
-      if (text == '@list') {
-        _replyToClipboard(_buildMentionList());
-      } else {
-        final match = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
-        if (match != null) {
-          final alias = match.group(1)!;
-          final script = _mentionActions[alias];
-          if (script != null) {
-            _runMentionAction(alias, script);
-          }
-        }
+      // #174 / #220: メンションコマンド検出
+      // 重要フラグで剥がした text はもうコマンドではないので、元の text で判定する
+      // ためここで再度組み立てる必要はなく、剥がし前の text を扱うべき。
+      // → 改修簡素化のため: important なら mention 検出はスキップ
+      if (!important) {
+        await _handleMentionInClipboard(text);
       }
 
       return Response.ok(json.encode(item.toJson()),
@@ -2661,6 +2702,167 @@ class _CliServer {
         body: json.encode({'error': 'Invalid request body.'}),
         headers: {'Content-Type': 'application/json'},
       );
+    }
+  }
+
+  bool _isUpText(String s) => s == '@up' || s.startsWith('@up ');
+
+  /// 親への転送ヘルパ。重要フラグも含めて転送先で `@up ` を付け直すかは
+  /// 送信側で決める。
+  void _forwardClipboardItemWithImportance(
+      _ClipboardItem item, Request originReq, bool important) {
+    if (important) {
+      // 元のテキストを `@up ` 付きで送信し直すための一時 item
+      final wireItem = _ClipboardItem(
+        id: item.id,
+        text: '@up ${item.text}',
+        tag: item.tag,
+        createdAt: item.createdAt,
+        important: true,
+      );
+      _forwardClipboardToParents(wireItem, originReq);
+    } else {
+      _forwardClipboardToParents(item, originReq);
+    }
+  }
+
+  /// #220: clipboard 投稿に含まれるメンションコマンドを処理
+  Future<void> _handleMentionInClipboard(String text) async {
+    // @list (自分)
+    if (text == '@list') {
+      _replyToClipboard(_buildMentionList());
+      return;
+    }
+    // @list <child>
+    final listChild = RegExp(r'^@list\s+(\S+)$').firstMatch(text);
+    if (listChild != null) {
+      final childName = listChild.group(1)!;
+      _dispatchListToChild(childName);
+      return;
+    }
+    // @to <child|all> <message>
+    final toMatch = RegExp(r'^@to\s+(\S+)\s+(.+)$', dotAll: true).firstMatch(text);
+    if (toMatch != null) {
+      final target = toMatch.group(1)!;
+      final message = toMatch.group(2)!;
+      _dispatchToChild(target, message);
+      return;
+    }
+    // @run_to <child> <alias>
+    final runToMatch = RegExp(r'^@run_to\s+(\S+)\s+(\S+)$').firstMatch(text);
+    if (runToMatch != null) {
+      final childName = runToMatch.group(1)!;
+      final alias = runToMatch.group(2)!;
+      _dispatchRunToChild(childName, alias);
+      return;
+    }
+    // @run <alias> (既存)
+    final runMatch = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
+    if (runMatch != null) {
+      final alias = runMatch.group(1)!;
+      final script = _mentionActions[alias];
+      if (script != null) {
+        _runMentionAction(alias, script);
+      }
+    }
+  }
+
+  /// 子に `@list` を投げる。子側で `@list` の結果が自分の clipboard に
+  /// 投稿され、friendly 転送なら親へ戻ってくる (equally では戻らないので
+  /// equally 子に対しては警告として local clipboard に注記)。
+  void _dispatchListToChild(String childName) {
+    final peer = _federationPeers.firstWhereOrNullExt(
+        (p) => p.kind == 'child' && p.name == childName);
+    if (peer == null) {
+      _replyToClipboard('@list $childName: child not found');
+      return;
+    }
+    if (peer.relation == 'equally') {
+      _replyToClipboard(
+          '@list $childName: equally relation — result will not be auto-forwarded');
+    }
+    () async {
+      try {
+        await _sendBareTextToPeer(peer, '@list');
+        _log('[fed] dispatched @list -> ${peer.name}');
+      } catch (e) {
+        _log('[fed] @list ${peer.name} fail: $e');
+        _replyToClipboard('@list $childName: dispatch failed');
+      }
+    }();
+  }
+
+  /// `@to <name|all> <message>` を解決して送信
+  void _dispatchToChild(String target, String message) {
+    final List<_FederationPeer> targets;
+    if (target == 'all') {
+      targets = _federationPeers.where((p) => p.kind == 'child').toList();
+    } else {
+      final t = _federationPeers.firstWhereOrNullExt(
+          (p) => p.kind == 'child' && p.name == target);
+      if (t == null) {
+        _replyToClipboard('@to $target: child not found');
+        return;
+      }
+      targets = [t];
+    }
+    for (final peer in targets) {
+      () async {
+        try {
+          await _sendBareTextToPeer(peer, message);
+          _log('[fed] @to ${peer.name} ok');
+        } catch (e) {
+          _log('[fed] @to ${peer.name} fail: $e');
+        }
+      }();
+    }
+  }
+
+  /// `@run_to <name> <alias>` を解決して `@run <alias>` を送信
+  void _dispatchRunToChild(String childName, String alias) {
+    final peer = _federationPeers.firstWhereOrNullExt(
+        (p) => p.kind == 'child' && p.name == childName);
+    if (peer == null) {
+      _replyToClipboard('@run_to $childName: child not found');
+      return;
+    }
+    () async {
+      try {
+        await _sendBareTextToPeer(peer, '@run $alias');
+        _log('[fed] @run_to ${peer.name} $alias dispatched');
+      } catch (e) {
+        _log('[fed] @run_to ${peer.name} fail: $e');
+        _replyToClipboard('@run_to $childName: dispatch failed');
+      }
+    }();
+  }
+
+  /// 任意のテキストを peer の /api/clipboard に送る (リトライ込み)
+  Future<void> _sendBareTextToPeer(_FederationPeer peer, String text) async {
+    _heartbeatClient ??=
+        HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final uri = Uri.parse('${peer.url}/api/clipboard');
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final r = await _heartbeatClient!.postUrl(uri);
+        r.headers.set('Content-Type', 'application/json');
+        r.headers.set('Authorization', 'Bearer ${peer.token}');
+        r.headers.set(_kFedOrigin, _deviceId);
+        r.headers.set(_kFedSeenBy, _deviceId);
+        r.headers.set(_kFedEvent, 'clipboard');
+        r.write(json.encode({'text': text, 'tag': _serverName}));
+        final res = await r.close().timeout(const Duration(seconds: 15));
+        await res.drain();
+        if (res.statusCode >= 200 && res.statusCode < 300) return;
+        if (res.statusCode >= 400 &&
+            res.statusCode < 500 &&
+            res.statusCode != 408) {
+          throw HttpException('HTTP ${res.statusCode}');
+        }
+      } catch (e) {
+        if (attempt == 3) rethrow;
+      }
+      await Future.delayed(Duration(seconds: 2 * attempt));
     }
   }
 

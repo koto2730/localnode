@@ -33,12 +33,15 @@ class ClipboardItem {
   final String text;
   final String? tag;
   final DateTime createdAt;
+  // #220 / #230: @up 付きで投稿された / federation 経由で「重要」マーク済み
+  final bool important;
 
   ClipboardItem({
     required this.id,
     required this.text,
     this.tag,
     required this.createdAt,
+    this.important = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -46,6 +49,7 @@ class ClipboardItem {
     'text': text,
     'tag': tag,
     'createdAt': createdAt.toUtc().toIso8601String(),
+    'important': important,
   };
 }
 
@@ -1399,7 +1403,7 @@ class ServerService {
     try {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
-      final text = (params['text'] as String?)?.trim();
+      var text = (params['text'] as String?)?.trim();
       final rawTag = (params['tag'] as String?)?.trim();
       final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
 
@@ -1417,11 +1421,21 @@ class ServerService {
         );
       }
 
+      // #220: `@up ` プレフィックスで important マーク + プレフィックス剥がし
+      bool important = false;
+      if (text == '@up' || text.startsWith('@up ')) {
+        if (text.length > 4) {
+          important = true;
+          text = text.substring(4).trimLeft();
+        }
+      }
+
       final item = ClipboardItem(
         id: _generateClipboardId(),
         text: text,
         tag: tag,
         createdAt: DateTime.now(),
+        important: important,
       );
 
       _clipboardItems.insert(0, item);
