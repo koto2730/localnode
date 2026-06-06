@@ -1315,6 +1315,21 @@ class _CliServer {
     }
   }
 
+  // #230: クリップボード件数超過時の退避。非 important から先に削る。
+  // 全部 important なら最古の important を退避（ハードピンしない）。
+  // 退避した item を返す。
+  _ClipboardItem _evictClipboardItem() {
+    // list は新しい順 (insert(0, ...)) なので末尾が最古
+    // 末尾から最初に見つかった非 important を取り除く
+    for (var i = _clipboardItems.length - 1; i >= 0; i--) {
+      if (!_clipboardItems[i].important) {
+        return _clipboardItems.removeAt(i);
+      }
+    }
+    // 全て important: 最古を退避
+    return _clipboardItems.removeLast();
+  }
+
   final Set<String> _sessions = {};
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
@@ -1626,7 +1641,7 @@ class _CliServer {
           ),
         );
         while (_clipboardItems.length > _maxClipboardItems) {
-          final ev = _clipboardItems.removeLast();
+          final ev = _evictClipboardItem();
           _recordDeletion(ev.id);
         }
         _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
@@ -2199,7 +2214,7 @@ class _CliServer {
     );
     _clipboardItems.insert(0, item);
     while (_clipboardItems.length > _maxClipboardItems) {
-      final evicted = _clipboardItems.removeLast();
+      final evicted = _evictClipboardItem();
       _recordDeletion(evicted.id);
     }
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
@@ -2675,7 +2690,7 @@ class _CliServer {
       );
       _clipboardItems.insert(0, item);
       while (_clipboardItems.length > _maxClipboardItems) {
-        final ev = _clipboardItems.removeLast();
+        final ev = _evictClipboardItem();
         _recordDeletion(ev.id);
       }
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
