@@ -245,6 +245,58 @@
             max-height: 300px;
             overflow-y: auto;
         }
+        /* #229: filter / search row */
+        #clipboard-filter-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            margin: 0.5rem 0;
+        }
+        #clipboardSearch {
+            padding: 0.4rem 0.6rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        #clipboardTagFilters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.3rem;
+        }
+        .clip-tag-chip {
+            padding: 0.15rem 0.55rem;
+            border-radius: 12px;
+            background: #eee;
+            color: #555;
+            font-size: 0.78rem;
+            cursor: pointer;
+            border: 1px solid transparent;
+            user-select: none;
+        }
+        .clip-tag-chip:hover { opacity: 0.85; }
+        .clip-tag-chip.active {
+            background: #00796b;
+            color: white;
+            border-color: #004d40;
+        }
+        #clipboardLoadMore {
+            display: block;
+            margin: 0.5rem auto 0;
+            padding: 0.4rem 1.2rem;
+            background: #00796b;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        #clipboardLoadMore:hover { background: #00695c; }
+        .clipboard-filter-hit {
+            text-align: center;
+            color: #888;
+            font-size: 0.8rem;
+            margin: 0.3rem 0 0;
+        }
         .clipboard-item {
             display: flex;
             justify-content: space-between;
@@ -911,9 +963,16 @@
                         <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
                         <button id="sendClipboardBtn">送信</button>
                     </div>
+                    <!-- #229: フィルタ / 検索 -->
+                    <div id="clipboard-filter-row" style="display:none;">
+                        <input type="search" id="clipboardSearch" placeholder="🔍 テキスト検索" />
+                        <div id="clipboardTagFilters"></div>
+                    </div>
                     <div id="clipboardList" class="clipboard-list">
                         <p class="empty-message">テキストを入力して共有しましょう</p>
                     </div>
+                    <!-- #229: 続きを表示 -->
+                    <button id="clipboardLoadMore" style="display:none;">もっと見る</button>
                 </div>
             </div>
         </div>
@@ -1405,6 +1464,40 @@
             const clipboardList = document.getElementById('clipboardList');
             const clearClipboardBtn = document.getElementById('clearClipboardBtn');
             const downloadClipboardBtn = document.getElementById('downloadClipboardBtn');
+            // #229: filter / search / paging
+            const clipboardSearchInput = document.getElementById('clipboardSearch');
+            const clipboardTagFilters = document.getElementById('clipboardTagFilters');
+            const clipboardFilterRow = document.getElementById('clipboard-filter-row');
+            const clipboardLoadMoreBtn = document.getElementById('clipboardLoadMore');
+            const CLIP_PAGE_SIZE = 100;
+            const CLIP_FILTER_STORAGE_KEY = 'localnode.clipboard.filter.v1';
+            let clipboardFilterState = (() => {
+                try {
+                    const raw = localStorage.getItem(CLIP_FILTER_STORAGE_KEY);
+                    if (!raw) return { q: '', tags: [] };
+                    const o = JSON.parse(raw);
+                    return { q: typeof o.q === 'string' ? o.q : '', tags: Array.isArray(o.tags) ? o.tags : [] };
+                } catch (_) { return { q: '', tags: [] }; }
+            })();
+            let clipboardDisplayLimit = CLIP_PAGE_SIZE;
+            const persistClipboardFilter = () => {
+                try { localStorage.setItem(CLIP_FILTER_STORAGE_KEY, JSON.stringify(clipboardFilterState)); } catch (_) {}
+            };
+            const applyClipboardFilter = (items) => {
+                const q = (clipboardFilterState.q || '').toLowerCase().trim();
+                const tagSet = new Set(clipboardFilterState.tags || []);
+                return items.filter(it => {
+                    if (tagSet.size > 0) {
+                        const tag = it.tag || '';
+                        if (!tagSet.has(tag)) return false;
+                    }
+                    if (q) {
+                        const hay = ((it.text || '') + ' ' + (it.tag || '')).toLowerCase();
+                        if (!hay.includes(q)) return false;
+                    }
+                    return true;
+                });
+            };
 
             // タグのデフォルト値: UserAgentからデバイス名を簡易抽出
             const getDefaultDeviceName = () => {
@@ -1588,6 +1681,25 @@
                 }
             };
 
+            const renderClipboardTagFilters = () => {
+                const tagCounts = new Map();
+                for (const it of currentClipboardItems) {
+                    const t = it.tag || '';
+                    tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+                }
+                const tags = [...tagCounts.keys()].sort((a, b) => {
+                    if (a === '' && b !== '') return 1;
+                    if (b === '' && a !== '') return -1;
+                    return a.localeCompare(b);
+                });
+                const activeSet = new Set(clipboardFilterState.tags || []);
+                clipboardTagFilters.innerHTML = tags.map(t => {
+                    const label = t === '' ? '(no tag)' : t;
+                    const cls = 'clip-tag-chip' + (activeSet.has(t) ? ' active' : '');
+                    return `<span class="${cls}" data-tag="${escapeHtml(t)}">${escapeHtml(label)} ${tagCounts.get(t)}</span>`;
+                }).join('');
+            };
+
             const renderClipboardItems = (items) => {
                 currentClipboardItems = items;
                 const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
@@ -1598,13 +1710,31 @@
                         : '<p class="empty-message">テキストを入力して共有しましょう</p>';
                     clearClipboardBtn.style.display = 'none';
                     downloadClipboardBtn.style.display = 'none';
+                    clipboardFilterRow.style.display = 'none';
+                    clipboardLoadMoreBtn.style.display = 'none';
                     return;
                 }
 
                 clearClipboardBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
                 downloadClipboardBtn.style.display = 'inline-block';
 
-                clipboardList.innerHTML = items.map(item => `
+                // #229: filter row only when there's enough material to need it
+                const showFilter = items.length >= 5;
+                clipboardFilterRow.style.display = showFilter ? 'flex' : 'none';
+                if (showFilter) renderClipboardTagFilters();
+
+                const filtered = applyClipboardFilter(items);
+                if (clipboardDisplayLimit > filtered.length) clipboardDisplayLimit = Math.max(CLIP_PAGE_SIZE, filtered.length);
+                const shown = filtered.slice(0, clipboardDisplayLimit);
+                const hiddenCount = filtered.length - shown.length;
+
+                if (filtered.length === 0) {
+                    clipboardList.innerHTML = '<p class="empty-message">フィルタ条件に合うアイテムはありません</p>';
+                    clipboardLoadMoreBtn.style.display = 'none';
+                    return;
+                }
+
+                clipboardList.innerHTML = shown.map(item => `
                     <div class="clipboard-item${item.important ? ' clipboard-important' : ''}" data-id="${escapeHtml(item.id)}">
                         <div class="clipboard-item-content">
                             <p class="clipboard-item-text">${item.important ? '<span class="important-badge">★</span> ' : ''}${renderClipboardText(item.text)}</p>
@@ -1618,8 +1748,45 @@
                             ${isDownloadOnly ? '' : `<button class="btn-delete-clip" onclick="deleteClipboardItem('${escapeHtml(item.id)}')">削除</button>`}
                         </div>
                     </div>
-                `).join('');
+                `).join('') + (filtered.length !== items.length
+                    ? `<p class="clipboard-filter-hit">${filtered.length} / ${items.length} 件を表示</p>`
+                    : '');
+
+                if (hiddenCount > 0) {
+                    clipboardLoadMoreBtn.textContent = `もっと見る（残り ${hiddenCount} 件）`;
+                    clipboardLoadMoreBtn.style.display = 'block';
+                } else {
+                    clipboardLoadMoreBtn.style.display = 'none';
+                }
             };
+
+            // #229: filter / search / load-more wiring
+            clipboardSearchInput.value = clipboardFilterState.q || '';
+            let clipboardSearchTimer = null;
+            clipboardSearchInput.addEventListener('input', () => {
+                if (clipboardSearchTimer) clearTimeout(clipboardSearchTimer);
+                clipboardSearchTimer = setTimeout(() => {
+                    clipboardFilterState.q = clipboardSearchInput.value;
+                    persistClipboardFilter();
+                    clipboardDisplayLimit = CLIP_PAGE_SIZE;
+                    renderClipboardItems(currentClipboardItems);
+                }, 150);
+            });
+            clipboardTagFilters.addEventListener('click', (e) => {
+                const chip = e.target.closest('.clip-tag-chip');
+                if (!chip) return;
+                const tag = chip.dataset.tag ?? '';
+                const tags = new Set(clipboardFilterState.tags || []);
+                if (tags.has(tag)) tags.delete(tag); else tags.add(tag);
+                clipboardFilterState.tags = [...tags];
+                persistClipboardFilter();
+                clipboardDisplayLimit = CLIP_PAGE_SIZE;
+                renderClipboardItems(currentClipboardItems);
+            });
+            clipboardLoadMoreBtn.addEventListener('click', () => {
+                clipboardDisplayLimit += CLIP_PAGE_SIZE;
+                renderClipboardItems(currentClipboardItems);
+            });
 
             // #198: @file:<relpath> をサムネイル/チップに変換（メッセージあたり最大5個）
             const renderClipboardText = (text) => {
@@ -1767,7 +1934,9 @@
             };
 
             downloadClipboardBtn.addEventListener('click', () => {
-                const text = currentClipboardItems.map(item => {
+                // #229: TXT export respects current filter (search + tags)
+                const source = applyClipboardFilter(currentClipboardItems);
+                const text = source.map(item => {
                     const prefix = item.tag ? `[${item.tag}] ` : '';
                     return `${prefix}${item.text}`;
                 }).join('\n---\n');
