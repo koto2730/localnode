@@ -106,6 +106,16 @@ class ServerService {
       _clipboardDeletes.removeAt(0);
     }
   }
+
+  // #230: 件数超過時の退避。非 important から先に削る。全部 important なら最古から退避。
+  ClipboardItem _evictClipboardItem() {
+    for (var i = _clipboardItems.length - 1; i >= 0; i--) {
+      if (!_clipboardItems[i].important) {
+        return _clipboardItems.removeAt(i);
+      }
+    }
+    return _clipboardItems.removeLast();
+  }
   // #227: 1.6.0 で 10 → 1000 にデフォルト値を引き上げ
   // GUI アプリは現状 YAML config を読み込まないので hardcoded。
   // federation (#218) で GUI 側の config 配線が入った時点で設定化される予定。
@@ -1442,7 +1452,7 @@ class ServerService {
 
       // 最大件数を超えたら古いものを削除 (#228 でリングバッファに記録)
       while (_clipboardItems.length > _maxClipboardItems) {
-        final evicted = _clipboardItems.removeLast();
+        final evicted = _evictClipboardItem();
         _recordDeletion(evicted.id);
       }
 
@@ -1521,7 +1531,8 @@ class ServerService {
     _clipboardItems.insert(0, item);
 
     while (_clipboardItems.length > _maxClipboardItems) {
-      _clipboardItems.removeLast();
+      final evicted = _evictClipboardItem();
+      _recordDeletion(evicted.id);
     }
 
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
