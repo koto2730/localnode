@@ -263,6 +263,16 @@
             white-space: pre-wrap;
             margin: 0 0 0.5rem 0;
         }
+        /* #220 / #230: @up でマークされた重要アイテム */
+        .clipboard-item.clipboard-important {
+            border-left: 4px solid #f57c00;
+            background: #fff8e1;
+        }
+        .clipboard-item .important-badge {
+            color: #f57c00;
+            font-weight: bold;
+            margin-right: 0.2rem;
+        }
         .clipboard-file-thumb {
             max-width: 80px;
             max-height: 80px;
@@ -1553,9 +1563,9 @@
                 downloadClipboardBtn.style.display = 'inline-block';
 
                 clipboardList.innerHTML = items.map(item => `
-                    <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
+                    <div class="clipboard-item${item.important ? ' clipboard-important' : ''}" data-id="${escapeHtml(item.id)}">
                         <div class="clipboard-item-content">
-                            <p class="clipboard-item-text">${renderClipboardText(item.text)}</p>
+                            <p class="clipboard-item-text">${item.important ? '<span class="important-badge">★</span> ' : ''}${renderClipboardText(item.text)}</p>
                             <div class="clipboard-item-meta">
                                 ${item.tag ? `<span class="clipboard-item-tag">${escapeHtml(item.tag)}</span>` : ''}
                                 <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
