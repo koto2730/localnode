@@ -1377,6 +1377,7 @@ class _CliServer {
       ..delete('/api/files/<id>', _deleteFileHandler)
       ..post('/api/files/delete-batch', _deleteBatchHandler)
       ..get('/api/clipboard', _getClipboardHandler)
+      ..get('/api/mentions', _mentionsHandler)  // #225
       ..post('/api/clipboard', _postClipboardHandler)
       ..delete('/api/clipboard/<id>', _deleteClipboardItemHandler)
       ..delete('/api/clipboard', _clearClipboardHandler)
@@ -1389,6 +1390,28 @@ class _CliServer {
   /// #222: federation peer を起動前に登録する
   void registerFederationPeer(_FederationPeer peer) {
     _federationPeers.add(peer);
+  }
+
+  // #225: mobile mention picker — structured form of `@list` content
+  Response _mentionsHandler(Request _) {
+    final items = <Map<String, dynamic>>[
+      {
+        'label': '@list',
+        'insert': '@list',
+        'description': 'show this list',
+      },
+    ];
+    for (final e in _mentionActions.entries) {
+      items.add({
+        'label': '@run ${e.key}',
+        'insert': '@run ${e.key}',
+        'description': e.value.description,
+      });
+    }
+    return Response.ok(
+      json.encode({'items': items}),
+      headers: {'Content-Type': 'application/json'},
+    );
   }
 
   Response _federationStatusHandler(Request _) => Response.ok(

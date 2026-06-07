@@ -245,6 +245,50 @@
             max-height: 300px;
             overflow-y: auto;
         }
+        /* #225: mention picker */
+        #mentionPickerBtn {
+            background: transparent;
+            color: #00796b;
+            border: 1px solid #b2dfdb;
+            border-radius: 4px;
+            font-weight: bold;
+            padding: 0 0.6rem;
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+            min-width: 2rem;
+        }
+        #mentionPickerBtn:hover { background: #e0f2f1; }
+        .clipboard-input { position: relative; display: flex; gap: 0.4rem; align-items: stretch; }
+        .clipboard-input textarea { flex: 1; }
+        #mentionPickerPopover {
+            position: absolute;
+            z-index: 30;
+            background: white;
+            border: 1px solid #b2dfdb;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            max-height: 260px;
+            overflow-y: auto;
+            min-width: 220px;
+            padding: 0.25rem 0;
+        }
+        .mention-picker-item {
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            font-size: 0.9rem;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .mention-picker-item:last-child { border-bottom: none; }
+        .mention-picker-item:hover, .mention-picker-item.focused { background: #e0f2f1; }
+        .mention-picker-item .mp-label { font-weight: bold; color: #00796b; }
+        .mention-picker-item .mp-desc { color: #555; font-size: 0.8rem; margin-top: 0.15rem; }
+        .mention-picker-empty {
+            padding: 0.5rem 0.75rem;
+            color: #888;
+            font-style: italic;
+            font-size: 0.85rem;
+        }
         /* #229: filter / search row */
         #clipboard-filter-row {
             display: flex;
@@ -961,8 +1005,11 @@
                     <input type="text" id="clipboardTagInput" class="clipboard-tag-input" placeholder="送信元の名前（例: iPhone）" maxlength="30">
                     <div class="clipboard-input">
                         <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
+                        <button id="mentionPickerBtn" type="button" title="メンション一覧" aria-label="メンション一覧">@</button>
                         <button id="sendClipboardBtn">送信</button>
                     </div>
+                    <!-- #225: mention picker popover -->
+                    <div id="mentionPickerPopover" role="listbox" aria-label="メンション候補" hidden></div>
                     <!-- #229: フィルタ / 検索 -->
                     <div id="clipboard-filter-row" style="display:none;">
                         <input type="search" id="clipboardSearch" placeholder="🔍 テキスト検索" />
@@ -1887,6 +1934,115 @@
             };
 
             sendClipboardBtn.addEventListener('click', sendClipboardText);
+
+            // === #225: mention picker ===
+            const mentionPickerBtn = document.getElementById('mentionPickerBtn');
+            const mentionPickerPopover = document.getElementById('mentionPickerPopover');
+            const MENTION_CACHE_KEY = 'localnode.mentions.v1';
+            const MENTION_CACHE_TTL_MS = 5 * 60 * 1000;
+
+            const loadMentionsCache = () => {
+                try {
+                    const raw = sessionStorage.getItem(MENTION_CACHE_KEY);
+                    if (!raw) return null;
+                    const o = JSON.parse(raw);
+                    if (!o || !Array.isArray(o.items) || typeof o.ts !== 'number') return null;
+                    if (Date.now() - o.ts > MENTION_CACHE_TTL_MS) return null;
+                    return o.items;
+                } catch (_) { return null; }
+            };
+            const saveMentionsCache = (items) => {
+                try { sessionStorage.setItem(MENTION_CACHE_KEY, JSON.stringify({ ts: Date.now(), items })); } catch (_) {}
+            };
+
+            const fetchMentions = async () => {
+                const cached = loadMentionsCache();
+                if (cached) return cached;
+                const res = await safeFetch('/api/mentions');
+                if (!res.ok) throw new Error('/api/mentions HTTP ' + res.status);
+                const data = await res.json();
+                const items = Array.isArray(data?.items) ? data.items : [];
+                saveMentionsCache(items);
+                return items;
+            };
+
+            const insertAtCursor = (textarea, insertText) => {
+                const start = textarea.selectionStart ?? textarea.value.length;
+                const end = textarea.selectionEnd ?? textarea.value.length;
+                const before = textarea.value.slice(0, start);
+                const after = textarea.value.slice(end);
+                // Add space after the mention so the user can keep typing args
+                const needSpace = !after.startsWith(' ') && !after.startsWith('\n');
+                const tail = needSpace ? ' ' : '';
+                textarea.value = before + insertText + tail + after;
+                const caret = start + insertText.length + tail.length;
+                textarea.setSelectionRange(caret, caret);
+                textarea.focus();
+            };
+
+            const closeMentionPicker = () => {
+                mentionPickerPopover.hidden = true;
+                mentionPickerPopover.innerHTML = '';
+            };
+
+            const openMentionPicker = async () => {
+                if (!mentionPickerPopover.hidden) { closeMentionPicker(); return; }
+                // Position above the input row
+                mentionPickerPopover.innerHTML = '<div class="mention-picker-empty">読込中…</div>';
+                mentionPickerPopover.hidden = false;
+                positionMentionPicker();
+                let items = [];
+                try {
+                    items = await fetchMentions();
+                } catch (e) {
+                    mentionPickerPopover.innerHTML = `<div class="mention-picker-empty">取得失敗: ${escapeHtml(e.message)}</div>`;
+                    return;
+                }
+                if (items.length === 0) {
+                    mentionPickerPopover.innerHTML = '<div class="mention-picker-empty">利用可能なメンションはありません</div>';
+                    return;
+                }
+                mentionPickerPopover.innerHTML = items.map((it, idx) => {
+                    const label = escapeHtml(it.label ?? it.insert ?? '');
+                    const desc = it.description ? `<div class="mp-desc">${escapeHtml(it.description)}</div>` : '';
+                    return `<div class="mention-picker-item" role="option" data-idx="${idx}"><span class="mp-label">${label}</span>${desc}</div>`;
+                }).join('');
+                positionMentionPicker();
+                mentionPickerPopover.querySelectorAll('.mention-picker-item').forEach(el => {
+                    el.addEventListener('click', () => {
+                        const idx = parseInt(el.dataset.idx, 10);
+                        const it = items[idx];
+                        if (it) insertAtCursor(clipboardInput, it.insert ?? it.label ?? '');
+                        closeMentionPicker();
+                    });
+                });
+            };
+
+            const positionMentionPicker = () => {
+                // Place the popover just above the button, right-aligned to it
+                const btn = mentionPickerBtn;
+                const inputRow = btn.parentElement;
+                if (!inputRow) return;
+                const pop = mentionPickerPopover;
+                // Use the input row as relative container (already position:relative)
+                pop.style.left = '';
+                pop.style.right = (inputRow.clientWidth - btn.offsetLeft - btn.offsetWidth) + 'px';
+                pop.style.bottom = (inputRow.clientHeight - btn.offsetTop + 4) + 'px';
+                pop.style.top = '';
+            };
+
+            mentionPickerBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openMentionPicker();
+            });
+            document.addEventListener('click', (e) => {
+                if (mentionPickerPopover.hidden) return;
+                if (mentionPickerPopover.contains(e.target) || e.target === mentionPickerBtn) return;
+                closeMentionPicker();
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && !mentionPickerPopover.hidden) closeMentionPicker();
+            });
             clipboardInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
