@@ -372,7 +372,7 @@ Future<void> main(List<String> args) async {
     postActions.add((pattern: pattern, script: script));
   }
   // mention_actions: CLI > config
-  final mentionActions = <String, String>{};
+  final mentionActions = <String, ({String script, String? description})>{};
   if (results.wasParsed('mention-action')) {
     final raw = results['mention-action'] as List<String>;
     for (final entry in raw) {
@@ -392,7 +392,8 @@ Future<void> main(List<String> args) async {
         stderr.writeln('Error: "$alias" is a reserved mention name and cannot be used as an alias.');
         exit(1);
       }
-      mentionActions[alias] = script;
+      // CLI には description フィールドが無い (YAML config 専用、#224)
+      mentionActions[alias] = (script: script, description: null);
     }
   } else if (cfg?.mentionActions != null) {
     for (final m in cfg!.mentionActions!) {
@@ -400,7 +401,7 @@ Future<void> main(List<String> args) async {
         stderr.writeln('Error: "${m.alias}" is a reserved mention name and cannot be used as an alias.');
         exit(1);
       }
-      mentionActions[m.alias] = m.script;
+      mentionActions[m.alias] = (script: m.script, description: m.description);
     }
   }
   final httpsCertPath = results.wasParsed('https-cert')
@@ -606,7 +607,9 @@ Future<void> main(List<String> args) async {
   if (mentionActions.isNotEmpty) {
     stdout.writeln('  Mention action(s):');
     for (final entry in mentionActions.entries) {
-      stdout.writeln('    @run ${entry.key} -> ${entry.value}');
+      final desc = entry.value.description;
+      final suffix = (desc == null || desc.isEmpty) ? '' : '  # $desc';
+      stdout.writeln('    @run ${entry.key} -> ${entry.value.script}$suffix');
     }
   }
   if (uploadToken != null) {
@@ -1343,7 +1346,7 @@ class _CliServer {
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
   List<({String pattern, String script})> _postActions = [];
-  Map<String, String> _mentionActions = {};
+  Map<String, ({String script, String? description})> _mentionActions = {};
 
   late final Router _router;
 
@@ -1728,7 +1731,7 @@ class _CliServer {
     String? httpsKeyPath,
     String? uploadToken,
     List<({String pattern, String script})> postActions = const [],
-    Map<String, String> mentionActions = const {},
+    Map<String, ({String script, String? description})> mentionActions = const {},
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -2268,7 +2271,15 @@ class _CliServer {
     if (_mentionActions.isEmpty) {
       lines.add('  (no @run actions registered)');
     } else {
-      lines.addAll(_mentionActions.keys.map((a) => '  @run $a'));
+      // #224: YAML config の mention_actions[].description があれば付与
+      for (final e in _mentionActions.entries) {
+        final desc = e.value.description;
+        if (desc != null && desc.isNotEmpty) {
+          lines.add('  @run ${e.key} — $desc');
+        } else {
+          lines.add('  @run ${e.key}');
+        }
+      }
     }
 
     if (_postActions.isNotEmpty) {
@@ -2852,9 +2863,9 @@ class _CliServer {
     final runMatch = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
     if (runMatch != null) {
       final alias = runMatch.group(1)!;
-      final script = _mentionActions[alias];
-      if (script != null) {
-        _runMentionAction(alias, script);
+      final entry = _mentionActions[alias];
+      if (entry != null) {
+        _runMentionAction(alias, entry.script);
       }
     }
   }
