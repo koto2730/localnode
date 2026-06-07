@@ -337,6 +337,31 @@ Future<void> main(List<String> args) async {
   final fixedPin = results.wasParsed('pin')
       ? results['pin'] as String?
       : (cfg?.pin ?? results['pin'] as String?);
+  // #206
+  final pinLength = () {
+    final raw = results.wasParsed('pin-length')
+        ? results['pin-length'] as String?
+        : (cfg?.pinLength?.toString());
+    if (raw == null) return 4;
+    final n = int.tryParse(raw);
+    if (n == null || n < 4 || n > 8) {
+      stderr.writeln('Error: --pin-length must be an integer 4..8 (got "$raw").');
+      exit(1);
+    }
+    return n;
+  }();
+  final pinCharset = () {
+    const allowed = {'digits', 'alnum', 'alnum_symbols'};
+    final raw = results.wasParsed('pin-charset')
+        ? results['pin-charset'] as String?
+        : (cfg?.pinCharset ?? results['pin-charset'] as String?);
+    final v = raw ?? 'digits';
+    if (!allowed.contains(v)) {
+      stderr.writeln('Error: --pin-charset must be one of ${allowed.join("/")} (got "$v").');
+      exit(1);
+    }
+    return v;
+  }();
   final serverName = results.wasParsed('name')
       ? results['name'] as String
       : (cfg?.name ?? results['name'] as String);
@@ -556,6 +581,8 @@ Future<void> main(List<String> args) async {
       downloadOnly: downloadOnly,
       authMode: authMode,
       fixedPin: fixedPin,
+      pinLength: pinLength,         // #206
+      pinCharset: pinCharset,       // #206
       serverName: serverName,
       clipboardEnabled: !noClipboard,
       httpsCertPath: httpsCertPath,
@@ -695,6 +722,13 @@ ArgParser _buildParser() {
         abbr: 'p', help: 'Server port number', defaultsTo: '8080')
     ..addOption('ip', help: 'IP address to bind (skip auto-detection)')
     ..addOption('pin', help: 'Fixed PIN (random if not specified)')
+    // #206
+    ..addOption('pin-length',
+        help: 'PIN length when generating a random PIN (4..8, default 4)')
+    ..addOption('pin-charset',
+        help: 'Character set for the generated PIN',
+        allowed: ['digits', 'alnum', 'alnum_symbols'],
+        defaultsTo: 'digits')
     ..addOption('dir', abbr: 'd', help: 'Shared directory path')
     ..addOption('mode',
         abbr: 'm',
@@ -1347,6 +1381,9 @@ class _CliServer {
   String? _uploadToken;
   List<({String pattern, String script})> _postActions = [];
   Map<String, ({String script, String? description})> _mentionActions = {};
+  // #206
+  int _pinLength = 4;
+  String _pinCharset = 'digits';
 
   late final Router _router;
 
@@ -1748,6 +1785,8 @@ class _CliServer {
     bool downloadOnly = false,
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
+    int pinLength = 4,             // #206
+    String pinCharset = 'digits',  // #206
     String serverName = 'LocalNode',
     bool clipboardEnabled = true,
     String? httpsCertPath,
@@ -1763,6 +1802,8 @@ class _CliServer {
     _mentionActions = mentionActions;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName;
+    _pinLength = pinLength;       // #206
+    _pinCharset = pinCharset;     // #206
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -1884,7 +1925,24 @@ class _CliServer {
 
   // --- ユーティリティ ---
 
-  String _generatePin() => (1000 + Random().nextInt(9000)).toString();
+  // #206: configurable length (4..8) and charset (digits / alnum / alnum_symbols)
+  String _generatePin() {
+    const digits = '0123456789';
+    const alnum = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    // 紛らわしい記号を避け、URL/CLI/Cookie で安全な印字可能 ASCII 部分集合
+    const symbols = '!@#\$%&*-_+=?';
+    final pool = switch (_pinCharset) {
+      'alnum' => alnum,
+      'alnum_symbols' => alnum + symbols,
+      _ => digits,
+    };
+    final rnd = Random.secure();
+    final buf = StringBuffer();
+    for (var i = 0; i < _pinLength; i++) {
+      buf.write(pool[rnd.nextInt(pool.length)]);
+    }
+    return buf.toString();
+  }
 
   String _generateToken() {
     final r = Random.secure();
@@ -2127,6 +2185,9 @@ class _CliServer {
           // #218: federation 識別子。public エンドポイントなので未認証で見える。
           // peer 同士の identity 確認に使うが、機密ではない。
           'deviceId': _deviceId,
+          // #206: Web UI が PIN 入力モードを切り替えるためのヒント
+          'pinCharset': _pinCharset,
+          'pinLength': _pinLength,
         }),
         headers: {'Content-Type': 'application/json'},
       );

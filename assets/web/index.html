@@ -1189,6 +1189,22 @@
             };
 
             const showPinModal = () => {
+                // #206: PIN charset / length のヒントに応じて input mode を切り替え
+                const charset = serverInfo.pinCharset || 'digits';
+                const length = Number.isInteger(serverInfo.pinLength) ? serverInfo.pinLength : 4;
+                if (charset === 'digits') {
+                    pinInput.setAttribute('inputmode', 'numeric');
+                    pinInput.setAttribute('pattern', `[0-9]{${length}}`);
+                } else {
+                    pinInput.setAttribute('inputmode', 'text');
+                    pinInput.removeAttribute('pattern');
+                    pinInput.setAttribute('autocapitalize', 'off');
+                    pinInput.setAttribute('autocomplete', 'one-time-code');
+                    pinInput.setAttribute('spellcheck', 'false');
+                }
+                // maxlength は最低でも 4 を許容しつつ、固定 PIN の場合 length と異なる可能性があるので
+                // length+4 までの余裕を持たせる
+                pinInput.setAttribute('maxlength', String(Math.max(length, 4) + 4));
                 mainContent.style.display = 'none';
                 pinModal.style.display = 'flex';
                 pinInput.focus();
