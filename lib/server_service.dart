@@ -462,6 +462,10 @@ class ServerService {
       'clipboardEnabled': _clipboardEnabled,
       // #218: federation 識別子
       'deviceId': _deviceId,
+      // #206: Web UI が PIN 入力モードを切り替えるためのヒント。
+      // GUI アプリは現状デフォルト固定 (CLI が --pin-length / --pin-charset を持つ)
+      'pinCharset': 'digits',
+      'pinLength': 4,
     };
     return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});

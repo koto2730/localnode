@@ -96,6 +96,8 @@ localnode --cli [options]
 | `--ip` | IP address to advertise (skip auto-detection) |
 | `--name`, `-n` | Custom server name (shown in browser tab/title) |
 | `--pin` | Fixed PIN (random if not specified) |
+| `--pin-length` | PIN length for random generation: 4..8 (default 4) |
+| `--pin-charset` | PIN character set for random generation: `digits` (default), `alnum`, or `alnum_symbols` |
 | `--dir`, `-d` | Shared directory path |
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--https-cert` | Path to TLS certificate file (cert.pem) |

@@ -21,8 +21,8 @@ server:
   token: mytoken-for-upload      # 固定 Bearer トークン
   no-token: false                # トークン認証を無効化
 
-  # 1.6.0 PIN 強化 (#206) — 1.6.0 で実装予定。スキーマは予約
-  pin-length: 4                  # 4-8
+  # PIN 強化 (#206)
+  pin-length: 4                  # 4-8。ランダム PIN 生成時の文字数
   pin-charset: digits            # digits / alnum / alnum_symbols
 
 # メンションアクション (alias 形式) — #185 + description は @list で表示 (#224)
