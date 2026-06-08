@@ -103,6 +103,41 @@ class MainActivity: FlutterActivity() {
                         result.error("READ_FAILED", "Failed to read file: ${e.message}", null)
                     }
                 }
+                "resolvePath" -> {
+                    // #209: 相対パスを SAF ツリー配下の document URI に解決する
+                    val uriString = call.argument<String>("uri")
+                    val relPath = call.argument<String>("path")
+                    if (uriString == null || relPath == null) {
+                        result.error("ARGUMENT_ERROR", "uri and path are required.", null)
+                        return@setMethodCallHandler
+                    }
+                    // パストラバーサル防止
+                    val segments = relPath.split('/', '\\').filter { it.isNotEmpty() }
+                    if (segments.isEmpty() || segments.any { it == ".." || it == "." } || segments.size > 16) {
+                        result.error("INVALID_PATH", "Invalid relative path.", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val treeUri = Uri.parse(uriString)
+                        var current: DocumentFile? = DocumentFile.fromTreeUri(context, treeUri)
+                        for (seg in segments) {
+                            val next = current?.findFile(seg)
+                            if (next == null || !next.exists()) {
+                                result.error("NOT_FOUND", "Segment not found: $seg", null)
+                                return@setMethodCallHandler
+                            }
+                            current = next
+                        }
+                        val target = current
+                        if (target == null || !target.isFile) {
+                            result.error("NOT_FILE", "Resolved entry is not a file.", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(target.uri.toString())
+                    } catch (e: Exception) {
+                        result.error("RESOLVE_FAILED", "Failed to resolve path: ${e.message}", null)
+                    }
+                }
                 "deleteFile" -> {
                     val uriString = call.argument<String>("uri")
                     if (uriString == null) {

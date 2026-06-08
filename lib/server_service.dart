@@ -876,7 +876,8 @@ class ServerService {
     return mimeTypes[extension] ?? 'application/octet-stream';
   }
 
-  Future<Response> _thumbnailHandler(Request request, String id) async {
+  Future<Response> _thumbnailHandler(Request request, String id,
+      {String? filenameHint}) async {
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null || _thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Server directory not initialized.');
@@ -884,9 +885,12 @@ class ServerService {
 
     try {
       final decoded = utf8.decode(base64Url.decode(id));
-      final filename = Platform.isAndroid && _safDirectoryUri != null 
-          ? Uri.parse(decoded).pathSegments.last 
-          : p.basename(decoded);
+      // #209: ネストした SAF パス由来の呼び出しでは URI 末尾に `/` が混じり得るので
+      //       呼び出し側のヒントを優先する。無ければ従来のロジック。
+      final filename = filenameHint ??
+          (Platform.isAndroid && _safDirectoryUri != null
+              ? Uri.parse(decoded).pathSegments.last
+              : p.basename(decoded));
 
       if (!_isImageFile(filename)) {
         return Response.badRequest(body: 'File is not an image.');
@@ -946,7 +950,26 @@ class ServerService {
       return Response.badRequest(body: 'Invalid path.');
     }
     if (Platform.isAndroid && _safDirectoryUri != null) {
-      return Response.notFound('Path-based access not supported on Android SAF.');
+      // #209: SAF ツリー配下の相対パスを Kotlin 側で walk して document URI を得る
+      try {
+        final resolvedUri = await _safPlatform.invokeMethod<String>(
+          'resolvePath',
+          {'uri': _safDirectoryUri, 'path': relPath},
+        );
+        if (resolvedUri == null) {
+          return Response.notFound('File not found.');
+        }
+        final id = base64Url.encode(utf8.encode(resolvedUri));
+        return _thumbnailHandler(request, id, filenameHint: p.basename(relPath));
+      } on PlatformException catch (e) {
+        if (e.code == 'NOT_FOUND' || e.code == 'NOT_FILE') {
+          return Response.notFound('File not found.');
+        }
+        if (e.code == 'INVALID_PATH') {
+          return Response.badRequest(body: 'Invalid path.');
+        }
+        return Response.internalServerError(body: 'SAF resolve failed: ${e.message}');
+      }
     }
     final canonicalRoot =
         await Directory(storagePath).resolveSymbolicLinks();
