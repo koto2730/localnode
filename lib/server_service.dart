@@ -33,12 +33,15 @@ class ClipboardItem {
   final String text;
   final String? tag;
   final DateTime createdAt;
+  // #220 / #230: @up 付きで投稿された / federation 経由で「重要」マーク済み
+  final bool important;
 
   ClipboardItem({
     required this.id,
     required this.text,
     this.tag,
     required this.createdAt,
+    this.important = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -46,7 +49,18 @@ class ClipboardItem {
     'text': text,
     'tag': tag,
     'createdAt': createdAt.toUtc().toIso8601String(),
+    'important': important,
   };
+}
+
+// #218: UUID v4 (random) を生成して `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx` 形式で返す
+String _generateUuidV4() {
+  final r = Random.secure();
+  final bytes = List<int>.generate(16, (_) => r.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }
 
 class ServerService {
@@ -72,12 +86,40 @@ class ServerService {
   bool _clipboardEnabled = true;
   String _serverName = 'LocalNode';
   String _appVersion = '';
+  // #218 / §1.11: 端末識別 UUID。SharedPreferences で永続化。
+  String _deviceId = '';
   int _startedAt = 0; // サーバ起動タイムスタンプ（エポックミリ秒）
 
   // クリップボード共有用
   final List<ClipboardItem> _clipboardItems = [];
   int _clipboardLastModified = 0;
-  static const int _maxClipboardItems = 10;
+  // #228: 削除リングバッファ
+  static const int _maxDeletionLog = 200;
+  final List<({String id, int deletedAtMs})> _clipboardDeletes = [];
+
+  void _recordDeletion(String id) {
+    _clipboardDeletes.add((
+      id: id,
+      deletedAtMs: DateTime.now().millisecondsSinceEpoch,
+    ));
+    if (_clipboardDeletes.length > _maxDeletionLog) {
+      _clipboardDeletes.removeAt(0);
+    }
+  }
+
+  // #230: 件数超過時の退避。非 important から先に削る。全部 important なら最古から退避。
+  ClipboardItem _evictClipboardItem() {
+    for (var i = _clipboardItems.length - 1; i >= 0; i--) {
+      if (!_clipboardItems[i].important) {
+        return _clipboardItems.removeAt(i);
+      }
+    }
+    return _clipboardItems.removeLast();
+  }
+  // #227: 1.6.0 で 10 → 1000 にデフォルト値を引き上げ
+  // GUI アプリは現状 YAML config を読み込まないので hardcoded。
+  // federation (#218) で GUI 側の config 配線が入った時点で設定化される予定。
+  static const int _maxClipboardItems = 1000;
   static const int _maxTextLength = 10000;
 
   // クリップボードアイテムへの外部アクセス用ゲッター
@@ -141,6 +183,17 @@ class ServerService {
     final packageInfo = await PackageInfo.fromPlatform();
     final appName = packageInfo.appName;
     _appVersion = packageInfo.version;
+
+    // #218: 端末識別 UUID を SharedPreferences から復元、無ければ生成して保存
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString('device_id');
+    if (stored != null && stored.isNotEmpty) {
+      _deviceId = stored;
+    } else {
+      _deviceId = _generateUuidV4();
+      await prefs.setString('device_id', _deviceId);
+    }
+
     final docDir = await getApplicationDocumentsDirectory();
 
     // デフォルトパスを設定
@@ -407,6 +460,12 @@ class ServerService {
       'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
       'requiresAuth': _authMode != AuthMode.noPin,
       'clipboardEnabled': _clipboardEnabled,
+      // #218: federation 識別子
+      'deviceId': _deviceId,
+      // #206: Web UI が PIN 入力モードを切り替えるためのヒント。
+      // GUI アプリは現状デフォルト固定 (CLI が --pin-length / --pin-charset を持つ)
+      'pinCharset': 'digits',
+      'pinLength': 4,
     };
     return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
@@ -817,7 +876,8 @@ class ServerService {
     return mimeTypes[extension] ?? 'application/octet-stream';
   }
 
-  Future<Response> _thumbnailHandler(Request request, String id) async {
+  Future<Response> _thumbnailHandler(Request request, String id,
+      {String? filenameHint}) async {
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
     if (storagePath == null || _thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Server directory not initialized.');
@@ -825,9 +885,12 @@ class ServerService {
 
     try {
       final decoded = utf8.decode(base64Url.decode(id));
-      final filename = Platform.isAndroid && _safDirectoryUri != null 
-          ? Uri.parse(decoded).pathSegments.last 
-          : p.basename(decoded);
+      // #209: ネストした SAF パス由来の呼び出しでは URI 末尾に `/` が混じり得るので
+      //       呼び出し側のヒントを優先する。無ければ従来のロジック。
+      final filename = filenameHint ??
+          (Platform.isAndroid && _safDirectoryUri != null
+              ? Uri.parse(decoded).pathSegments.last
+              : p.basename(decoded));
 
       if (!_isImageFile(filename)) {
         return Response.badRequest(body: 'File is not an image.');
@@ -887,7 +950,26 @@ class ServerService {
       return Response.badRequest(body: 'Invalid path.');
     }
     if (Platform.isAndroid && _safDirectoryUri != null) {
-      return Response.notFound('Path-based access not supported on Android SAF.');
+      // #209: SAF ツリー配下の相対パスを Kotlin 側で walk して document URI を得る
+      try {
+        final resolvedUri = await _safPlatform.invokeMethod<String>(
+          'resolvePath',
+          {'uri': _safDirectoryUri, 'path': relPath},
+        );
+        if (resolvedUri == null) {
+          return Response.notFound('File not found.');
+        }
+        final id = base64Url.encode(utf8.encode(resolvedUri));
+        return _thumbnailHandler(request, id, filenameHint: p.basename(relPath));
+      } on PlatformException catch (e) {
+        if (e.code == 'NOT_FOUND' || e.code == 'NOT_FILE') {
+          return Response.notFound('File not found.');
+        }
+        if (e.code == 'INVALID_PATH') {
+          return Response.badRequest(body: 'Invalid path.');
+        }
+        return Response.internalServerError(body: 'SAF resolve failed: ${e.message}');
+      }
     }
     final canonicalRoot =
         await Directory(storagePath).resolveSymbolicLinks();
@@ -1289,14 +1371,66 @@ class ServerService {
 
   // === Clipboard Handlers ===
 
-  /// GET /api/clipboard - クリップボード履歴取得
+  /// GET /api/clipboard - クリップボード履歴取得 (#228 差分対応)
   Response _getClipboardHandler(Request request) {
-    final response = {
-      'items': _clipboardItems.map((item) => item.toJson()).toList(),
-      'lastModified': _clipboardLastModified,
-    };
+    final q = request.requestedUri.queryParameters;
+    final hasQuery = q.containsKey('since') ||
+        q.containsKey('before') ||
+        q.containsKey('limit');
+
+    if (!hasQuery) {
+      // 後方互換: 全件返す
+      return Response.ok(
+        json.encode({
+          'items': _clipboardItems.map((item) => item.toJson()).toList(),
+          'lastModified': _clipboardLastModified,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final since = int.tryParse(q['since'] ?? '');
+    final before = int.tryParse(q['before'] ?? '');
+    final limit = int.tryParse(q['limit'] ?? '');
+    if (limit != null && (limit < 1 || limit > 2000)) {
+      return Response.badRequest(body: 'limit must be 1..2000');
+    }
+
+    bool refresh = false;
+    List<String> deletedSince = const [];
+    if (since != null) {
+      if (_clipboardDeletes.length >= _maxDeletionLog &&
+          _clipboardDeletes.first.deletedAtMs > since) {
+        refresh = true;
+      }
+      deletedSince = _clipboardDeletes
+          .where((d) => d.deletedAtMs > since)
+          .map((d) => d.id)
+          .toList();
+    }
+
+    Iterable<ClipboardItem> filtered = _clipboardItems;
+    if (since != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch > since);
+    }
+    if (before != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch < before);
+    }
+    final list = filtered.toList();
+    final cap = limit ?? list.length;
+    final returned = list.length > cap ? list.sublist(0, cap) : list;
+    final hasMore = list.length > cap;
+
     return Response.ok(
-      json.encode(response),
+      json.encode({
+        'items': returned.map((i) => i.toJson()).toList(),
+        'deleted': deletedSince,
+        'lastModified': _clipboardLastModified,
+        'hasMore': hasMore,
+        'refresh': refresh,
+      }),
       headers: {'Content-Type': 'application/json'},
     );
   }
@@ -1306,7 +1440,7 @@ class ServerService {
     try {
       final body = await request.readAsString();
       final params = json.decode(body) as Map<String, dynamic>;
-      final text = (params['text'] as String?)?.trim();
+      var text = (params['text'] as String?)?.trim();
       final rawTag = (params['tag'] as String?)?.trim();
       final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
 
@@ -1324,18 +1458,29 @@ class ServerService {
         );
       }
 
+      // #220: `@up ` プレフィックスで important マーク + プレフィックス剥がし
+      bool important = false;
+      if (text == '@up' || text.startsWith('@up ')) {
+        if (text.length > 4) {
+          important = true;
+          text = text.substring(4).trimLeft();
+        }
+      }
+
       final item = ClipboardItem(
         id: _generateClipboardId(),
         text: text,
         tag: tag,
         createdAt: DateTime.now(),
+        important: important,
       );
 
       _clipboardItems.insert(0, item);
 
-      // 最大件数を超えたら古いものを削除
+      // 最大件数を超えたら古いものを削除 (#228 でリングバッファに記録)
       while (_clipboardItems.length > _maxClipboardItems) {
-        _clipboardItems.removeLast();
+        final evicted = _evictClipboardItem();
+        _recordDeletion(evicted.id);
       }
 
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
@@ -1362,7 +1507,8 @@ class ServerService {
       );
     }
 
-    _clipboardItems.removeAt(index);
+    final removed = _clipboardItems.removeAt(index);
+    _recordDeletion(removed.id);
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
 
     return Response.ok(
@@ -1374,6 +1520,9 @@ class ServerService {
   /// DELETE /api/clipboard - 全アイテム削除
   Response _clearClipboardHandler(Request request) {
     final count = _clipboardItems.length;
+    for (final it in _clipboardItems) {
+      _recordDeletion(it.id);
+    }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
 
@@ -1409,7 +1558,8 @@ class ServerService {
     _clipboardItems.insert(0, item);
 
     while (_clipboardItems.length > _maxClipboardItems) {
-      _clipboardItems.removeLast();
+      final evicted = _evictClipboardItem();
+      _recordDeletion(evicted.id);
     }
 
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
@@ -1421,7 +1571,8 @@ class ServerService {
     final index = _clipboardItems.indexWhere((item) => item.id == id);
     if (index == -1) return false;
 
-    _clipboardItems.removeAt(index);
+    final removed = _clipboardItems.removeAt(index);
+    _recordDeletion(removed.id);
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return true;
   }
@@ -1429,12 +1580,53 @@ class ServerService {
   /// クリップボードをクリア（Flutter UIから直接呼び出し用）
   int clearClipboard() {
     final count = _clipboardItems.length;
+    for (final it in _clipboardItems) {
+      _recordDeletion(it.id);
+    }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return count;
   }
 
   // === Middleware ===
+
+  // #221: federation ループ防止
+  static const String _kFedOrigin = 'x-fed-origin';
+  static const String _kFedSeenBy = 'x-fed-seen-by';
+
+  Middleware get _federationLoopGuard => (innerHandler) {
+        return (request) {
+          final seenByRaw = request.headers[_kFedSeenBy];
+          if (seenByRaw != null && _deviceId.isNotEmpty) {
+            final ids = seenByRaw
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toSet();
+            if (ids.contains(_deviceId)) {
+              final origin = request.headers[_kFedOrigin] ?? '?';
+              _log('[fed] loop-drop origin=$origin seen_by_count=${ids.length}');
+              return Response.ok(
+                json.encode({'dropped': 'loop', 'device_id': _deviceId}),
+                headers: {'Content-Type': 'application/json'},
+              );
+            }
+          }
+          return innerHandler(request);
+        };
+      };
+
+  /// #219 から使うヘルパ: federation event 転送時の seen_by 構築
+  // ignore: unused_element
+  List<String> _appendSelfToSeenBy(String? incomingHeader) {
+    final ids = (incomingHeader ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (_deviceId.isNotEmpty && !ids.contains(_deviceId)) ids.add(_deviceId);
+    return ids;
+  }
 
   Middleware get _authMiddleware => (innerHandler) {
     return (request) {
@@ -1636,7 +1828,7 @@ class ServerService {
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
       final apiHandler =
-          const Pipeline().addMiddleware(_authMiddleware).addHandler(_router.call);
+          const Pipeline().addMiddleware(_federationLoopGuard).addMiddleware(_authMiddleware).addHandler(_router.call);
 
       final cascade = Cascade().add(apiHandler).add(staticHandler);
 
@@ -1717,7 +1909,7 @@ class ServerService {
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
       final apiHandler =
-          const Pipeline().addMiddleware(_authMiddleware).addHandler(_router.call);
+          const Pipeline().addMiddleware(_federationLoopGuard).addMiddleware(_authMiddleware).addHandler(_router.call);
 
       final cascade = Cascade().add(apiHandler).add(staticHandler);
 

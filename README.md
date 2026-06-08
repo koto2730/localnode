@@ -90,10 +90,14 @@ localnode --cli [options]
 
 | Option | Description |
 |--------|-------------|
+| `--config`, `-c` | Path to YAML config file (overridden by CLI args, see [examples/config.example.yaml](examples/config.example.yaml)) |
+| `--state-file` | Path to persistent state file (device_id for federation). Default: `$XDG_STATE_HOME/localnode-cli/state.json` on POSIX, `%LOCALAPPDATA%\localnode-cli\state.json` on Windows |
 | `--port`, `-p` | Server port (default: 8080) |
 | `--ip` | IP address to advertise (skip auto-detection) |
 | `--name`, `-n` | Custom server name (shown in browser tab/title) |
 | `--pin` | Fixed PIN (random if not specified) |
+| `--pin-length` | PIN length for random generation: 4..8 (default 4) |
+| `--pin-charset` | PIN character set for random generation: `digits` (default), `alnum`, or `alnum_symbols` |
 | `--dir`, `-d` | Shared directory path |
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
@@ -137,7 +141,12 @@ localnode-cli --post-action "*=./notify.sh"
 # Trigger scripts via clipboard mention commands
 localnode-cli --mention-action backup=./backup.sh --mention-action notify=./notify.sh
 
+# Load options from a YAML config file (1.6.0+)
+localnode-cli --config /etc/localnode/config.yaml
+
 ```
+
+**Config file (YAML):** Long command lines can be replaced with a YAML config. See [examples/config.example.yaml](examples/config.example.yaml) for the full schema. CLI args always override config file values.
 
 > **Note (`--post-action` / `--mention-action`):** The `script` value must be a path to an executable file only — passing arguments inline (e.g. `script=./notify.sh arg1`) is not supported. For `--post-action`, the uploaded file path is automatically passed as the first argument to the script.
 >

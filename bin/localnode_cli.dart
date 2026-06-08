@@ -23,9 +23,248 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
+import 'package:yaml/yaml.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.5.1';
+const String _appVersion = '1.6.0';
+
+// #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
+// 登録できない。
+//   list      自分のメンション一覧 (既存)
+//   list <child>  (federation #220) 子のメンション一覧。引数なしと曖昧解消
+//   run       script 実行 (既存; --mention-action で登録するのが alias)
+//   to        親→子へ clipboard post を送る (federation #220)
+//   run_to    親→子へ mention 実行を依頼する (federation #220)
+//   up        子→親への重要マーカー (federation #220)
+const Set<String> _kReservedMentionNames = {
+  'list', 'run', 'to', 'run_to', 'up',
+};
+
+extension _FirstWhereOrNullExt<E> on Iterable<E> {
+  E? firstWhereOrNullExt(bool Function(E) test) {
+    for (final e in this) {
+      if (test(e)) return e;
+    }
+    return null;
+  }
+}
+
+// =============================================================================
+// 設定ファイル (#185)
+// =============================================================================
+//
+// YAML 構造 (1.6.0 spec §2.1):
+//
+//   server:
+//     port: 8080
+//     ip: 192.168.1.100
+//     name: home-pi
+//     dir: /srv/share
+//     pin: "1234"
+//     mode: normal              # or download-only
+//     no-pin: false
+//     no-clipboard: false
+//     verbose: false
+//     https-cert: /path/cert.pem
+//     https-key: /path/key.pem
+//     token: mytoken
+//     no-token: false
+//     pin-length: 4             # 1.6.0 #206 (parsed; consumed by #206)
+//     pin-charset: digits       # 1.6.0 #206
+//
+//   mention_actions:
+//     - alias: backup
+//       script: ./backup.sh
+//       description: ...        # 1.6.0 #224
+//
+//   post_actions:
+//     - pattern: "*.png"
+//       script: ./move-pic.sh
+//
+//   clipboard:                  # 1.6.0 #227 (parsed; consumed by #227)
+//     max_items: 1000
+//     max_text_length: 10000
+//
+//   children: [...]             # 1.6.0 #218 federation (parsed; consumed there)
+//   parent: {...}               # 1.6.0 #218 federation
+//
+// 解決優先順位: CLI 引数 > config ファイル > 既定値
+
+class _LoadedMentionAction {
+  final String alias;
+  final String script;
+  final String? description;
+  _LoadedMentionAction(this.alias, this.script, this.description);
+}
+
+class _LoadedPostAction {
+  final String pattern;
+  final String script;
+  _LoadedPostAction(this.pattern, this.script);
+}
+
+class _LoadedConfig {
+  // server section
+  int? port;
+  String? ip;
+  String? pin;
+  String? dir;
+  String? mode;
+  String? name;
+  String? httpsCert;
+  String? httpsKey;
+  String? token;
+  bool? noPin;
+  bool? noClipboard;
+  bool? verbose;
+  bool? noToken;
+  // #206 hooks (consumed by #206)
+  int? pinLength;
+  String? pinCharset;
+  // lists
+  List<_LoadedMentionAction>? mentionActions;
+  List<_LoadedPostAction>? postActions;
+  // future sections, parsed-but-not-consumed-yet
+  Map<dynamic, dynamic>? clipboardRaw;       // #227
+  List<dynamic>? childrenRaw;                // #218 federation
+  Map<dynamic, dynamic>? parentRaw;          // #218 federation
+}
+
+/// Read and validate a YAML config file. Throws on fatal errors (unreadable,
+/// syntax, type mismatch). Unknown top-level keys produce a warning to stderr.
+_LoadedConfig _loadConfig(String path) {
+  final file = File(path);
+  if (!file.existsSync()) {
+    stderr.writeln('Error: Config file not found: $path');
+    exit(1);
+  }
+  final dynamic doc;
+  try {
+    doc = loadYaml(file.readAsStringSync());
+  } catch (e) {
+    stderr.writeln('Error: Failed to parse config file: $e');
+    exit(1);
+  }
+  if (doc == null) return _LoadedConfig();
+  if (doc is! YamlMap) {
+    stderr.writeln('Error: Config file root must be a YAML mapping.');
+    exit(1);
+  }
+
+  final cfg = _LoadedConfig();
+  const knownTop = {
+    'server', 'mention_actions', 'post_actions', 'clipboard',
+    'children', 'parent',
+  };
+  for (final key in doc.keys) {
+    if (!knownTop.contains(key)) {
+      stderr.writeln('Warning: Unknown top-level key in config: $key');
+    }
+  }
+
+  // server section
+  final server = doc['server'];
+  if (server is YamlMap) {
+    cfg.port = _yamlInt(server, 'port');
+    cfg.ip = _yamlString(server, 'ip');
+    cfg.pin = _yamlString(server, 'pin');
+    cfg.dir = _yamlString(server, 'dir');
+    cfg.mode = _yamlString(server, 'mode');
+    cfg.name = _yamlString(server, 'name');
+    cfg.httpsCert = _yamlString(server, 'https-cert');
+    cfg.httpsKey = _yamlString(server, 'https-key');
+    cfg.token = _yamlString(server, 'token');
+    cfg.noPin = _yamlBool(server, 'no-pin');
+    cfg.noClipboard = _yamlBool(server, 'no-clipboard');
+    cfg.verbose = _yamlBool(server, 'verbose');
+    cfg.noToken = _yamlBool(server, 'no-token');
+    cfg.pinLength = _yamlInt(server, 'pin-length');
+    cfg.pinCharset = _yamlString(server, 'pin-charset');
+  } else if (server != null) {
+    stderr.writeln('Error: server section must be a mapping.');
+    exit(1);
+  }
+
+  // mention_actions
+  final ma = doc['mention_actions'];
+  if (ma is YamlList) {
+    final list = <_LoadedMentionAction>[];
+    for (final entry in ma) {
+      if (entry is! YamlMap) {
+        stderr.writeln('Error: mention_actions entry must be a mapping.');
+        exit(1);
+      }
+      final alias = _yamlString(entry, 'alias');
+      final script = _yamlString(entry, 'script');
+      if (alias == null || alias.isEmpty || script == null || script.isEmpty) {
+        stderr.writeln('Error: mention_actions entry requires alias and script.');
+        exit(1);
+      }
+      list.add(_LoadedMentionAction(alias, script, _yamlString(entry, 'description')));
+    }
+    cfg.mentionActions = list;
+  } else if (ma != null) {
+    stderr.writeln('Error: mention_actions must be a list.');
+    exit(1);
+  }
+
+  // post_actions
+  final pa = doc['post_actions'];
+  if (pa is YamlList) {
+    final list = <_LoadedPostAction>[];
+    for (final entry in pa) {
+      if (entry is! YamlMap) {
+        stderr.writeln('Error: post_actions entry must be a mapping.');
+        exit(1);
+      }
+      final pattern = _yamlString(entry, 'pattern');
+      final script = _yamlString(entry, 'script');
+      if (pattern == null || pattern.isEmpty || script == null || script.isEmpty) {
+        stderr.writeln('Error: post_actions entry requires pattern and script.');
+        exit(1);
+      }
+      list.add(_LoadedPostAction(pattern, script));
+    }
+    cfg.postActions = list;
+  } else if (pa != null) {
+    stderr.writeln('Error: post_actions must be a list.');
+    exit(1);
+  }
+
+  // forward-compat sections — parsed and stored but not consumed yet
+  final clip = doc['clipboard'];
+  if (clip is YamlMap) cfg.clipboardRaw = Map.from(clip);
+  final ch = doc['children'];
+  if (ch is YamlList) cfg.childrenRaw = List.from(ch);
+  final pa2 = doc['parent'];
+  if (pa2 is YamlMap) cfg.parentRaw = Map.from(pa2);
+
+  return cfg;
+}
+
+String? _yamlString(YamlMap m, String key) {
+  final v = m[key];
+  if (v == null) return null;
+  return v.toString();
+}
+
+int? _yamlInt(YamlMap m, String key) {
+  final v = m[key];
+  if (v == null) return null;
+  if (v is int) return v;
+  final s = v.toString();
+  return int.tryParse(s);
+}
+
+bool? _yamlBool(YamlMap m, String key) {
+  final v = m[key];
+  if (v == null) return null;
+  if (v is bool) return v;
+  final s = v.toString().toLowerCase();
+  if (s == 'true' || s == 'yes' || s == '1') return true;
+  if (s == 'false' || s == 'no' || s == '0') return false;
+  return null;
+}
 
 // =============================================================================
 // エントリポイント
@@ -50,28 +289,98 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 
-  final port = int.tryParse(results['port'] as String);
+  // #185: --config が指定されていれば YAML を読み込む。
+  // 解決優先順位: CLI 引数 > config > 既定値
+  _LoadedConfig? cfg;
+  if (results.wasParsed('config')) {
+    cfg = _loadConfig(results['config'] as String);
+  }
+
+  // port: CLI > config > '8080'
+  final portStr = results.wasParsed('port')
+      ? results['port'] as String
+      : (cfg?.port?.toString() ?? results['port'] as String);
+  final port = int.tryParse(portStr);
   if (port == null || port < 1 || port > 65535) {
     stderr.writeln('Error: Invalid port number. Must be between 1 and 65535.');
     exit(1);
   }
 
-  final dir = results['dir'] as String?;
+  final dir = results.wasParsed('dir')
+      ? results['dir'] as String?
+      : (cfg?.dir ?? results['dir'] as String?);
   if (dir != null && !Directory(dir).existsSync()) {
     stderr.writeln('Error: Directory does not exist: $dir');
     exit(1);
   }
 
-  final specifiedIp = results['ip'] as String?;
-  final noClipboard = results['no-clipboard'] as bool;
-  final verbose = results['verbose'] as bool;
-  final downloadOnly = (results['mode'] as String) == 'download-only';
-  final noPin = results['no-pin'] as bool;
-  final fixedPin = results['pin'] as String?;
-  final serverName = results['name'] as String;
-  final noToken = results['no-token'] as bool;
-  final fixedToken = results['token'] as String?;
-  final postActionRaw = results['post-action'] as List<String>;
+  final specifiedIp = results.wasParsed('ip')
+      ? results['ip'] as String?
+      : (cfg?.ip ?? results['ip'] as String?);
+  final noClipboard = results.wasParsed('no-clipboard')
+      ? results['no-clipboard'] as bool
+      : (cfg?.noClipboard ?? results['no-clipboard'] as bool);
+  final verbose = results.wasParsed('verbose')
+      ? results['verbose'] as bool
+      : (cfg?.verbose ?? results['verbose'] as bool);
+  final modeStr = results.wasParsed('mode')
+      ? results['mode'] as String
+      : (cfg?.mode ?? results['mode'] as String);
+  if (modeStr != 'normal' && modeStr != 'download-only') {
+    stderr.writeln('Error: Invalid mode: $modeStr. Must be normal or download-only.');
+    exit(1);
+  }
+  final downloadOnly = modeStr == 'download-only';
+  final noPin = results.wasParsed('no-pin')
+      ? results['no-pin'] as bool
+      : (cfg?.noPin ?? results['no-pin'] as bool);
+  final fixedPin = results.wasParsed('pin')
+      ? results['pin'] as String?
+      : (cfg?.pin ?? results['pin'] as String?);
+  // #206
+  final pinLength = () {
+    final raw = results.wasParsed('pin-length')
+        ? results['pin-length'] as String?
+        : (cfg?.pinLength?.toString());
+    if (raw == null) return 4;
+    final n = int.tryParse(raw);
+    if (n == null || n < 4 || n > 8) {
+      stderr.writeln('Error: --pin-length must be an integer 4..8 (got "$raw").');
+      exit(1);
+    }
+    return n;
+  }();
+  final pinCharset = () {
+    const allowed = {'digits', 'alnum', 'alnum_symbols'};
+    final raw = results.wasParsed('pin-charset')
+        ? results['pin-charset'] as String?
+        : (cfg?.pinCharset ?? results['pin-charset'] as String?);
+    final v = raw ?? 'digits';
+    if (!allowed.contains(v)) {
+      stderr.writeln('Error: --pin-charset must be one of ${allowed.join("/")} (got "$v").');
+      exit(1);
+    }
+    return v;
+  }();
+  final serverName = results.wasParsed('name')
+      ? results['name'] as String
+      : (cfg?.name ?? results['name'] as String);
+  final noToken = results.wasParsed('no-token')
+      ? results['no-token'] as bool
+      : (cfg?.noToken ?? results['no-token'] as bool);
+  final fixedToken = results.wasParsed('token')
+      ? results['token'] as String?
+      : (cfg?.token ?? results['token'] as String?);
+
+  // post_actions: CLI > config (どちらかが存在すればその全体を使う)
+  final List<String> postActionRaw;
+  if (results.wasParsed('post-action')) {
+    postActionRaw = results['post-action'] as List<String>;
+  } else if (cfg?.postActions != null) {
+    postActionRaw = cfg!.postActions!.map((a) => '${a.pattern}=${a.script}').toList();
+  } else {
+    postActionRaw = results['post-action'] as List<String>;
+  }
   final postActions = <({String pattern, String script})>[];
   for (final entry in postActionRaw) {
     final eq = entry.indexOf('=');
@@ -87,28 +396,45 @@ Future<void> main(List<String> args) async {
     }
     postActions.add((pattern: pattern, script: script));
   }
-  final mentionActionRaw = results['mention-action'] as List<String>;
-  final mentionActions = <String, String>{};
-  for (final entry in mentionActionRaw) {
-    final eq = entry.indexOf('=');
-    if (eq <= 0) {
-      stderr.writeln('Error: --mention-action must be in <alias>=<script> format: $entry');
-      exit(1);
+  // mention_actions: CLI > config
+  final mentionActions = <String, ({String script, String? description})>{};
+  if (results.wasParsed('mention-action')) {
+    final raw = results['mention-action'] as List<String>;
+    for (final entry in raw) {
+      final eq = entry.indexOf('=');
+      if (eq <= 0) {
+        stderr.writeln('Error: --mention-action must be in <alias>=<script> format: $entry');
+        exit(1);
+      }
+      final alias = entry.substring(0, eq).trim();
+      final script = entry.substring(eq + 1).trim();
+      if (alias.isEmpty || script.isEmpty) {
+        stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
+        exit(1);
+      }
+      // #174 + #220: 予約名 list / run / to / run_to / up
+      if (_kReservedMentionNames.contains(alias)) {
+        stderr.writeln('Error: "$alias" is a reserved mention name and cannot be used as an alias.');
+        exit(1);
+      }
+      // CLI には description フィールドが無い (YAML config 専用、#224)
+      mentionActions[alias] = (script: script, description: null);
     }
-    final alias = entry.substring(0, eq).trim();
-    final script = entry.substring(eq + 1).trim();
-    if (alias.isEmpty || script.isEmpty) {
-      stderr.writeln('Error: --mention-action alias and script must not be empty: $entry');
-      exit(1);
+  } else if (cfg?.mentionActions != null) {
+    for (final m in cfg!.mentionActions!) {
+      if (_kReservedMentionNames.contains(m.alias)) {
+        stderr.writeln('Error: "${m.alias}" is a reserved mention name and cannot be used as an alias.');
+        exit(1);
+      }
+      mentionActions[m.alias] = (script: m.script, description: m.description);
     }
-    if (alias == 'list') {
-      stderr.writeln('Error: "list" is a reserved mention name and cannot be used as an alias.');
-      exit(1);
-    }
-    mentionActions[alias] = script;
   }
-  final httpsCertPath = results['https-cert'] as String?;
-  final httpsKeyPath = results['https-key'] as String?;
+  final httpsCertPath = results.wasParsed('https-cert')
+      ? results['https-cert'] as String?
+      : (cfg?.httpsCert ?? results['https-cert'] as String?);
+  final httpsKeyPath = results.wasParsed('https-key')
+      ? results['https-key'] as String?
+      : (cfg?.httpsKey ?? results['https-key'] as String?);
   if ((httpsCertPath == null) != (httpsKeyPath == null)) {
     stderr.writeln('Error: --https-cert and --https-key must be specified together.');
     exit(1);
@@ -128,6 +454,74 @@ Future<void> main(List<String> args) async {
       : fixedPin != null
           ? _AuthMode.fixedPin
           : _AuthMode.randomPin;
+
+  // #218 / §1.11: 端末識別 UUID。federation 参加時の固定 ID として使う。
+  final statePath = results['state-file'] as String? ?? _defaultStateFilePath();
+  final deviceId = _loadOrCreateDeviceId(statePath);
+
+  // #218: federation 設定 (parent / children) があるなら、構成の整合性を検証
+  final hasFederation =
+      (cfg?.childrenRaw?.isNotEmpty ?? false) || (cfg?.parentRaw != null);
+  if (hasFederation) {
+    final problems = <String>[];
+    // (a) HTTPS が必須
+    if (!httpsMode) {
+      problems.add('federation requires HTTPS — set https-cert and https-key '
+          'in config or pass --https-cert / --https-key');
+    }
+    // (b) --token は固定であること（ランダムだと再起動で切れる）
+    if (noToken) {
+      problems.add('federation requires a fixed Bearer token — remove no-token');
+    } else if (fixedToken == null || fixedToken.isEmpty) {
+      problems.add('federation requires a fixed Bearer token — set server.token '
+          'in config or pass --token <value>');
+    }
+    // (c) children の各エントリを軽く検証
+    final children = cfg?.childrenRaw ?? const [];
+    for (final entry in children) {
+      if (entry is! Map) {
+        problems.add('children[]: each entry must be a mapping');
+        continue;
+      }
+      final name = entry['name'];
+      final url = entry['url'];
+      final token = entry['token'];
+      final relation = entry['relation'];
+      if (name is! String || name.isEmpty) problems.add('children[]: name is required');
+      if (url is! String || !url.startsWith('https://')) {
+        problems.add('children[]: url must start with https:// (was: $url)');
+      }
+      if (token is! String || token.isEmpty) {
+        problems.add('children[$name]: token is required (issued by the child)');
+      }
+      if (relation != 'friendly' && relation != 'equally') {
+        problems.add('children[$name]: relation must be friendly or equally');
+      }
+    }
+    // (d) parent エントリを検証
+    final parent = cfg?.parentRaw;
+    if (parent != null) {
+      final url = parent['url'];
+      final token = parent['token'];
+      final relation = parent['relation'];
+      if (url is! String || !url.startsWith('https://')) {
+        problems.add('parent.url must start with https:// (was: $url)');
+      }
+      if (token is! String || token.isEmpty) {
+        problems.add('parent.token is required (issued by the parent)');
+      }
+      if (relation != 'friendly' && relation != 'equally') {
+        problems.add('parent.relation must be friendly or equally');
+      }
+    }
+    if (problems.isNotEmpty) {
+      stderr.writeln('Error: federation config is incomplete:');
+      for (final p in problems) {
+        stderr.writeln('  - $p');
+      }
+      exit(1);
+    }
+  }
 
   // #177/#169: HTTPS モードで SAN→ホスト名→IP 解決フロー
   String ipAddress;
@@ -151,7 +545,33 @@ Future<void> main(List<String> args) async {
       ? (fixedToken ?? _generateUploadToken())
       : null;
 
-  final server = _CliServer(verbose: verbose);
+  // #227: clipboard 設定を config から読む (config.clipboard.max_items / max_text_length)
+  final clipboardCfg = cfg?.clipboardRaw;
+  int maxClipboardItems = 1000;
+  int maxTextLength = 10000;
+  if (clipboardCfg != null) {
+    final mi = clipboardCfg['max_items'];
+    if (mi is int && mi > 0 && mi <= 100000) {
+      maxClipboardItems = mi;
+    } else if (mi != null) {
+      stderr.writeln('Error: clipboard.max_items must be a positive integer (1-100000).');
+      exit(1);
+    }
+    final ml = clipboardCfg['max_text_length'];
+    if (ml is int && ml > 0 && ml <= 1000000) {
+      maxTextLength = ml;
+    } else if (ml != null) {
+      stderr.writeln('Error: clipboard.max_text_length must be a positive integer (1-1000000).');
+      exit(1);
+    }
+  }
+
+  final server = _CliServer(
+    verbose: verbose,
+    maxClipboardItems: maxClipboardItems,
+    maxTextLength: maxTextLength,
+    deviceId: deviceId,
+  );
 
   try {
     await server.start(
@@ -161,6 +581,8 @@ Future<void> main(List<String> args) async {
       downloadOnly: downloadOnly,
       authMode: authMode,
       fixedPin: fixedPin,
+      pinLength: pinLength,         // #206
+      pinCharset: pinCharset,       // #206
       serverName: serverName,
       clipboardEnabled: !noClipboard,
       httpsCertPath: httpsCertPath,
@@ -187,6 +609,22 @@ Future<void> main(List<String> args) async {
   }
   stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
+  if (hasFederation) {
+    stdout.writeln('  DeviceID: $deviceId');
+    stdout.writeln('  Federation:');
+    if (cfg?.childrenRaw != null && cfg!.childrenRaw!.isNotEmpty) {
+      stdout.writeln('    children:');
+      for (final ch in cfg.childrenRaw!) {
+        if (ch is Map) {
+          stdout.writeln('      ${ch['name']} <${ch['url']}> [${ch['relation']}]');
+        }
+      }
+    }
+    if (cfg?.parentRaw != null) {
+      final pr = cfg!.parentRaw!;
+      stdout.writeln('    parent: ${pr['name']} <${pr['url']}> [${pr['relation']}${pr['trust'] == true ? ', trust' : ''}]');
+    }
+  }
   if (postActions.isNotEmpty) {
     stdout.writeln('  Post-action(s):');
     for (final a in postActions) {
@@ -196,7 +634,9 @@ Future<void> main(List<String> args) async {
   if (mentionActions.isNotEmpty) {
     stdout.writeln('  Mention action(s):');
     for (final entry in mentionActions.entries) {
-      stdout.writeln('    @run ${entry.key} -> ${entry.value}');
+      final desc = entry.value.description;
+      final suffix = (desc == null || desc.isEmpty) ? '' : '  # $desc';
+      stdout.writeln('    @run ${entry.key} -> ${entry.value.script}$suffix');
     }
   }
   if (uploadToken != null) {
@@ -223,6 +663,38 @@ Future<void> main(List<String> args) async {
   stdout.writeln('Press Ctrl+C to stop.');
   stdout.writeln('');
 
+  // #222: federation peer を登録してハートビート開始
+  if (hasFederation) {
+    if (cfg?.childrenRaw != null) {
+      for (final ch in cfg!.childrenRaw!) {
+        if (ch is Map) {
+          server.registerFederationPeer(_FederationPeer(
+            kind: 'child',
+            name: ch['name'] as String,
+            url: ch['url'] as String,
+            token: ch['token'] as String,
+            relation: ch['relation'] as String,
+            // #219: 親側設定。子から来るアップロードの上限
+            maxUploadSizeBytes: _parseSizeBytes(ch['max_upload_size']),
+          ));
+        }
+      }
+    }
+    if (cfg?.parentRaw != null) {
+      final pr = cfg!.parentRaw!;
+      server.registerFederationPeer(_FederationPeer(
+        kind: 'parent',
+        name: pr['name'] as String,
+        url: pr['url'] as String,
+        token: pr['token'] as String,
+        relation: pr['relation'] as String,
+        // #219: 子側設定。trust:true で「親に転送したらローカル削除」
+        trust: pr['trust'] == true,
+      ));
+    }
+    server._startHeartbeat();
+  }
+
   _setupSignalHandlers(server);
   if (!noClipboard) _startClipboardPolling(server);
   // Windows: disable echo/line-input to prevent typed chars from appearing (#139)
@@ -240,10 +712,23 @@ Future<void> main(List<String> args) async {
 
 ArgParser _buildParser() {
   return ArgParser()
+    ..addOption('config',
+        abbr: 'c',
+        help: 'Path to YAML config file (overridden by CLI args)')
+    ..addOption('state-file',
+        help: 'Path to state file for persistent device_id '
+            '(default: platform-specific user state dir, see docs)')
     ..addOption('port',
         abbr: 'p', help: 'Server port number', defaultsTo: '8080')
     ..addOption('ip', help: 'IP address to bind (skip auto-detection)')
     ..addOption('pin', help: 'Fixed PIN (random if not specified)')
+    // #206
+    ..addOption('pin-length',
+        help: 'PIN length when generating a random PIN (4..8, default 4)')
+    ..addOption('pin-charset',
+        help: 'Character set for the generated PIN',
+        allowed: ['digits', 'alnum', 'alnum_symbols'],
+        defaultsTo: 'digits')
     ..addOption('dir', abbr: 'd', help: 'Shared directory path')
     ..addOption('mode',
         abbr: 'm',
@@ -297,6 +782,10 @@ void _printUsage(ArgParser parser) {
   stdout.writeln('  localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem');
   stdout.writeln('  localnode-cli --post-action "*.png=./resize.sh" --post-action "*.zip=./unzip.sh"');
   stdout.writeln('  localnode-cli --mention-action backup=./backup.sh --mention-action notify=./notify.sh');
+  stdout.writeln('  localnode-cli --config /etc/localnode/config.yaml');
+  stdout.writeln('');
+  stdout.writeln('Config file (YAML, see docs):');
+  stdout.writeln('  Supports server.*, mention_actions[], post_actions[]; CLI args override config.');
   stdout.writeln('');
   stdout.writeln('Security note (--post-action / --mention-action):');
   stdout.writeln('  Scripts run with the same user privileges as the LocalNode process.');
@@ -610,6 +1099,71 @@ Future<_HttpsHostResult> _resolveHttpsHost({
   return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
 }
 
+// =============================================================================
+// 端末識別 UUID (#218 / §1.11)
+// =============================================================================
+//
+// federation 参加時の固定識別子。初回起動で生成し、再起動越しに保持する。
+// 表示名（`server.name`）は mutable だが、UUID は immutable。federation
+// イベントの `origin_device_id` / `seen_by` (#221) や、peer 認証時の
+// 内部キーとして使う。
+//
+// 保存先:
+//   POSIX: $XDG_STATE_HOME/localnode-cli/state.json （無ければ ~/.local/state/...）
+//   Win:   %LOCALAPPDATA%\localnode-cli\state.json
+//   または --state-file <path> で明示指定
+
+String _defaultStateFilePath() {
+  if (Platform.isWindows) {
+    final base = Platform.environment['LOCALAPPDATA'] ??
+        p.join(Platform.environment['USERPROFILE'] ?? '.', 'AppData', 'Local');
+    return p.join(base, 'localnode-cli', 'state.json');
+  }
+  final xdg = Platform.environment['XDG_STATE_HOME'];
+  if (xdg != null && xdg.isNotEmpty) {
+    return p.join(xdg, 'localnode-cli', 'state.json');
+  }
+  final home = Platform.environment['HOME'] ?? '.';
+  return p.join(home, '.local', 'state', 'localnode-cli', 'state.json');
+}
+
+/// UUID v4 (random) を生成して `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx` 形式で返す。
+String _generateUuidV4() {
+  final r = Random.secure();
+  final bytes = List<int>.generate(16, (_) => r.nextInt(256));
+  // version (4) と variant (10xx)
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
+
+/// state.json から `device_id` を読む。無ければ生成して書き、書いた値を返す。
+String _loadOrCreateDeviceId(String statePath) {
+  final file = File(statePath);
+  if (file.existsSync()) {
+    try {
+      final raw = file.readAsStringSync();
+      final dec = json.decode(raw);
+      if (dec is Map && dec['device_id'] is String) {
+        final id = dec['device_id'] as String;
+        if (id.isNotEmpty) return id;
+      }
+    } catch (_) {
+      // 破損していたら作り直す
+    }
+  }
+  final id = _generateUuidV4();
+  try {
+    file.parent.createSync(recursive: true);
+    file.writeAsStringSync(json.encode({'device_id': id}), flush: true);
+  } catch (e) {
+    stderr.writeln('Warning: Could not persist device_id to $statePath: $e');
+    stderr.writeln('Federation pairing may not survive a restart with this server.');
+  }
+  return id;
+}
+
 /// ランダムなアップロードトークンを生成する（32文字の16進数）
 String _generateUploadToken() {
   final r = Random.secure();
@@ -673,12 +1227,15 @@ class _ClipboardItem {
   final String text;
   final String? tag;
   final DateTime createdAt;
+  // #220 / #230: @up でマーク済みの重要アイテム
+  final bool important;
 
   _ClipboardItem({
     required this.id,
     required this.text,
     this.tag,
     required this.createdAt,
+    this.important = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -686,6 +1243,7 @@ class _ClipboardItem {
         'text': text,
         'tag': tag,
         'createdAt': createdAt.toUtc().toIso8601String(),
+        'important': important,
       };
 }
 
@@ -693,11 +1251,84 @@ class _ClipboardItem {
 // CLI サーバー（GTK/Flutter 非依存）
 // =============================================================================
 
+/// #222: federation peer の動的状態
+class _FederationPeer {
+  final String kind; // 'child' or 'parent'
+  final String name;
+  final String url;
+  final String token;
+  final String relation;
+  // #219: friendly + trust:true で「親に渡したら子側削除」 (parent peer 設定のみ意味あり)
+  final bool trust;
+  // #219: 子→親アップロードの 1 回の最大バイト数 (child peer 設定のみ意味あり)
+  final int? maxUploadSizeBytes;
+  String? learnedDeviceId; // /api/info から学習
+  String status = 'unknown'; // 'connected' / 'offline' / 'paused'
+  int lastOkMs = 0;
+  int lastTryMs = 0;
+  String? lastError;
+  // #223: pause まで有効な時刻 (epoch ms)。0 なら pause していない。
+  int pauseUntilMs = 0;
+
+  bool isPaused() {
+    if (pauseUntilMs == 0) return false;
+    return DateTime.now().millisecondsSinceEpoch < pauseUntilMs;
+  }
+
+  _FederationPeer({
+    required this.kind,
+    required this.name,
+    required this.url,
+    required this.token,
+    required this.relation,
+    this.trust = false,
+    this.maxUploadSizeBytes,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'kind': kind,
+        'name': name,
+        'url': url,
+        'relation': relation,
+        'trust': trust,
+        if (maxUploadSizeBytes != null) 'maxUploadSizeBytes': maxUploadSizeBytes,
+        'status': status,
+        'lastOkMs': lastOkMs,
+        'lastTryMs': lastTryMs,
+        'learnedDeviceId': learnedDeviceId,
+        'lastError': lastError,
+        'pauseUntilMs': pauseUntilMs,
+      };
+}
+
+/// #219: "100MB" / "5GB" / "1024" 等を bytes に変換 (大文字小文字無視)
+int? _parseSizeBytes(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is int) return raw;
+  final s = raw.toString().trim();
+  final m = RegExp(r'^(\d+(?:\.\d+)?)\s*([kmgtKMGT]?)[bB]?$').firstMatch(s);
+  if (m == null) return null;
+  final num = double.parse(m.group(1)!);
+  final unit = m.group(2)!.toUpperCase();
+  const mult = {'': 1, 'K': 1024, 'M': 1024 * 1024, 'G': 1024 * 1024 * 1024, 'T': 1024 * 1024 * 1024 * 1024};
+  return (num * mult[unit]!).toInt();
+}
+
 class _CliServer {
-  static const int _maxClipboardItems = 10;
-  static const int _maxTextLength = 10000;
+  // #227: clipboard 件数 / 文字長は config から指定可能 (デフォルト 1000 / 10000)
+  final int _maxClipboardItems;
+  final int _maxTextLength;
   static const int _maxFailedAttempts = 5;
   static const Duration _lockoutDuration = Duration(minutes: 5);
+
+  // #218 / §1.11: 端末識別 UUID
+  final String _deviceId;
+
+  // #222: federation peer の動的状態とハートビートタイマ
+  final List<_FederationPeer> _federationPeers = [];
+  Timer? _heartbeatTimer;
+  HttpClient? _heartbeatClient;
+  static const Duration _heartbeatInterval = Duration(seconds: 45);
 
   final bool verbose;
   HttpServer? _server;
@@ -714,13 +1345,45 @@ class _CliServer {
 
   final List<_ClipboardItem> _clipboardItems = [];
   int _clipboardLastModified = 0;
+  // #228: 削除リングバッファ。?since= で「自分が見た時刻以降」の削除を返す。
+  // bound あり (200)。これより古い削除があるとクライアントは full refresh。
+  static const int _maxDeletionLog = 200;
+  final List<({String id, int deletedAtMs})> _clipboardDeletes = [];
+
+  void _recordDeletion(String id) {
+    _clipboardDeletes.add((
+      id: id,
+      deletedAtMs: DateTime.now().millisecondsSinceEpoch,
+    ));
+    if (_clipboardDeletes.length > _maxDeletionLog) {
+      _clipboardDeletes.removeAt(0);
+    }
+  }
+
+  // #230: クリップボード件数超過時の退避。非 important から先に削る。
+  // 全部 important なら最古の important を退避（ハードピンしない）。
+  // 退避した item を返す。
+  _ClipboardItem _evictClipboardItem() {
+    // list は新しい順 (insert(0, ...)) なので末尾が最古
+    // 末尾から最初に見つかった非 important を取り除く
+    for (var i = _clipboardItems.length - 1; i >= 0; i--) {
+      if (!_clipboardItems[i].important) {
+        return _clipboardItems.removeAt(i);
+      }
+    }
+    // 全て important: 最古を退避
+    return _clipboardItems.removeLast();
+  }
 
   final Set<String> _sessions = {};
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
   List<({String pattern, String script})> _postActions = [];
-  Map<String, String> _mentionActions = {};
+  Map<String, ({String script, String? description})> _mentionActions = {};
+  // #206
+  int _pinLength = 4;
+  String _pinCharset = 'digits';
 
   late final Router _router;
 
@@ -728,7 +1391,14 @@ class _CliServer {
   List<_ClipboardItem> get clipboardItems => List.unmodifiable(_clipboardItems);
   int get clipboardLastModified => _clipboardLastModified;
 
-  _CliServer({required this.verbose}) {
+  _CliServer({
+    required this.verbose,
+    int maxClipboardItems = 1000,
+    int maxTextLength = 10000,
+    String? deviceId,
+  })  : _maxClipboardItems = maxClipboardItems,
+        _maxTextLength = maxTextLength,
+        _deviceId = deviceId ?? '' {
     _router = Router()
       ..post('/api/auth', _authHandler)
       ..get('/api/health', _healthHandler)
@@ -744,9 +1414,362 @@ class _CliServer {
       ..delete('/api/files/<id>', _deleteFileHandler)
       ..post('/api/files/delete-batch', _deleteBatchHandler)
       ..get('/api/clipboard', _getClipboardHandler)
+      ..get('/api/mentions', _mentionsHandler)  // #225
       ..post('/api/clipboard', _postClipboardHandler)
       ..delete('/api/clipboard/<id>', _deleteClipboardItemHandler)
-      ..delete('/api/clipboard', _clearClipboardHandler);
+      ..delete('/api/clipboard', _clearClipboardHandler)
+      // #222: federation 状態（peer 一覧と接続状態）
+      ..get('/api/federation/status', _federationStatusHandler)
+      ..post('/api/federation/peers/<name>/pause', _federationPausePeerHandler)  // #223
+      ..delete('/api/federation/peers/<name>/pause', _federationResumePeerHandler);  // #223
+  }
+
+  /// #222: federation peer を起動前に登録する
+  void registerFederationPeer(_FederationPeer peer) {
+    _federationPeers.add(peer);
+  }
+
+  // #225: mobile mention picker — structured form of `@list` content
+  Response _mentionsHandler(Request _) {
+    final items = <Map<String, dynamic>>[
+      {
+        'label': '@list',
+        'insert': '@list',
+        'description': 'show this list',
+      },
+    ];
+    for (final e in _mentionActions.entries) {
+      items.add({
+        'label': '@run ${e.key}',
+        'insert': '@run ${e.key}',
+        'description': e.value.description,
+      });
+    }
+    return Response.ok(
+      json.encode({'items': items}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  Response _federationStatusHandler(Request _) => Response.ok(
+        json.encode({
+          'deviceId': _deviceId,
+          'peers': _federationPeers.map((p) => p.toJson()).toList(),
+          'heartbeatIntervalSec': _heartbeatInterval.inSeconds,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+  // #223: peer pause / resume
+  Response _federationPausePeerHandler(Request req, String name) {
+    final peer = _federationPeers.firstWhereOrNullExt((p) => p.name == name);
+    if (peer == null) return Response.notFound('Peer not found.');
+    final durStr = req.requestedUri.queryParameters['duration'];
+    final dur = int.tryParse(durStr ?? '');
+    // 許容プリセット (秒): 30min / 1h / 3h / 12h / 24h
+    const allowed = {1800, 3600, 10800, 43200, 86400};
+    if (dur == null || !allowed.contains(dur)) {
+      return Response.badRequest(
+          body: 'duration must be one of 1800/3600/10800/43200/86400 (seconds)');
+    }
+    peer.pauseUntilMs =
+        DateTime.now().millisecondsSinceEpoch + dur * 1000;
+    peer.status = 'paused';
+    _log('[fed] pause ${peer.name} until=${peer.pauseUntilMs}');
+    return Response.ok(
+      json.encode({'paused': true, 'pauseUntilMs': peer.pauseUntilMs}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  Response _federationResumePeerHandler(Request _, String name) {
+    final peer = _federationPeers.firstWhereOrNullExt((p) => p.name == name);
+    if (peer == null) return Response.notFound('Peer not found.');
+    peer.pauseUntilMs = 0;
+    // 次の heartbeat で正しい status に更新される
+    peer.status = 'unknown';
+    _log('[fed] resume ${peer.name}');
+    return Response.ok(
+      json.encode({'paused': false}),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  /// #222: 全 peer に GET /api/health を投げて状態を更新
+  Future<void> _heartbeatTick() async {
+    if (_federationPeers.isEmpty) return;
+    _heartbeatClient ??= HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    for (final peer in _federationPeers) {
+      // pause 中は heartbeat だけ続ける（生死表示用）
+      try {
+        peer.lastTryMs = DateTime.now().millisecondsSinceEpoch;
+        final uri = Uri.parse('${peer.url}/api/health');
+        final req = await _heartbeatClient!.getUrl(uri);
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        // #221: ループ防止のため自分の id を seen_by に乗せる
+        req.headers.set(_kFedOrigin, _deviceId);
+        req.headers.set(_kFedSeenBy, _deviceId);
+        final res = await req.close().timeout(const Duration(seconds: 10));
+        await res.drain();
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          peer.lastOkMs = DateTime.now().millisecondsSinceEpoch;
+          // #223: pause 中はその表示を優先
+          peer.status = peer.isPaused() ? 'paused' : 'connected';
+          peer.lastError = null;
+        } else {
+          peer.status = peer.isPaused() ? 'paused' : 'offline';
+          peer.lastError = 'HTTP ${res.statusCode}';
+        }
+        // peer の deviceId を学習（/api/info を別途叩く）。負荷軽減のためおおむね 10 回に1回
+        if (peer.learnedDeviceId == null) {
+          try {
+            final iReq = await _heartbeatClient!.getUrl(Uri.parse('${peer.url}/api/info'));
+            iReq.headers.set('Authorization', 'Bearer ${peer.token}');
+            final iRes = await iReq.close().timeout(const Duration(seconds: 5));
+            if (iRes.statusCode == 200) {
+              final body = await iRes.transform(utf8.decoder).join();
+              final dec = json.decode(body);
+              if (dec is Map && dec['deviceId'] is String) {
+                peer.learnedDeviceId = dec['deviceId'] as String;
+              }
+            } else {
+              await iRes.drain();
+            }
+          } catch (_) {}
+        }
+        _log('[fed] heartbeat ${peer.name} ${peer.status}');
+      } catch (e) {
+        // pause 中でも heartbeat 自体は流す。失敗時は status を offline にするが、
+        // pause が有効ならその表示を優先
+        peer.status = peer.isPaused() ? 'paused' : 'offline';
+        peer.lastError = e.toString();
+        _log('[fed] heartbeat ${peer.name} offline: $e');
+      }
+    }
+  }
+
+  void _startHeartbeat() {
+    if (_federationPeers.isEmpty) return;
+    // 起動直後に 1 回 + 以降周期実行
+    Future.microtask(_heartbeatTick);
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _heartbeatTick());
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _heartbeatClient?.close(force: true);
+    _heartbeatClient = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // #219: federation event 転送 (子 → 親)
+  // ---------------------------------------------------------------------------
+
+  static const String _kFedEvent = 'x-fed-event';
+
+  bool _isUpItem(String text) => text.trimLeft().startsWith('@up ');
+
+  bool _comesFromFederation(Request req) =>
+      req.headers[_kFedSeenBy] != null;
+
+  /// 子→親の clipboard 転送 (fire-and-forget)
+  /// - 受信時に federation 由来 (seen_by あり) なら再転送しない
+  /// - peer.kind=='parent' のみ
+  /// - relation=='equally' は `@up` 付きだけ転送
+  void _forwardClipboardToParents(_ClipboardItem item, Request originReq) {
+    if (_comesFromFederation(originReq)) return;
+    if (_deviceId.isEmpty) return;
+    if (_federationPeers.isEmpty) return;
+
+    final isUp = _isUpItem(item.text);
+    for (final peer in _federationPeers) {
+      if (peer.kind != 'parent') continue;
+      if (peer.relation == 'equally' && !isUp) continue;
+      // fire-and-forget
+      () async {
+        try {
+          await _sendClipboardToPeer(peer, item, isUp);
+        } catch (e) {
+          _log('[fed] forward-clip ${peer.name} unexpected: $e');
+        }
+      }();
+    }
+  }
+
+  /// 子→親の file upload 転送 (fire-and-forget)
+  /// - friendly: 実ファイルを送信。成功 + trust なら local 削除
+  /// - equally: 「@up file uploaded: <name>」を clipboard 通知のみ
+  void _forwardFileToParents(File file, Request originReq) {
+    if (_comesFromFederation(originReq)) return;
+    if (_deviceId.isEmpty) return;
+    if (_federationPeers.isEmpty) return;
+
+    for (final peer in _federationPeers) {
+      if (peer.kind != 'parent') continue;
+      () async {
+        try {
+          if (peer.relation == 'equally') {
+            // 通知のみ
+            final basename = p.basename(file.path);
+            final notice = _ClipboardItem(
+              id: _generateId(),
+              text: '@up file uploaded: $basename',
+              tag: _serverName,
+              createdAt: DateTime.now(),
+            );
+            await _sendClipboardToPeer(peer, notice, true);
+            return;
+          }
+          // friendly: 実ファイル送信
+          final ok = await _sendFileToPeer(peer, file);
+          if (ok && peer.trust) {
+            try {
+              await file.delete();
+              _log('[fed] forward-file ${peer.name} ok, local deleted (trust)');
+            } catch (e) {
+              _log('[fed] forward-file ${peer.name} local-delete fail: $e');
+            }
+          }
+        } catch (e) {
+          _log('[fed] forward-file ${peer.name} unexpected: $e');
+        }
+      }();
+    }
+  }
+
+  Future<void> _sendClipboardToPeer(
+      _FederationPeer peer, _ClipboardItem item, bool isUp) async {
+    // #223: pause 中はサイレントに skip
+    if (peer.isPaused()) {
+      _log('[fed] paused-skip clip ${peer.name}');
+      return;
+    }
+    _heartbeatClient ??=
+        HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final uri = Uri.parse('${peer.url}/api/clipboard');
+
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final req = await _heartbeatClient!.postUrl(uri);
+        req.headers.set('Content-Type', 'application/json');
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        req.headers.set(_kFedOrigin, _deviceId);
+        req.headers.set(_kFedSeenBy, _deviceId);
+        req.headers.set(_kFedEvent, 'clipboard');
+        req.write(json.encode({
+          'text': item.text,
+          // tag: 親側で「どの子から」かが分かるよう自サーバ名を入れる
+          'tag': _serverName,
+        }));
+        final res = await req.close().timeout(const Duration(seconds: 15));
+        await res.drain();
+
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          _log('[fed] forward-clip ${peer.name} ok attempt=$attempt up=$isUp');
+          return;
+        }
+        _log('[fed] forward-clip ${peer.name} HTTP ${res.statusCode} attempt=$attempt');
+        // 4xx (408 除く) は retry しない
+        if (res.statusCode >= 400 &&
+            res.statusCode < 500 &&
+            res.statusCode != 408) {
+          break;
+        }
+      } catch (e) {
+        _log('[fed] forward-clip ${peer.name} error attempt=$attempt: $e');
+      }
+      if (attempt < 3) {
+        await Future.delayed(Duration(seconds: 2 * attempt));
+      }
+    }
+    _log('[fed] forward-clip ${peer.name} gave-up');
+  }
+
+  Future<bool> _sendFileToPeer(_FederationPeer peer, File file) async {
+    // #223: pause 中は skip
+    if (peer.isPaused()) {
+      _log('[fed] paused-skip file ${peer.name}');
+      return false;
+    }
+    _heartbeatClient ??=
+        HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final filename = p.basename(file.path);
+    final pathParam = Uri.encodeComponent('children/$_serverName');
+    final uri = Uri.parse('${peer.url}/api/upload?path=$pathParam');
+
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final length = await file.length();
+        final req = await _heartbeatClient!.postUrl(uri);
+        req.headers.set('Content-Type', 'application/octet-stream');
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        req.headers.set('x-filename', Uri.encodeComponent(filename));
+        req.headers.set(_kFedOrigin, _deviceId);
+        req.headers.set(_kFedSeenBy, _deviceId);
+        req.headers.set(_kFedEvent, 'upload');
+        req.contentLength = length;
+        await req.addStream(file.openRead());
+        final res = await req.close().timeout(const Duration(minutes: 5));
+        await res.drain();
+
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          _log('[fed] forward-file ${peer.name} ok attempt=$attempt bytes=$length');
+          return true;
+        }
+        _log('[fed] forward-file ${peer.name} HTTP ${res.statusCode} attempt=$attempt');
+        if (res.statusCode == 413) {
+          _log('[fed] over-quota ${peer.name} (skip)');
+          return false;
+        }
+        if (res.statusCode >= 400 &&
+            res.statusCode < 500 &&
+            res.statusCode != 408) {
+          return false;
+        }
+      } catch (e) {
+        _log('[fed] forward-file ${peer.name} error attempt=$attempt: $e');
+      }
+      if (attempt < 3) {
+        await Future.delayed(Duration(seconds: 2 * attempt));
+      }
+    }
+    _log('[fed] forward-file ${peer.name} gave-up');
+    return false;
+  }
+
+  /// 親側: 受信したアップロードが federation 由来 + サイズ超過なら 413
+  /// child の deviceId と peer 学習結果を突き合わせて配下の max_upload_size を引く。
+  /// 学習未了なら制限なしとして通す。
+  Response? _checkFederationUploadQuota(Request req, int contentLength) {
+    final origin = req.headers[_kFedOrigin];
+    if (origin == null || origin.isEmpty) return null;
+    for (final peer in _federationPeers) {
+      if (peer.kind != 'child') continue;
+      if (peer.learnedDeviceId != origin) continue;
+      final cap = peer.maxUploadSizeBytes;
+      if (cap != null && contentLength > cap) {
+        _log('[fed] over-quota ${peer.name} bytes=$contentLength cap=$cap');
+        // 通知: 自分の clipboard に 1 件残す (受信者側で気付けるように)
+        _clipboardItems.insert(
+          0,
+          _ClipboardItem(
+            id: _generateId(),
+            text:
+                '@up over-quota from ${peer.name}: bytes=$contentLength cap=$cap',
+            tag: 'federation',
+            createdAt: DateTime.now(),
+          ),
+        );
+        while (_clipboardItems.length > _maxClipboardItems) {
+          final ev = _evictClipboardItem();
+          _recordDeletion(ev.id);
+        }
+        _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+        return Response(413, body: 'Federation upload over quota.');
+      }
+    }
+    return null;
   }
 
   void _log(String message) {
@@ -762,13 +1785,15 @@ class _CliServer {
     bool downloadOnly = false,
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
+    int pinLength = 4,             // #206
+    String pinCharset = 'digits',  // #206
     String serverName = 'LocalNode',
     bool clipboardEnabled = true,
     String? httpsCertPath,
     String? httpsKeyPath,
     String? uploadToken,
     List<({String pattern, String script})> postActions = const [],
-    Map<String, String> mentionActions = const {},
+    Map<String, ({String script, String? description})> mentionActions = const {},
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -777,6 +1802,8 @@ class _CliServer {
     _mentionActions = mentionActions;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName;
+    _pinLength = pinLength;       // #206
+    _pinCharset = pinCharset;     // #206
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -794,6 +1821,7 @@ class _CliServer {
     final staticHandler =
         createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
     final apiHandler = const Pipeline()
+        .addMiddleware(_federationLoopGuard)  // #221
         .addMiddleware(_authMiddleware)
         .addHandler(_router.call);
     final cascade = Cascade().add(apiHandler).add(staticHandler);
@@ -820,6 +1848,7 @@ class _CliServer {
   }
 
   Future<void> stop() async {
+    _stopHeartbeat();
     await _server?.close(force: true);
     _server = null;
   }
@@ -896,7 +1925,24 @@ class _CliServer {
 
   // --- ユーティリティ ---
 
-  String _generatePin() => (1000 + Random().nextInt(9000)).toString();
+  // #206: configurable length (4..8) and charset (digits / alnum / alnum_symbols)
+  String _generatePin() {
+    const digits = '0123456789';
+    const alnum = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    // 紛らわしい記号を避け、URL/CLI/Cookie で安全な印字可能 ASCII 部分集合
+    const symbols = '!@#\$%&*-_+=?';
+    final pool = switch (_pinCharset) {
+      'alnum' => alnum,
+      'alnum_symbols' => alnum + symbols,
+      _ => digits,
+    };
+    final rnd = Random.secure();
+    final buf = StringBuffer();
+    for (var i = 0; i < _pinLength; i++) {
+      buf.write(pool[rnd.nextInt(pool.length)]);
+    }
+    return buf.toString();
+  }
 
   String _generateToken() {
     final r = Random.secure();
@@ -953,6 +1999,67 @@ class _CliServer {
   }
 
   // --- 認証ミドルウェア ---
+
+  // #221: federation ループ防止
+  // 受信 request に `x-fed-seen-by` ヘッダがあり、自分の device_id が含まれて
+  // いれば破棄。送信側がループに気付けるよう 200 OK + JSON ペイロードを返す
+  // （HTTP エラー扱いにすると意味のないリトライを誘発しかねないため）。
+  static const String _kFedOrigin = 'x-fed-origin';
+  static const String _kFedSeenBy = 'x-fed-seen-by';
+
+  Middleware get _federationLoopGuard => (inner) {
+        return (req) {
+          final seenByRaw = req.headers[_kFedSeenBy];
+          if (seenByRaw != null && _deviceId.isNotEmpty) {
+            final ids = seenByRaw
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toSet();
+            if (ids.contains(_deviceId)) {
+              final origin = req.headers[_kFedOrigin] ?? '?';
+              _log('[fed] loop-drop origin=$origin seen_by_count=${ids.length}');
+              return Response.ok(
+                json.encode({'dropped': 'loop', 'device_id': _deviceId}),
+                headers: {'Content-Type': 'application/json'},
+              );
+            }
+          }
+          // #223: federation 由来 (x-fed-origin あり) かつ送信元 peer が pause 中なら遮断。
+          //       heartbeat (/api/health) は pause 中でも通す (生死表示用)。
+          final origin = req.headers[_kFedOrigin];
+          if (origin != null && origin.isNotEmpty) {
+            final path = req.url.path;
+            if (path != 'api/health' && path != 'api/info') {
+              final peer = _federationPeers
+                  .firstWhereOrNullExt((p) => p.learnedDeviceId == origin);
+              if (peer != null && peer.isPaused()) {
+                _log('[fed] paused-block ${peer.name} path=$path');
+                return Response(503,
+                    body: json.encode({
+                      'paused': true,
+                      'pauseUntilMs': peer.pauseUntilMs,
+                    }),
+                    headers: {'Content-Type': 'application/json'});
+              }
+            }
+          }
+          return inner(req);
+        };
+      };
+
+  /// #219 から使うヘルパ: federation event を転送するときの seen_by 構築。
+  /// 受信時の seen_by に自分の device_id を追加して返す（既に入っていたら追加しない）。
+  // ignore: unused_element
+  List<String> _appendSelfToSeenBy(String? incomingHeader) {
+    final ids = (incomingHeader ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (_deviceId.isNotEmpty && !ids.contains(_deviceId)) ids.add(_deviceId);
+    return ids;
+  }
 
   Middleware get _authMiddleware => (inner) {
         return (req) {
@@ -1075,6 +2182,12 @@ class _CliServer {
                   : 'randomPin',
           'requiresAuth': _authMode != _AuthMode.noPin,
           'clipboardEnabled': _clipboardEnabled,
+          // #218: federation 識別子。public エンドポイントなので未認証で見える。
+          // peer 同士の identity 確認に使うが、機密ではない。
+          'deviceId': _deviceId,
+          // #206: Web UI が PIN 入力モードを切り替えるためのヒント
+          'pinCharset': _pinCharset,
+          'pinLength': _pinLength,
         }),
         headers: {'Content-Type': 'application/json'},
       );
@@ -1130,6 +2243,15 @@ class _CliServer {
     }
     final filename = p.basename(Uri.decodeComponent(encodedName));
 
+    // #219: federation 由来のアップロードなら、送信元 child の
+    // max_upload_size を Content-Length で先に検査
+    final clHeader = req.headers['content-length'];
+    final cl = clHeader != null ? int.tryParse(clHeader) : null;
+    if (cl != null) {
+      final quotaResp = _checkFederationUploadQuota(req, cl);
+      if (quotaResp != null) return quotaResp;
+    }
+
     // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
     // (Copilot #207 review): セグメント単位で .. のみ拒否
     final relPath = req.requestedUri.queryParameters['path'] ?? '';
@@ -1166,6 +2288,8 @@ class _CliServer {
       if (_postActions.isNotEmpty) {
         _runPostActions(file.path);
       }
+      // #219: 親への転送 (自分が子のとき、かつ受信が federation 由来でない場合)
+      _forwardFileToParents(file, req);
       return Response.ok('File uploaded: ${p.basename(file.path)}');
     } catch (e) {
       await sink.close();
@@ -1231,7 +2355,15 @@ class _CliServer {
     if (_mentionActions.isEmpty) {
       lines.add('  (no @run actions registered)');
     } else {
-      lines.addAll(_mentionActions.keys.map((a) => '  @run $a'));
+      // #224: YAML config の mention_actions[].description があれば付与
+      for (final e in _mentionActions.entries) {
+        final desc = e.value.description;
+        if (desc != null && desc.isNotEmpty) {
+          lines.add('  @run ${e.key} — $desc');
+        } else {
+          lines.add('  @run ${e.key}');
+        }
+      }
     }
 
     if (_postActions.isNotEmpty) {
@@ -1254,7 +2386,8 @@ class _CliServer {
     );
     _clipboardItems.insert(0, item);
     while (_clipboardItems.length > _maxClipboardItems) {
-      _clipboardItems.removeLast();
+      final evicted = _evictClipboardItem();
+      _recordDeletion(evicted.id);
     }
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
   }
@@ -1613,19 +2746,81 @@ class _CliServer {
 
   // --- クリップボードハンドラ ---
 
-  Response _getClipboardHandler(Request _) => Response.ok(
+  // #228: 差分 / paginated GET
+  // クエリ:
+  //   ?since=<ms>      これより新しい item と、これ以降の削除 id を返す
+  //   ?before=<ms>     これより古い item を返す（古い方ページング）
+  //   ?limit=N         返す item 数の上限 (1..2000)
+  // 全て省略時は従来通り全件返す。
+  // since が削除リングバッファより古い → refresh:true で full re-fetch を促す。
+  Response _getClipboardHandler(Request req) {
+    final q = req.requestedUri.queryParameters;
+    final hasQuery = q.containsKey('since') || q.containsKey('before') || q.containsKey('limit');
+
+    if (!hasQuery) {
+      // 後方互換: 全件返す
+      return Response.ok(
         json.encode({
           'items': _clipboardItems.map((i) => i.toJson()).toList(),
           'lastModified': _clipboardLastModified,
         }),
         headers: {'Content-Type': 'application/json'},
       );
+    }
+
+    final since = int.tryParse(q['since'] ?? '');
+    final before = int.tryParse(q['before'] ?? '');
+    final limit = int.tryParse(q['limit'] ?? '');
+    if (limit != null && (limit < 1 || limit > 2000)) {
+      return Response.badRequest(body: 'limit must be 1..2000');
+    }
+
+    bool refresh = false;
+    List<String> deletedSince = const [];
+    if (since != null) {
+      // ring buffer が満杯で、その最古より since が古ければ full refresh
+      if (_clipboardDeletes.length >= _maxDeletionLog &&
+          _clipboardDeletes.first.deletedAtMs > since) {
+        refresh = true;
+      }
+      deletedSince = _clipboardDeletes
+          .where((d) => d.deletedAtMs > since)
+          .map((d) => d.id)
+          .toList();
+    }
+
+    // items は createdAt の新しい順に並んでいる（insert(0, ...) なので）
+    Iterable<_ClipboardItem> filtered = _clipboardItems;
+    if (since != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch > since);
+    }
+    if (before != null) {
+      filtered = filtered
+          .where((i) => i.createdAt.millisecondsSinceEpoch < before);
+    }
+    final list = filtered.toList();
+    final cap = limit ?? list.length;
+    final returned = list.length > cap ? list.sublist(0, cap) : list;
+    final hasMore = list.length > cap;
+
+    return Response.ok(
+      json.encode({
+        'items': returned.map((i) => i.toJson()).toList(),
+        'deleted': deletedSince,
+        'lastModified': _clipboardLastModified,
+        'hasMore': hasMore,
+        'refresh': refresh,
+      }),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
 
   Future<Response> _postClipboardHandler(Request req) async {
     try {
       final params =
           json.decode(await req.readAsString()) as Map<String, dynamic>;
-      final text = (params['text'] as String?)?.trim();
+      var text = (params['text'] as String?)?.trim();
       final rawTag = (params['tag'] as String?)?.trim();
       final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
 
@@ -1642,30 +2837,49 @@ class _CliServer {
         );
       }
 
+      // #220: 受信時 (federation 由来) に `@up ` で始まっていれば
+      //   - important フラグを立てる
+      //   - 表示テキストから `@up ` を剥がす
+      //   ローカル直接投稿でも同様に重要フラグだけ立てる (剥がしは行わない方が
+      //   送信側の意図が見えるが、spec §1.4 で「受信側で剥がす」とあるので剥がす)
+      bool important = false;
+      if (_isUpText(text)) {
+        important = true;
+        text = text.substring(4).trimLeft();
+        if (text.isEmpty) {
+          // @up だけのメッセージは空になる -> 体裁悪いのでマーク前に戻す
+          text = '@up';
+          important = false;
+        }
+      }
+
       final item = _ClipboardItem(
         id: _generateId(),
         text: text,
         tag: tag,
         createdAt: DateTime.now(),
+        important: important,
       );
       _clipboardItems.insert(0, item);
       while (_clipboardItems.length > _maxClipboardItems) {
-        _clipboardItems.removeLast();
+        final ev = _evictClipboardItem();
+        _recordDeletion(ev.id);
       }
       _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
 
-      // #174: メンションコマンド検出
-      if (text == '@list') {
-        _replyToClipboard(_buildMentionList());
-      } else {
-        final match = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
-        if (match != null) {
-          final alias = match.group(1)!;
-          final script = _mentionActions[alias];
-          if (script != null) {
-            _runMentionAction(alias, script);
-          }
-        }
+      // #219: 親への転送 (自分が子のとき、かつ受信が federation 由来でない場合)
+      // 注: important フラグの判定は転送時にもう一度 _isUpItem で行う。
+      //     しかし剥がした後 (`text` から `@up ` が消えている) なので、
+      //     重要度を保つために item.text ではなく元の判定情報を渡す必要がある。
+      //     ここでは「重要フラグ」を考慮した転送ヘルパを呼び分ける。
+      _forwardClipboardItemWithImportance(item, req, important);
+
+      // #174 / #220: メンションコマンド検出
+      // 重要フラグで剥がした text はもうコマンドではないので、元の text で判定する
+      // ためここで再度組み立てる必要はなく、剥がし前の text を扱うべき。
+      // → 改修簡素化のため: important なら mention 検出はスキップ
+      if (!important) {
+        await _handleMentionInClipboard(text);
       }
 
       return Response.ok(json.encode(item.toJson()),
@@ -1678,13 +2892,179 @@ class _CliServer {
     }
   }
 
+  bool _isUpText(String s) => s == '@up' || s.startsWith('@up ');
+
+  /// 親への転送ヘルパ。重要フラグも含めて転送先で `@up ` を付け直すかは
+  /// 送信側で決める。
+  void _forwardClipboardItemWithImportance(
+      _ClipboardItem item, Request originReq, bool important) {
+    if (important) {
+      // 元のテキストを `@up ` 付きで送信し直すための一時 item
+      final wireItem = _ClipboardItem(
+        id: item.id,
+        text: '@up ${item.text}',
+        tag: item.tag,
+        createdAt: item.createdAt,
+        important: true,
+      );
+      _forwardClipboardToParents(wireItem, originReq);
+    } else {
+      _forwardClipboardToParents(item, originReq);
+    }
+  }
+
+  /// #220: clipboard 投稿に含まれるメンションコマンドを処理
+  Future<void> _handleMentionInClipboard(String text) async {
+    // @list (自分)
+    if (text == '@list') {
+      _replyToClipboard(_buildMentionList());
+      return;
+    }
+    // @list <child>
+    final listChild = RegExp(r'^@list\s+(\S+)$').firstMatch(text);
+    if (listChild != null) {
+      final childName = listChild.group(1)!;
+      _dispatchListToChild(childName);
+      return;
+    }
+    // @to <child|all> <message>
+    final toMatch = RegExp(r'^@to\s+(\S+)\s+(.+)$', dotAll: true).firstMatch(text);
+    if (toMatch != null) {
+      final target = toMatch.group(1)!;
+      final message = toMatch.group(2)!;
+      _dispatchToChild(target, message);
+      return;
+    }
+    // @run_to <child> <alias>
+    final runToMatch = RegExp(r'^@run_to\s+(\S+)\s+(\S+)$').firstMatch(text);
+    if (runToMatch != null) {
+      final childName = runToMatch.group(1)!;
+      final alias = runToMatch.group(2)!;
+      _dispatchRunToChild(childName, alias);
+      return;
+    }
+    // @run <alias> (既存)
+    final runMatch = RegExp(r'^@run\s+(\S+)$').firstMatch(text);
+    if (runMatch != null) {
+      final alias = runMatch.group(1)!;
+      final entry = _mentionActions[alias];
+      if (entry != null) {
+        _runMentionAction(alias, entry.script);
+      }
+    }
+  }
+
+  /// 子に `@list` を投げる。子側で `@list` の結果が自分の clipboard に
+  /// 投稿され、friendly 転送なら親へ戻ってくる (equally では戻らないので
+  /// equally 子に対しては警告として local clipboard に注記)。
+  void _dispatchListToChild(String childName) {
+    final peer = _federationPeers.firstWhereOrNullExt(
+        (p) => p.kind == 'child' && p.name == childName);
+    if (peer == null) {
+      _replyToClipboard('@list $childName: child not found');
+      return;
+    }
+    if (peer.relation == 'equally') {
+      _replyToClipboard(
+          '@list $childName: equally relation — result will not be auto-forwarded');
+    }
+    () async {
+      try {
+        await _sendBareTextToPeer(peer, '@list');
+        _log('[fed] dispatched @list -> ${peer.name}');
+      } catch (e) {
+        _log('[fed] @list ${peer.name} fail: $e');
+        _replyToClipboard('@list $childName: dispatch failed');
+      }
+    }();
+  }
+
+  /// `@to <name|all> <message>` を解決して送信
+  void _dispatchToChild(String target, String message) {
+    final List<_FederationPeer> targets;
+    if (target == 'all') {
+      targets = _federationPeers.where((p) => p.kind == 'child').toList();
+    } else {
+      final t = _federationPeers.firstWhereOrNullExt(
+          (p) => p.kind == 'child' && p.name == target);
+      if (t == null) {
+        _replyToClipboard('@to $target: child not found');
+        return;
+      }
+      targets = [t];
+    }
+    for (final peer in targets) {
+      () async {
+        try {
+          await _sendBareTextToPeer(peer, message);
+          _log('[fed] @to ${peer.name} ok');
+        } catch (e) {
+          _log('[fed] @to ${peer.name} fail: $e');
+        }
+      }();
+    }
+  }
+
+  /// `@run_to <name> <alias>` を解決して `@run <alias>` を送信
+  void _dispatchRunToChild(String childName, String alias) {
+    final peer = _federationPeers.firstWhereOrNullExt(
+        (p) => p.kind == 'child' && p.name == childName);
+    if (peer == null) {
+      _replyToClipboard('@run_to $childName: child not found');
+      return;
+    }
+    () async {
+      try {
+        await _sendBareTextToPeer(peer, '@run $alias');
+        _log('[fed] @run_to ${peer.name} $alias dispatched');
+      } catch (e) {
+        _log('[fed] @run_to ${peer.name} fail: $e');
+        _replyToClipboard('@run_to $childName: dispatch failed');
+      }
+    }();
+  }
+
+  /// 任意のテキストを peer の /api/clipboard に送る (リトライ込み)
+  Future<void> _sendBareTextToPeer(_FederationPeer peer, String text) async {
+    if (peer.isPaused()) {
+      _log('[fed] paused-skip text ${peer.name}');
+      throw StateError('peer paused');
+    }
+    _heartbeatClient ??=
+        HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final uri = Uri.parse('${peer.url}/api/clipboard');
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final r = await _heartbeatClient!.postUrl(uri);
+        r.headers.set('Content-Type', 'application/json');
+        r.headers.set('Authorization', 'Bearer ${peer.token}');
+        r.headers.set(_kFedOrigin, _deviceId);
+        r.headers.set(_kFedSeenBy, _deviceId);
+        r.headers.set(_kFedEvent, 'clipboard');
+        r.write(json.encode({'text': text, 'tag': _serverName}));
+        final res = await r.close().timeout(const Duration(seconds: 15));
+        await res.drain();
+        if (res.statusCode >= 200 && res.statusCode < 300) return;
+        if (res.statusCode >= 400 &&
+            res.statusCode < 500 &&
+            res.statusCode != 408) {
+          throw HttpException('HTTP ${res.statusCode}');
+        }
+      } catch (e) {
+        if (attempt == 3) rethrow;
+      }
+      await Future.delayed(Duration(seconds: 2 * attempt));
+    }
+  }
+
   Response _deleteClipboardItemHandler(Request req, String id) {
     final idx = _clipboardItems.indexWhere((i) => i.id == id);
     if (idx == -1) {
       return Response.notFound(json.encode({'error': 'Item not found.'}),
           headers: {'Content-Type': 'application/json'});
     }
-    _clipboardItems.removeAt(idx);
+    final removed = _clipboardItems.removeAt(idx);
+    _recordDeletion(removed.id);
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return Response.ok(json.encode({'status': 'deleted'}),
         headers: {'Content-Type': 'application/json'});
@@ -1692,6 +3072,9 @@ class _CliServer {
 
   Response _clearClipboardHandler(Request req) {
     final count = _clipboardItems.length;
+    for (final it in _clipboardItems) {
+      _recordDeletion(it.id);
+    }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
     return Response.ok(json.encode({'status': 'cleared', 'count': count}),

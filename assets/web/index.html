@@ -23,6 +23,22 @@
             color: #1a73e8;
             text-align: center;
         }
+        #fed-status .fed-peer {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            margin: 0 0.25rem;
+            border-radius: 10px;
+            background: #eee;
+            color: #444;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+        #fed-status .fed-peer:hover { opacity: 0.8; }
+        #fed-status .fed-connected { background: #c8e6c9; color: #1b5e20; }
+        #fed-status .fed-offline { background: #ffcdd2; color: #b71c1c; }
+        #fed-status .fed-paused { background: #fff3cd; color: #856404; }
+        #fed-status .fed-unknown { background: #eee; color: #555; }
+
         #version-badge {
             position: absolute;
             top: 0.5rem;
@@ -229,6 +245,102 @@
             max-height: 300px;
             overflow-y: auto;
         }
+        /* #225: mention picker */
+        #mentionPickerBtn {
+            background: transparent;
+            color: #00796b;
+            border: 1px solid #b2dfdb;
+            border-radius: 4px;
+            font-weight: bold;
+            padding: 0 0.6rem;
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+            min-width: 2rem;
+        }
+        #mentionPickerBtn:hover { background: #e0f2f1; }
+        .clipboard-input { position: relative; display: flex; gap: 0.4rem; align-items: stretch; }
+        .clipboard-input textarea { flex: 1; }
+        #mentionPickerPopover {
+            position: absolute;
+            z-index: 30;
+            background: white;
+            border: 1px solid #b2dfdb;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            max-height: 260px;
+            overflow-y: auto;
+            min-width: 220px;
+            padding: 0.25rem 0;
+        }
+        .mention-picker-item {
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            font-size: 0.9rem;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .mention-picker-item:last-child { border-bottom: none; }
+        .mention-picker-item:hover, .mention-picker-item.focused { background: #e0f2f1; }
+        .mention-picker-item .mp-label { font-weight: bold; color: #00796b; }
+        .mention-picker-item .mp-desc { color: #555; font-size: 0.8rem; margin-top: 0.15rem; }
+        .mention-picker-empty {
+            padding: 0.5rem 0.75rem;
+            color: #888;
+            font-style: italic;
+            font-size: 0.85rem;
+        }
+        /* #229: filter / search row */
+        #clipboard-filter-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            margin: 0.5rem 0;
+        }
+        #clipboardSearch {
+            padding: 0.4rem 0.6rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        #clipboardTagFilters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.3rem;
+        }
+        .clip-tag-chip {
+            padding: 0.15rem 0.55rem;
+            border-radius: 12px;
+            background: #eee;
+            color: #555;
+            font-size: 0.78rem;
+            cursor: pointer;
+            border: 1px solid transparent;
+            user-select: none;
+        }
+        .clip-tag-chip:hover { opacity: 0.85; }
+        .clip-tag-chip.active {
+            background: #00796b;
+            color: white;
+            border-color: #004d40;
+        }
+        #clipboardLoadMore {
+            display: block;
+            margin: 0.5rem auto 0;
+            padding: 0.4rem 1.2rem;
+            background: #00796b;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        #clipboardLoadMore:hover { background: #00695c; }
+        .clipboard-filter-hit {
+            text-align: center;
+            color: #888;
+            font-size: 0.8rem;
+            margin: 0.3rem 0 0;
+        }
         .clipboard-item {
             display: flex;
             justify-content: space-between;
@@ -248,6 +360,16 @@
             word-break: break-word;
             white-space: pre-wrap;
             margin: 0 0 0.5rem 0;
+        }
+        /* #220 / #230: @up でマークされた重要アイテム */
+        .clipboard-item.clipboard-important {
+            border-left: 4px solid #f57c00;
+            background: #fff8e1;
+        }
+        .clipboard-item .important-badge {
+            color: #f57c00;
+            font-weight: bold;
+            margin-right: 0.2rem;
         }
         .clipboard-file-thumb {
             max-width: 80px;
@@ -814,6 +936,8 @@
         <div class="container">
             <span id="version-badge"></span>
             <h1>LocalNode</h1>
+            <!-- #222: federation 接続状態 -->
+            <div id="fed-status" style="display:none; text-align:center; margin: 0 0 0.75rem; font-size: 0.85rem;"></div>
             <div id="mode-indicator" style="display:none; text-align:center; margin-bottom: 1rem;"></div>
 
             <!-- タブナビゲーション -->
@@ -881,11 +1005,21 @@
                     <input type="text" id="clipboardTagInput" class="clipboard-tag-input" placeholder="送信元の名前（例: iPhone）" maxlength="30">
                     <div class="clipboard-input">
                         <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
+                        <button id="mentionPickerBtn" type="button" title="メンション一覧" aria-label="メンション一覧">@</button>
                         <button id="sendClipboardBtn">送信</button>
+                    </div>
+                    <!-- #225: mention picker popover -->
+                    <div id="mentionPickerPopover" role="listbox" aria-label="メンション候補" hidden></div>
+                    <!-- #229: フィルタ / 検索 -->
+                    <div id="clipboard-filter-row" style="display:none;">
+                        <input type="search" id="clipboardSearch" placeholder="🔍 テキスト検索" />
+                        <div id="clipboardTagFilters"></div>
                     </div>
                     <div id="clipboardList" class="clipboard-list">
                         <p class="empty-message">テキストを入力して共有しましょう</p>
                     </div>
+                    <!-- #229: 続きを表示 -->
+                    <button id="clipboardLoadMore" style="display:none;">もっと見る</button>
                 </div>
             </div>
         </div>
@@ -1055,6 +1189,22 @@
             };
 
             const showPinModal = () => {
+                // #206: PIN charset / length のヒントに応じて input mode を切り替え
+                const charset = serverInfo.pinCharset || 'digits';
+                const length = Number.isInteger(serverInfo.pinLength) ? serverInfo.pinLength : 4;
+                if (charset === 'digits') {
+                    pinInput.setAttribute('inputmode', 'numeric');
+                    pinInput.setAttribute('pattern', `[0-9]{${length}}`);
+                } else {
+                    pinInput.setAttribute('inputmode', 'text');
+                    pinInput.removeAttribute('pattern');
+                    pinInput.setAttribute('autocapitalize', 'off');
+                    pinInput.setAttribute('autocomplete', 'one-time-code');
+                    pinInput.setAttribute('spellcheck', 'false');
+                }
+                // maxlength は最低でも 4 を許容しつつ、固定 PIN の場合 length と異なる可能性があるので
+                // length+4 までの余裕を持たせる
+                pinInput.setAttribute('maxlength', String(Math.max(length, 4) + 4));
                 mainContent.style.display = 'none';
                 pinModal.style.display = 'flex';
                 pinInput.focus();
@@ -1072,6 +1222,86 @@
                 if (serverInfo.version) {
                     document.getElementById('version-badge').textContent = `v${serverInfo.version}`;
                 }
+                // #222: federation 状態を定期取得
+                startFederationStatusPolling();
+            };
+
+            // #222: federation 状態ポーリング
+            const fedStatusEl = document.getElementById('fed-status');
+            let fedStatusInterval = null;
+            const refreshFederationStatus = async () => {
+                try {
+                    const res = await safeFetch('/api/federation/status');
+                    if (!res.ok) {
+                        fedStatusEl.style.display = 'none';
+                        return;
+                    }
+                    const data = await res.json();
+                    const peers = Array.isArray(data.peers) ? data.peers : [];
+                    if (peers.length === 0) {
+                        fedStatusEl.style.display = 'none';
+                        return;
+                    }
+                    const now = Date.now();
+                    // peer.* は config 由来の任意文字列。HTML/属性インジェクション防止のため
+                    // status は enum に丸めて className を固定、それ以外はすべて escapeHtml。
+                    const ALLOWED_STATUS = new Set(['connected', 'offline', 'paused']);
+                    const chips = peers.map(p => {
+                        const status = ALLOWED_STATUS.has(p.status) ? p.status : 'unknown';
+                        const cls = `fed-peer fed-${status}`;
+                        let label = `${p.name}: ${status}`;
+                        if (p.pauseUntilMs && p.pauseUntilMs > now) {
+                            const remainSec = Math.round((p.pauseUntilMs - now) / 1000);
+                            const remainStr = remainSec > 3600
+                                ? `${Math.round(remainSec / 3600)}h`
+                                : `${Math.round(remainSec / 60)}min`;
+                            label += ` (${remainStr})`;
+                        }
+                        const title = `${p.kind ?? ''} • ${p.relation ?? ''}${p.lastError ? ' • ' + p.lastError : ''}`;
+                        return `<span class="${cls}" title="${escapeHtml(title)}" data-peer-name="${escapeHtml(p.name)}" data-paused="${p.pauseUntilMs && p.pauseUntilMs > now ? '1' : '0'}">${escapeHtml(label)}</span>`;
+                    }).join('');
+                    fedStatusEl.innerHTML = `Federation: ${chips}`;
+                    fedStatusEl.style.display = 'block';
+                } catch (_) {
+                    fedStatusEl.style.display = 'none';
+                }
+            };
+
+            // #223: peer chip クリックで pause/resume 操作
+            fedStatusEl.addEventListener('click', async (e) => {
+                const chip = e.target.closest('[data-peer-name]');
+                if (!chip) return;
+                const name = chip.dataset.peerName;
+                const isPaused = chip.dataset.paused === '1';
+                if (isPaused) {
+                    if (!confirm(`${name} の pause を解除しますか？`)) return;
+                    try {
+                        await safeFetch(`/api/federation/peers/${encodeURIComponent(name)}/pause`, { method: 'DELETE' });
+                        refreshFederationStatus();
+                    } catch (_) { alert('解除に失敗しました'); }
+                    return;
+                }
+                // pause メニュー
+                const choice = prompt(
+                    `${name} を pause します。秒数を選択してください:\n  1800 = 30分\n  3600 = 1時間\n  10800 = 3時間\n  43200 = 12時間\n  86400 = 24時間`,
+                    '3600'
+                );
+                if (!choice) return;
+                try {
+                    const r = await safeFetch(`/api/federation/peers/${encodeURIComponent(name)}/pause?duration=${encodeURIComponent(choice)}`, { method: 'POST' });
+                    if (!r.ok) {
+                        const txt = await r.text();
+                        alert(`pause 失敗: ${txt}`);
+                        return;
+                    }
+                    refreshFederationStatus();
+                } catch (_) { alert('pause に失敗しました'); }
+            });
+
+            const startFederationStatusPolling = () => {
+                refreshFederationStatus();
+                if (fedStatusInterval) clearInterval(fedStatusInterval);
+                fedStatusInterval = setInterval(refreshFederationStatus, 30000);
             };
 
             // ダウンロード専用モード時にUI要素を非表示にする
@@ -1301,6 +1531,40 @@
             const clipboardList = document.getElementById('clipboardList');
             const clearClipboardBtn = document.getElementById('clearClipboardBtn');
             const downloadClipboardBtn = document.getElementById('downloadClipboardBtn');
+            // #229: filter / search / paging
+            const clipboardSearchInput = document.getElementById('clipboardSearch');
+            const clipboardTagFilters = document.getElementById('clipboardTagFilters');
+            const clipboardFilterRow = document.getElementById('clipboard-filter-row');
+            const clipboardLoadMoreBtn = document.getElementById('clipboardLoadMore');
+            const CLIP_PAGE_SIZE = 100;
+            const CLIP_FILTER_STORAGE_KEY = 'localnode.clipboard.filter.v1';
+            let clipboardFilterState = (() => {
+                try {
+                    const raw = localStorage.getItem(CLIP_FILTER_STORAGE_KEY);
+                    if (!raw) return { q: '', tags: [] };
+                    const o = JSON.parse(raw);
+                    return { q: typeof o.q === 'string' ? o.q : '', tags: Array.isArray(o.tags) ? o.tags : [] };
+                } catch (_) { return { q: '', tags: [] }; }
+            })();
+            let clipboardDisplayLimit = CLIP_PAGE_SIZE;
+            const persistClipboardFilter = () => {
+                try { localStorage.setItem(CLIP_FILTER_STORAGE_KEY, JSON.stringify(clipboardFilterState)); } catch (_) {}
+            };
+            const applyClipboardFilter = (items) => {
+                const q = (clipboardFilterState.q || '').toLowerCase().trim();
+                const tagSet = new Set(clipboardFilterState.tags || []);
+                return items.filter(it => {
+                    if (tagSet.size > 0) {
+                        const tag = it.tag || '';
+                        if (!tagSet.has(tag)) return false;
+                    }
+                    if (q) {
+                        const hay = ((it.text || '') + ' ' + (it.tag || '')).toLowerCase();
+                        if (!hay.includes(q)) return false;
+                    }
+                    return true;
+                });
+            };
 
             // タグのデフォルト値: UserAgentからデバイス名を簡易抽出
             const getDefaultDeviceName = () => {
@@ -1418,21 +1682,65 @@
                 }
             };
 
+            // #228: 差分ポーリング
+            // 初回は ?limit=1000 で取得、以降は ?since=<lastModified> で差分のみ取得。
+            // refresh:true (サーバ削除リングバッファの外) のとき full re-fetch。
+            let currentClipboardItems = [];
+
             const fetchClipboard = async () => {
                 try {
-                    const response = await safeFetch('/api/clipboard');
+                    let url;
+                    if (clipboardLastModified === 0) {
+                        // 初回 (or refresh 後): 全件取得 (上限 1000)
+                        url = '/api/clipboard?limit=1000';
+                    } else {
+                        url = `/api/clipboard?since=${clipboardLastModified}`;
+                    }
+                    const response = await safeFetch(url);
                     if (!response.ok) throw new Error('Failed to fetch clipboard.');
-
                     const data = await response.json();
+
+                    if (data.refresh) {
+                        // サーバが「削除リングの外」と判断 → 全件取り直し
+                        clipboardLastModified = 0;
+                        currentClipboardItems = [];
+                        // 次の poll で初回扱いとして fetch
+                        return fetchClipboard();
+                    }
+
+                    const incoming = Array.isArray(data.items) ? data.items : [];
+                    const deletedIds = Array.isArray(data.deleted) ? data.deleted : null;
+                    const isDifferential = url.includes('?since=');
+
+                    let changed = false;
+                    if (isDifferential) {
+                        // 差分マージ: 新規追加 + 削除適用
+                        if (deletedIds && deletedIds.length > 0) {
+                            const delSet = new Set(deletedIds);
+                            currentClipboardItems = currentClipboardItems.filter(i => !delSet.has(i.id));
+                            changed = true;
+                        }
+                        if (incoming.length > 0) {
+                            // incoming は新しい順。既存と被るものは置き換え (id 一意前提)
+                            const incomingIds = new Set(incoming.map(i => i.id));
+                            currentClipboardItems = currentClipboardItems.filter(i => !incomingIds.has(i.id));
+                            currentClipboardItems = [...incoming, ...currentClipboardItems];
+                            changed = true;
+                        }
+                    } else {
+                        // 初回 / refresh: 全件置き換え
+                        currentClipboardItems = incoming;
+                        changed = true;
+                    }
 
                     if (data.lastModified !== clipboardLastModified) {
                         clipboardLastModified = data.lastModified;
-                        renderClipboardItems(data.items);
-                        if (!firstClipboardFetch) markUnread();
-                        firstClipboardFetch = false;
-                    } else if (firstClipboardFetch) {
-                        firstClipboardFetch = false;
                     }
+                    if (changed) {
+                        renderClipboardItems(currentClipboardItems);
+                        if (!firstClipboardFetch) markUnread();
+                    }
+                    firstClipboardFetch = false;
                 } catch (error) {
                     if (error.message !== 'Authentication required.') {
                         console.error('Clipboard fetch error:', error);
@@ -1440,7 +1748,24 @@
                 }
             };
 
-            let currentClipboardItems = [];
+            const renderClipboardTagFilters = () => {
+                const tagCounts = new Map();
+                for (const it of currentClipboardItems) {
+                    const t = it.tag || '';
+                    tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+                }
+                const tags = [...tagCounts.keys()].sort((a, b) => {
+                    if (a === '' && b !== '') return 1;
+                    if (b === '' && a !== '') return -1;
+                    return a.localeCompare(b);
+                });
+                const activeSet = new Set(clipboardFilterState.tags || []);
+                clipboardTagFilters.innerHTML = tags.map(t => {
+                    const label = t === '' ? '(no tag)' : t;
+                    const cls = 'clip-tag-chip' + (activeSet.has(t) ? ' active' : '');
+                    return `<span class="${cls}" data-tag="${escapeHtml(t)}">${escapeHtml(label)} ${tagCounts.get(t)}</span>`;
+                }).join('');
+            };
 
             const renderClipboardItems = (items) => {
                 currentClipboardItems = items;
@@ -1452,16 +1777,34 @@
                         : '<p class="empty-message">テキストを入力して共有しましょう</p>';
                     clearClipboardBtn.style.display = 'none';
                     downloadClipboardBtn.style.display = 'none';
+                    clipboardFilterRow.style.display = 'none';
+                    clipboardLoadMoreBtn.style.display = 'none';
                     return;
                 }
 
                 clearClipboardBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
                 downloadClipboardBtn.style.display = 'inline-block';
 
-                clipboardList.innerHTML = items.map(item => `
-                    <div class="clipboard-item" data-id="${escapeHtml(item.id)}">
+                // #229: filter row only when there's enough material to need it
+                const showFilter = items.length >= 5;
+                clipboardFilterRow.style.display = showFilter ? 'flex' : 'none';
+                if (showFilter) renderClipboardTagFilters();
+
+                const filtered = applyClipboardFilter(items);
+                if (clipboardDisplayLimit > filtered.length) clipboardDisplayLimit = Math.max(CLIP_PAGE_SIZE, filtered.length);
+                const shown = filtered.slice(0, clipboardDisplayLimit);
+                const hiddenCount = filtered.length - shown.length;
+
+                if (filtered.length === 0) {
+                    clipboardList.innerHTML = '<p class="empty-message">フィルタ条件に合うアイテムはありません</p>';
+                    clipboardLoadMoreBtn.style.display = 'none';
+                    return;
+                }
+
+                clipboardList.innerHTML = shown.map(item => `
+                    <div class="clipboard-item${item.important ? ' clipboard-important' : ''}" data-id="${escapeHtml(item.id)}">
                         <div class="clipboard-item-content">
-                            <p class="clipboard-item-text">${renderClipboardText(item.text)}</p>
+                            <p class="clipboard-item-text">${item.important ? '<span class="important-badge">★</span> ' : ''}${renderClipboardText(item.text)}</p>
                             <div class="clipboard-item-meta">
                                 ${item.tag ? `<span class="clipboard-item-tag">${escapeHtml(item.tag)}</span>` : ''}
                                 <span class="clipboard-item-time">${formatTime(item.createdAt)}</span>
@@ -1472,8 +1815,45 @@
                             ${isDownloadOnly ? '' : `<button class="btn-delete-clip" onclick="deleteClipboardItem('${escapeHtml(item.id)}')">削除</button>`}
                         </div>
                     </div>
-                `).join('');
+                `).join('') + (filtered.length !== items.length
+                    ? `<p class="clipboard-filter-hit">${filtered.length} / ${items.length} 件を表示</p>`
+                    : '');
+
+                if (hiddenCount > 0) {
+                    clipboardLoadMoreBtn.textContent = `もっと見る（残り ${hiddenCount} 件）`;
+                    clipboardLoadMoreBtn.style.display = 'block';
+                } else {
+                    clipboardLoadMoreBtn.style.display = 'none';
+                }
             };
+
+            // #229: filter / search / load-more wiring
+            clipboardSearchInput.value = clipboardFilterState.q || '';
+            let clipboardSearchTimer = null;
+            clipboardSearchInput.addEventListener('input', () => {
+                if (clipboardSearchTimer) clearTimeout(clipboardSearchTimer);
+                clipboardSearchTimer = setTimeout(() => {
+                    clipboardFilterState.q = clipboardSearchInput.value;
+                    persistClipboardFilter();
+                    clipboardDisplayLimit = CLIP_PAGE_SIZE;
+                    renderClipboardItems(currentClipboardItems);
+                }, 150);
+            });
+            clipboardTagFilters.addEventListener('click', (e) => {
+                const chip = e.target.closest('.clip-tag-chip');
+                if (!chip) return;
+                const tag = chip.dataset.tag ?? '';
+                const tags = new Set(clipboardFilterState.tags || []);
+                if (tags.has(tag)) tags.delete(tag); else tags.add(tag);
+                clipboardFilterState.tags = [...tags];
+                persistClipboardFilter();
+                clipboardDisplayLimit = CLIP_PAGE_SIZE;
+                renderClipboardItems(currentClipboardItems);
+            });
+            clipboardLoadMoreBtn.addEventListener('click', () => {
+                clipboardDisplayLimit += CLIP_PAGE_SIZE;
+                renderClipboardItems(currentClipboardItems);
+            });
 
             // #198: @file:<relpath> をサムネイル/チップに変換（メッセージあたり最大5個）
             const renderClipboardText = (text) => {
@@ -1574,6 +1954,115 @@
             };
 
             sendClipboardBtn.addEventListener('click', sendClipboardText);
+
+            // === #225: mention picker ===
+            const mentionPickerBtn = document.getElementById('mentionPickerBtn');
+            const mentionPickerPopover = document.getElementById('mentionPickerPopover');
+            const MENTION_CACHE_KEY = 'localnode.mentions.v1';
+            const MENTION_CACHE_TTL_MS = 5 * 60 * 1000;
+
+            const loadMentionsCache = () => {
+                try {
+                    const raw = sessionStorage.getItem(MENTION_CACHE_KEY);
+                    if (!raw) return null;
+                    const o = JSON.parse(raw);
+                    if (!o || !Array.isArray(o.items) || typeof o.ts !== 'number') return null;
+                    if (Date.now() - o.ts > MENTION_CACHE_TTL_MS) return null;
+                    return o.items;
+                } catch (_) { return null; }
+            };
+            const saveMentionsCache = (items) => {
+                try { sessionStorage.setItem(MENTION_CACHE_KEY, JSON.stringify({ ts: Date.now(), items })); } catch (_) {}
+            };
+
+            const fetchMentions = async () => {
+                const cached = loadMentionsCache();
+                if (cached) return cached;
+                const res = await safeFetch('/api/mentions');
+                if (!res.ok) throw new Error('/api/mentions HTTP ' + res.status);
+                const data = await res.json();
+                const items = Array.isArray(data?.items) ? data.items : [];
+                saveMentionsCache(items);
+                return items;
+            };
+
+            const insertAtCursor = (textarea, insertText) => {
+                const start = textarea.selectionStart ?? textarea.value.length;
+                const end = textarea.selectionEnd ?? textarea.value.length;
+                const before = textarea.value.slice(0, start);
+                const after = textarea.value.slice(end);
+                // Add space after the mention so the user can keep typing args
+                const needSpace = !after.startsWith(' ') && !after.startsWith('\n');
+                const tail = needSpace ? ' ' : '';
+                textarea.value = before + insertText + tail + after;
+                const caret = start + insertText.length + tail.length;
+                textarea.setSelectionRange(caret, caret);
+                textarea.focus();
+            };
+
+            const closeMentionPicker = () => {
+                mentionPickerPopover.hidden = true;
+                mentionPickerPopover.innerHTML = '';
+            };
+
+            const openMentionPicker = async () => {
+                if (!mentionPickerPopover.hidden) { closeMentionPicker(); return; }
+                // Position above the input row
+                mentionPickerPopover.innerHTML = '<div class="mention-picker-empty">読込中…</div>';
+                mentionPickerPopover.hidden = false;
+                positionMentionPicker();
+                let items = [];
+                try {
+                    items = await fetchMentions();
+                } catch (e) {
+                    mentionPickerPopover.innerHTML = `<div class="mention-picker-empty">取得失敗: ${escapeHtml(e.message)}</div>`;
+                    return;
+                }
+                if (items.length === 0) {
+                    mentionPickerPopover.innerHTML = '<div class="mention-picker-empty">利用可能なメンションはありません</div>';
+                    return;
+                }
+                mentionPickerPopover.innerHTML = items.map((it, idx) => {
+                    const label = escapeHtml(it.label ?? it.insert ?? '');
+                    const desc = it.description ? `<div class="mp-desc">${escapeHtml(it.description)}</div>` : '';
+                    return `<div class="mention-picker-item" role="option" data-idx="${idx}"><span class="mp-label">${label}</span>${desc}</div>`;
+                }).join('');
+                positionMentionPicker();
+                mentionPickerPopover.querySelectorAll('.mention-picker-item').forEach(el => {
+                    el.addEventListener('click', () => {
+                        const idx = parseInt(el.dataset.idx, 10);
+                        const it = items[idx];
+                        if (it) insertAtCursor(clipboardInput, it.insert ?? it.label ?? '');
+                        closeMentionPicker();
+                    });
+                });
+            };
+
+            const positionMentionPicker = () => {
+                // Place the popover just above the button, right-aligned to it
+                const btn = mentionPickerBtn;
+                const inputRow = btn.parentElement;
+                if (!inputRow) return;
+                const pop = mentionPickerPopover;
+                // Use the input row as relative container (already position:relative)
+                pop.style.left = '';
+                pop.style.right = (inputRow.clientWidth - btn.offsetLeft - btn.offsetWidth) + 'px';
+                pop.style.bottom = (inputRow.clientHeight - btn.offsetTop + 4) + 'px';
+                pop.style.top = '';
+            };
+
+            mentionPickerBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openMentionPicker();
+            });
+            document.addEventListener('click', (e) => {
+                if (mentionPickerPopover.hidden) return;
+                if (mentionPickerPopover.contains(e.target) || e.target === mentionPickerBtn) return;
+                closeMentionPicker();
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && !mentionPickerPopover.hidden) closeMentionPicker();
+            });
             clipboardInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
@@ -1621,7 +2110,9 @@
             };
 
             downloadClipboardBtn.addEventListener('click', () => {
-                const text = currentClipboardItems.map(item => {
+                // #229: TXT export respects current filter (search + tags)
+                const source = applyClipboardFilter(currentClipboardItems);
+                const text = source.map(item => {
                     const prefix = item.tag ? `[${item.tag}] ` : '';
                     return `${prefix}${item.text}`;
                 }).join('\n---\n');
