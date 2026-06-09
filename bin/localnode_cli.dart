@@ -231,13 +231,34 @@ _LoadedConfig _loadConfig(String path) {
     exit(1);
   }
 
-  // forward-compat sections — parsed and stored but not consumed yet
+  // forward-compat: clipboard はまだ consume されていないので silent skip OK
   final clip = doc['clipboard'];
   if (clip is YamlMap) cfg.clipboardRaw = Map.from(clip);
-  final ch = doc['children'];
-  if (ch is YamlList) cfg.childrenRaw = List.from(ch);
-  final pa2 = doc['parent'];
-  if (pa2 is YamlMap) cfg.parentRaw = Map.from(pa2);
+
+  // children / parent は 1.6.0 で federation の入口として consume される。
+  // キー自体が書かれていれば、たとえ値が空 / 文字列 / 型違いでも黙って捨てずに
+  // 即エラーで知らせる (silently skip すると検証も起動時表示もスキップされ、
+  // 「parent 設定が反映されない」状態がデバッグ不能になるため)。
+  if (doc.containsKey('children')) {
+    final ch = doc['children'];
+    if (ch is YamlList) {
+      cfg.childrenRaw = List.from(ch);
+    } else {
+      stderr.writeln('Error: children must be a list of mappings '
+          '(got: ${ch == null ? "null/empty" : ch.runtimeType}).');
+      exit(1);
+    }
+  }
+  if (doc.containsKey('parent')) {
+    final pa2 = doc['parent'];
+    if (pa2 is YamlMap) {
+      cfg.parentRaw = Map.from(pa2);
+    } else {
+      stderr.writeln('Error: parent must be a mapping with url / token / relation '
+          '(got: ${pa2 == null ? "null/empty" : pa2.runtimeType}).');
+      exit(1);
+    }
+  }
 
   return cfg;
 }
