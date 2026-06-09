@@ -318,7 +318,11 @@ class ServerService {
   /// アセットのWebファイルを一時ディレクトリに展開する
   Future<void> _deployAssets() async {
     final tempDir = await getTemporaryDirectory();
-    _webRootDir = Directory(p.join(tempDir.path, 'web'));
+    // #242: 同ホストで複数 LocalNode サーバ (CLI / 別 GUI プロセス) が共存しても
+    //       互いの serving content を上書きしないように PID 別ディレクトリへ。
+    const prefix = 'web_';
+    _reapStaleWebDirs(tempDir, prefix);
+    _webRootDir = Directory(p.join(tempDir.path, '$prefix$pid'));
 
     // 既存のディレクトリがあればクリーンアップ
     if (await _webRootDir!.exists()) {
@@ -1708,7 +1712,10 @@ class ServerService {
     final tempPath = Platform.environment['TMPDIR'] ??
         Platform.environment['TEMP'] ??
         '/tmp';
-    _webRootDir = Directory(p.join(tempPath, 'localnode_web'));
+    // #242: 同ホストで他 LocalNode と共存しても上書きしないよう PID 別
+    const prefix = 'localnode_web_';
+    _reapStaleWebDirs(Directory(tempPath), prefix);
+    _webRootDir = Directory(p.join(tempPath, '$prefix$pid'));
 
     // 既存のディレクトリがあればクリーンアップ
     if (await _webRootDir!.exists()) {
@@ -1950,6 +1957,13 @@ class ServerService {
     _lockoutUntil.clear();
     _clipboardItems.clear();
     _clipboardLastModified = 0;
+    // #242: 自分用 deploy dir を後片付け。残っても次回起動の reap で拾える。
+    try {
+      final d = _webRootDir;
+      if (d != null && await d.exists()) {
+        await d.delete(recursive: true);
+      }
+    } catch (_) {}
     // WakelockPlusはCLIモードでは使用されないため、try-catchで囲む
     try {
       await WakelockPlus.disable();
@@ -1957,6 +1971,53 @@ class ServerService {
       // CLIモードまたはWSL等DBus未対応環境では無視
     }
     _log('Server stopped.');
+  }
+
+  // #242: 同プレフィックスのきょうだいディレクトリのうち PID が
+  //       生きていないものを削除。長寿の常駐サーバを巻き込まないよう
+  //       PID 生存チェックのみで mtime は見ない。
+  void _reapStaleWebDirs(Directory base, String prefix) {
+    if (!base.existsSync()) return;
+    final myPid = pid;
+    for (final entry in base.listSync(followLinks: false)) {
+      if (entry is! Directory) continue;
+      final name = p.basename(entry.path);
+      if (!name.startsWith(prefix)) continue;
+      final pidStr = name.substring(prefix.length);
+      final otherPid = int.tryParse(pidStr);
+      if (otherPid == null || otherPid == myPid) continue;
+      if (_isProcessAlive(otherPid)) continue;
+      try {
+        entry.deleteSync(recursive: true);
+      } catch (_) {}
+    }
+  }
+
+  bool _isProcessAlive(int otherPid) {
+    if (otherPid <= 0) return false;
+    if (Platform.isWindows) {
+      try {
+        final r = Process.runSync(
+            'tasklist', ['/NH', '/FI', 'PID eq $otherPid'],
+            runInShell: false);
+        final out = r.stdout as String;
+        return !out.contains('No tasks') && out.contains('$otherPid');
+      } catch (_) {
+        return true;
+      }
+    }
+    if (Platform.isAndroid || Platform.isIOS) {
+      // モバイル: ps が制限されることがある + 他プロセスとの共存は通常起きない。
+      // 安全側で「生存」扱いにして消さない (アプリ再起動時の旧 PID dir は次回 reap か
+      // OS の temp 掃除に任せる)。
+      return true;
+    }
+    try {
+      final r = Process.runSync('ps', ['-p', '$otherPid'], runInShell: false);
+      return r.exitCode == 0;
+    } catch (_) {
+      return true;
+    }
   }
 
   // SAF ディレクトリを選択するメソッド

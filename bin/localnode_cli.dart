@@ -1872,6 +1872,59 @@ class _CliServer {
     _stopHeartbeat();
     await _server?.close(force: true);
     _server = null;
+    // #242: 自分用 deploy dir を後片付け。異常終了で残った場合は
+    //       次回起動の _reapStaleDeployDirs が拾うので best-effort で OK。
+    try {
+      final d = _webRootDir;
+      if (d != null && await d.exists()) {
+        await d.delete(recursive: true);
+      }
+    } catch (_) {}
+  }
+
+  // #242: 同プレフィックスのきょうだいディレクトリのうち、対応する PID が
+  //       生きていないものを削除する。長寿の常駐サーバを巻き込まないよう
+  //       mtime ベースの judge は使わず、PID 生存チェック一本でいく。
+  void _reapStaleDeployDirs(Directory base, String prefix) {
+    if (!base.existsSync()) return;
+    final myPid = pid;
+    for (final entry in base.listSync(followLinks: false)) {
+      if (entry is! Directory) continue;
+      final name = p.basename(entry.path);
+      if (!name.startsWith(prefix)) continue;
+      final pidStr = name.substring(prefix.length);
+      final otherPid = int.tryParse(pidStr);
+      if (otherPid == null || otherPid == myPid) continue;
+      if (_isProcessAlive(otherPid)) continue;
+      try {
+        entry.deleteSync(recursive: true);
+      } catch (_) {
+        // best-effort; permission / race losers are ignored
+      }
+    }
+  }
+
+  bool _isProcessAlive(int otherPid) {
+    if (otherPid <= 0) return false;
+    if (Platform.isWindows) {
+      try {
+        final r = Process.runSync(
+            'tasklist', ['/NH', '/FI', 'PID eq $otherPid'],
+            runInShell: false);
+        // `INFO: No tasks ...` が返ったら死んでる扱い
+        final out = r.stdout as String;
+        return !out.contains('No tasks') && out.contains('$otherPid');
+      } catch (_) {
+        return true; // 判定不能なら安全側 (消さない)
+      }
+    }
+    // POSIX: ps -p で exit 0 なら生存
+    try {
+      final r = Process.runSync('ps', ['-p', '$otherPid'], runInShell: false);
+      return r.exitCode == 0;
+    } catch (_) {
+      return true;
+    }
   }
 
   // --- 初期化 ---
@@ -1900,7 +1953,12 @@ class _CliServer {
     final tmpBase = Platform.environment['TMPDIR'] ??
         Platform.environment['TEMP'] ??
         '/tmp';
-    _webRootDir = Directory(p.join(tmpBase, 'localnode_cli_web'));
+    // #242: 同一ホストでの複数 LocalNode 共存を許す。
+    // 固定パスだと後発の起動が先発の serving content を上書きするため
+    // PID を混ぜたユニーク dir に展開する。
+    const prefix = 'localnode_cli_web_';
+    _reapStaleDeployDirs(Directory(tmpBase), prefix);
+    _webRootDir = Directory(p.join(tmpBase, '$prefix$pid'));
     if (await _webRootDir!.exists()) {
       await _webRootDir!.delete(recursive: true);
     }
