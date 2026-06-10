@@ -1729,8 +1729,16 @@
                         }
                     } else {
                         // 初回 / refresh: 全件置き換え
-                        currentClipboardItems = incoming;
-                        changed = true;
+                        // #235: サーバが空 clipboard で lastModified=0 を返し続けるため、
+                        //       2 秒おきのポーリングが毎回フル fetch になる。空→空のとき
+                        //       changed=true にしてしまうと markUnread が立ち、起動直後
+                        //       「何もないのにタブ赤点」が出る。実態が変わったときだけ true。
+                        if (incoming.length === 0 && currentClipboardItems.length === 0) {
+                            changed = false;
+                        } else {
+                            currentClipboardItems = incoming;
+                            changed = true;
+                        }
                     }
 
                     if (data.lastModified !== clipboardLastModified) {
