@@ -107,6 +107,13 @@
             font-size: 0.75rem;
             margin-left: 0.8rem;
         }
+        /* #216: 拡張子未登録ファイルに「テキストとして開く」 */
+        .btn-view-text {
+            background-color: #607d8b;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.75rem;
+            margin-left: 0.4rem;
+        }
         .upload-form {
             margin-top: 2rem;
             padding: 1.5rem;
@@ -2285,6 +2292,16 @@
                         dlBtn.textContent = 'DL';
                         dlBtn.addEventListener('click', () => downloadFile(item.id, item.name));
                         tdActions.appendChild(dlBtn);
+                        // #216: 拡張子ホワイトリスト外でも「テキストとして開く」を試せる
+                        if (!isTextFile(item.name) && !isVideoFile(item.name) && !isImageFile(item.name)) {
+                            const txtBtn = document.createElement('button');
+                            txtBtn.className = 'btn-view-text';
+                            txtBtn.textContent = 'TXT';
+                            txtBtn.title = 'テキストとして開く';
+                            txtBtn.addEventListener('click', () =>
+                                openTextPreview(item.id, item.name));
+                            tdActions.appendChild(txtBtn);
+                        }
                         if (!isDownloadOnly) {
                             const delBtn = document.createElement('button');
                             delBtn.className = 'btn-delete';
@@ -2521,6 +2538,12 @@
                     const url = `/api/text-preview/${textPreviewState.id}?mode=${mode}&lines=${lines}`;
                     const res = await safeFetch(url);
                     if (!res.ok) {
+                        // #216: サーバが 415 で「binary」と返したら専用メッセージに差し替え
+                        if (res.status === 415) {
+                            textPreviewBody.textContent =
+                                'テキストファイルではないため表示できません（バイナリと判定）。';
+                            return;
+                        }
                         const msg = await res.text();
                         textPreviewBody.textContent = `表示できませんでした: ${msg}`;
                         return;
