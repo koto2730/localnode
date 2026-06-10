@@ -103,6 +103,26 @@ class MainActivity: FlutterActivity() {
                         result.error("READ_FAILED", "Failed to read file: ${e.message}", null)
                     }
                 }
+                "getFileSize" -> {
+                    // #244 review: sniff の前にサイズだけ問い合わせるため。
+                    // 巨大ファイルで readFile (= 全読み) に到達させない。
+                    val uriString = call.argument<String>("uri")
+                    if (uriString == null) {
+                        result.error("ARGUMENT_ERROR", "URI is required.", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val fileUri = Uri.parse(uriString)
+                        val df = DocumentFile.fromSingleUri(context, fileUri)
+                        if (df == null || !df.exists()) {
+                            result.error("FILE_NOT_FOUND", "File not found.", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(df.length())
+                    } catch (e: Exception) {
+                        result.error("SIZE_FAILED", "Failed to get size: ${e.message}", null)
+                    }
+                }
                 "resolvePath" -> {
                     // #209: 相対パスを SAF ツリー配下の document URI に解決する
                     val uriString = call.argument<String>("uri")

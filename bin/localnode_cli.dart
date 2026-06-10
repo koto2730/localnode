@@ -231,13 +231,34 @@ _LoadedConfig _loadConfig(String path) {
     exit(1);
   }
 
-  // forward-compat sections — parsed and stored but not consumed yet
+  // forward-compat: clipboard はまだ consume されていないので silent skip OK
   final clip = doc['clipboard'];
   if (clip is YamlMap) cfg.clipboardRaw = Map.from(clip);
-  final ch = doc['children'];
-  if (ch is YamlList) cfg.childrenRaw = List.from(ch);
-  final pa2 = doc['parent'];
-  if (pa2 is YamlMap) cfg.parentRaw = Map.from(pa2);
+
+  // children / parent は 1.6.0 で federation の入口として consume される。
+  // キー自体が書かれていれば、たとえ値が空 / 文字列 / 型違いでも黙って捨てずに
+  // 即エラーで知らせる (silently skip すると検証も起動時表示もスキップされ、
+  // 「parent 設定が反映されない」状態がデバッグ不能になるため)。
+  if (doc.containsKey('children')) {
+    final ch = doc['children'];
+    if (ch is YamlList) {
+      cfg.childrenRaw = List.from(ch);
+    } else {
+      stderr.writeln('Error: children must be a list of mappings '
+          '(got: ${ch == null ? "null/empty" : ch.runtimeType}).');
+      exit(1);
+    }
+  }
+  if (doc.containsKey('parent')) {
+    final pa2 = doc['parent'];
+    if (pa2 is YamlMap) {
+      cfg.parentRaw = Map.from(pa2);
+    } else {
+      stderr.writeln('Error: parent must be a mapping with url / token / relation '
+          '(got: ${pa2 == null ? "null/empty" : pa2.runtimeType}).');
+      exit(1);
+    }
+  }
 
   return cfg;
 }
@@ -1069,13 +1090,28 @@ Future<_HttpsHostResult> _resolveHttpsHost({
     exit(1);
   }
 
-  if (candidates.length == 1) {
+  // #234: SAN に hostname と IP の両方あるときは hostname を優先 (ブラウザ警告回避)
+  final hostnameCandidates =
+      candidates.where((c) => InternetAddress.tryParse(c.host) == null).toList();
+  if (hostnameCandidates.length == 1) {
+    final c = hostnameCandidates.first;
+    stdout.writeln('HTTPS: Using "${c.host}" (resolved to ${c.ip})');
+    return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
+  }
+  if (hostnameCandidates.isEmpty && candidates.length == 1) {
+    // SAN が IP のみ → IP をそのまま使う (互換動作)
     final c = candidates.first;
     stdout.writeln('HTTPS: Using "${c.host}" (resolved to ${c.ip})');
     return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
   }
 
-  // 複数候補 → 対話選択
+  // 複数候補 → 対話選択 (hostname を先頭に並べ替えて優先度を視認しやすく)
+  candidates.sort((a, b) {
+    final aIsHost = InternetAddress.tryParse(a.host) == null;
+    final bIsHost = InternetAddress.tryParse(b.host) == null;
+    if (aIsHost == bIsHost) return 0;
+    return aIsHost ? -1 : 1;
+  });
   if (stdin.hasTerminal && _isInteractiveForeground()) {
     stdout.writeln('Multiple HTTPS hostname candidates detected:');
     for (int i = 0; i < candidates.length; i++) {
@@ -1438,6 +1474,33 @@ class _CliServer {
         'description': 'show this list',
       },
     ];
+    // #240: federation 設定があるときは予約 mention も含める
+    final hasChildren = _federationPeers.any((p) => p.kind == 'child');
+    final hasParent = _federationPeers.any((p) => p.kind == 'parent');
+    if (hasChildren) {
+      items.add({
+        'label': '@list <child>',
+        'insert': '@list ',
+        'description': "fetch a child's mention list",
+      });
+      items.add({
+        'label': '@to <child|all> <message>',
+        'insert': '@to ',
+        'description': "post to a child's clipboard",
+      });
+      items.add({
+        'label': '@run_to <child> <alias>',
+        'insert': '@run_to ',
+        'description': 'run @run on a child',
+      });
+    }
+    if (hasParent) {
+      items.add({
+        'label': '@up <message>',
+        'insert': '@up ',
+        'description': 'mark as important (forwarded under equally relation)',
+      });
+    }
     for (final e in _mentionActions.entries) {
       items.add({
         'label': '@run ${e.key}',
@@ -1548,14 +1611,37 @@ class _CliServer {
     }
   }
 
+  // #243: 起動直後だけバックオフを詰めて、Tailscale 等で初回 dial が
+  //       冷えていてもユーザを 45 秒待たせない。一巡したら通常の 45 秒周期へ。
+  static const List<int> _warmupDelaysSec = [5, 10, 20, 30, 45];
+  int _warmupTick = 0;
+
   void _startHeartbeat() {
     if (_federationPeers.isEmpty) return;
-    // 起動直後に 1 回 + 以降周期実行
-    Future.microtask(_heartbeatTick);
-    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _heartbeatTick());
+    _warmupTick = 0;
+    Future.microtask(() async {
+      await _heartbeatTick();
+      _scheduleNextHeartbeat();
+    });
   }
 
+  void _scheduleNextHeartbeat() {
+    if (_heartbeatStopped) return;
+    final delay = _warmupTick < _warmupDelaysSec.length
+        ? Duration(seconds: _warmupDelaysSec[_warmupTick])
+        : _heartbeatInterval;
+    _warmupTick++;
+    _heartbeatTimer = Timer(delay, () async {
+      if (_heartbeatStopped) return;
+      await _heartbeatTick();
+      _scheduleNextHeartbeat();
+    });
+  }
+
+  bool _heartbeatStopped = false;
+
   void _stopHeartbeat() {
+    _heartbeatStopped = true;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _heartbeatClient?.close(force: true);
@@ -1851,6 +1937,59 @@ class _CliServer {
     _stopHeartbeat();
     await _server?.close(force: true);
     _server = null;
+    // #242: 自分用 deploy dir を後片付け。異常終了で残った場合は
+    //       次回起動の _reapStaleDeployDirs が拾うので best-effort で OK。
+    try {
+      final d = _webRootDir;
+      if (d != null && await d.exists()) {
+        await d.delete(recursive: true);
+      }
+    } catch (_) {}
+  }
+
+  // #242: 同プレフィックスのきょうだいディレクトリのうち、対応する PID が
+  //       生きていないものを削除する。長寿の常駐サーバを巻き込まないよう
+  //       mtime ベースの judge は使わず、PID 生存チェック一本でいく。
+  void _reapStaleDeployDirs(Directory base, String prefix) {
+    if (!base.existsSync()) return;
+    final myPid = pid;
+    for (final entry in base.listSync(followLinks: false)) {
+      if (entry is! Directory) continue;
+      final name = p.basename(entry.path);
+      if (!name.startsWith(prefix)) continue;
+      final pidStr = name.substring(prefix.length);
+      final otherPid = int.tryParse(pidStr);
+      if (otherPid == null || otherPid == myPid) continue;
+      if (_isProcessAlive(otherPid)) continue;
+      try {
+        entry.deleteSync(recursive: true);
+      } catch (_) {
+        // best-effort; permission / race losers are ignored
+      }
+    }
+  }
+
+  bool _isProcessAlive(int otherPid) {
+    if (otherPid <= 0) return false;
+    if (Platform.isWindows) {
+      try {
+        final r = Process.runSync(
+            'tasklist', ['/NH', '/FI', 'PID eq $otherPid'],
+            runInShell: false);
+        // `INFO: No tasks ...` が返ったら死んでる扱い
+        final out = r.stdout as String;
+        return !out.contains('No tasks') && out.contains('$otherPid');
+      } catch (_) {
+        return true; // 判定不能なら安全側 (消さない)
+      }
+    }
+    // POSIX: ps -p で exit 0 なら生存
+    try {
+      final r = Process.runSync('ps', ['-p', '$otherPid'], runInShell: false);
+      return r.exitCode == 0;
+    } catch (_) {
+      return true;
+    }
   }
 
   // --- 初期化 ---
@@ -1879,7 +2018,12 @@ class _CliServer {
     final tmpBase = Platform.environment['TMPDIR'] ??
         Platform.environment['TEMP'] ??
         '/tmp';
-    _webRootDir = Directory(p.join(tmpBase, 'localnode_cli_web'));
+    // #242: 同一ホストでの複数 LocalNode 共存を許す。
+    // 固定パスだと後発の起動が先発の serving content を上書きするため
+    // PID を混ぜたユニーク dir に展開する。
+    const prefix = 'localnode_cli_web_';
+    _reapStaleDeployDirs(Directory(tmpBase), prefix);
+    _webRootDir = Directory(p.join(tmpBase, '$prefix$pid'));
     if (await _webRootDir!.exists()) {
       await _webRootDir!.delete(recursive: true);
     }
@@ -2352,6 +2496,20 @@ class _CliServer {
 
     lines.add('Mention commands:');
     lines.add('  @list — show this list');
+
+    // #240: federation 設定があるときだけ予約 mention を案内する
+    //       (children/parent 未設定のサーバでノイズにならないように)
+    final hasChildren = _federationPeers.any((p) => p.kind == 'child');
+    final hasParent = _federationPeers.any((p) => p.kind == 'parent');
+    if (hasChildren) {
+      lines.add('  @list <childname> — fetch a child\'s mention list');
+      lines.add('  @to <childname|all> <message> — post to a child\'s clipboard');
+      lines.add('  @run_to <childname> <alias> — run @run on a child');
+    }
+    if (hasParent) {
+      lines.add('  @up <message> — mark as important (forwarded under equally relation)');
+    }
+
     if (_mentionActions.isEmpty) {
       lines.add('  (no @run actions registered)');
     } else {
@@ -2479,6 +2637,41 @@ class _CliServer {
   }
 
   // #193: テキストファイルのインラインプレビュー
+  // #216: 先頭 8KB を読んでテキストらしさを判定。NUL バイトを含む or
+  //       UTF-8 として decode できないなら binary 扱い。
+  //       (#244 review) 末尾でマルチバイト境界をまたいだだけの偽陰性を
+  //       避けるため、末尾を最大 3 バイト削って再 decode を試す。
+  Future<bool> _sniffTextLike(File file) async {
+    try {
+      const sniffBytes = 8 * 1024;
+      final raf = await file.open();
+      try {
+        final size = await raf.length();
+        final n = size < sniffBytes ? size : sniffBytes;
+        if (n == 0) return true; // 空ファイルはテキスト扱い
+        final buf = await raf.read(n);
+        if (buf.contains(0)) return false; // NUL バイト → binary
+        return _utf8DecodesWithTrim(buf);
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _utf8DecodesWithTrim(List<int> buf) {
+    for (var trim = 0; trim <= 3 && trim < buf.length; trim++) {
+      try {
+        utf8.decode(buf.sublist(0, buf.length - trim), allowMalformed: false);
+        return true;
+      } catch (_) {
+        // try one more byte off the tail
+      }
+    }
+    return false;
+  }
+
   Future<Response> _textPreviewHandler(Request req, String id) async {
     const maxFullBytes = 5 * 1024 * 1024;
     final mode = req.requestedUri.queryParameters['mode'] ?? 'head';
@@ -2502,6 +2695,19 @@ class _CliServer {
       final canonicalFile = await file.resolveSymbolicLinks();
       if (!p.isWithin(canonicalRoot, canonicalFile)) {
         return Response.forbidden('Access denied');
+      }
+
+      // #216: 拡張子ホワイトリスト外 (例: LICENSE, Dockerfile, *.cfg) も
+      //       バイナリでなければプレビューさせる。先頭 8KB を見て NUL バイトや
+      //       UTF-8 不正がないかで判定する。
+      final sniff = await _sniffTextLike(file);
+      if (!sniff) {
+        return Response(415,
+            body: json.encode({
+              'error': 'not-text',
+              'message': 'File does not look like text (binary content).',
+            }),
+            headers: {'Content-Type': 'application/json'});
       }
 
       if (mode == 'head' || mode == 'tail') {

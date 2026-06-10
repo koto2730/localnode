@@ -107,6 +107,13 @@
             font-size: 0.75rem;
             margin-left: 0.8rem;
         }
+        /* #216: 拡張子未登録ファイルに「テキストとして開く」 */
+        .btn-view-text {
+            background-color: #607d8b;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.75rem;
+            margin-left: 0.4rem;
+        }
         .upload-form {
             margin-top: 2rem;
             padding: 1.5rem;
@@ -242,7 +249,8 @@
             background-color: #00695c;
         }
         .clipboard-list {
-            max-height: 300px;
+            /* #236: viewport に応じて伸びる。下限はモバイル維持、上限は実用範囲。 */
+            max-height: clamp(300px, 60vh, 80vh);
             overflow-y: auto;
         }
         /* #225: mention picker */
@@ -306,6 +314,28 @@
             display: flex;
             flex-wrap: wrap;
             gap: 0.3rem;
+        }
+        /* #241: フィルタ解除ボタンを tag chip と同じ行に */
+        .clip-filter-tags-line {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        #clipboardFilterClearBtn {
+            margin-left: auto;
+            padding: 0.18rem 0.7rem;
+            background: #f5f5f5;
+            color: #555;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            font-size: 0.78rem;
+            cursor: pointer;
+        }
+        #clipboardFilterClearBtn:hover:not(:disabled) { background: #e8e8e8; }
+        #clipboardFilterClearBtn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
         }
         .clip-tag-chip {
             padding: 0.15rem 0.55rem;
@@ -1013,7 +1043,11 @@
                     <!-- #229: フィルタ / 検索 -->
                     <div id="clipboard-filter-row" style="display:none;">
                         <input type="search" id="clipboardSearch" placeholder="🔍 テキスト検索" />
-                        <div id="clipboardTagFilters"></div>
+                        <div class="clip-filter-tags-line">
+                            <div id="clipboardTagFilters"></div>
+                            <!-- #241: フィルタ強制クリアを常時露出 -->
+                            <button id="clipboardFilterClearBtn" type="button" disabled>フィルタ解除</button>
+                        </div>
                     </div>
                     <div id="clipboardList" class="clipboard-list">
                         <p class="empty-message">テキストを入力して共有しましょう</p>
@@ -1536,6 +1570,7 @@
             const clipboardTagFilters = document.getElementById('clipboardTagFilters');
             const clipboardFilterRow = document.getElementById('clipboard-filter-row');
             const clipboardLoadMoreBtn = document.getElementById('clipboardLoadMore');
+            const clipboardFilterClearBtn = document.getElementById('clipboardFilterClearBtn');
             const CLIP_PAGE_SIZE = 100;
             const CLIP_FILTER_STORAGE_KEY = 'localnode.clipboard.filter.v1';
             let clipboardFilterState = (() => {
@@ -1729,8 +1764,16 @@
                         }
                     } else {
                         // 初回 / refresh: 全件置き換え
-                        currentClipboardItems = incoming;
-                        changed = true;
+                        // #235: サーバが空 clipboard で lastModified=0 を返し続けるため、
+                        //       2 秒おきのポーリングが毎回フル fetch になる。空→空のとき
+                        //       changed=true にしてしまうと markUnread が立ち、起動直後
+                        //       「何もないのにタブ赤点」が出る。実態が変わったときだけ true。
+                        if (incoming.length === 0 && currentClipboardItems.length === 0) {
+                            changed = false;
+                        } else {
+                            currentClipboardItems = incoming;
+                            changed = true;
+                        }
                     }
 
                     if (data.lastModified !== clipboardLastModified) {
@@ -1772,12 +1815,19 @@
                 const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
 
                 if (items.length === 0) {
+                    // #241: clipboard 空でも localStorage に残った filter が active な場合は
+                    //       filter row を出してクリアできるようにしないと「詰む」 (再起動直後の症状)。
+                    const filterActiveOnEmpty =
+                        (clipboardFilterState.q || '').length > 0
+                            || (clipboardFilterState.tags || []).length > 0;
                     clipboardList.innerHTML = isDownloadOnly
                         ? '<p class="empty-message">クリップボードにアイテムがありません</p>'
                         : '<p class="empty-message">テキストを入力して共有しましょう</p>';
                     clearClipboardBtn.style.display = 'none';
                     downloadClipboardBtn.style.display = 'none';
-                    clipboardFilterRow.style.display = 'none';
+                    clipboardFilterRow.style.display = filterActiveOnEmpty ? 'flex' : 'none';
+                    if (filterActiveOnEmpty) renderClipboardTagFilters();
+                    clipboardFilterClearBtn.disabled = !filterActiveOnEmpty;
                     clipboardLoadMoreBtn.style.display = 'none';
                     return;
                 }
@@ -1785,10 +1835,15 @@
                 clearClipboardBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
                 downloadClipboardBtn.style.display = 'inline-block';
 
-                // #229: filter row only when there's enough material to need it
-                const showFilter = items.length >= 5;
+                // #229 / #241: filter row は 5 件以上 **または** フィルタ active のとき表示。
+                // 後者を加えることで「空 clipboard + 残留フィルタ」で操作不能にならない。
+                const filterActive = (clipboardFilterState.q || '').length > 0
+                    || (clipboardFilterState.tags || []).length > 0;
+                const showFilter = items.length >= 5 || filterActive;
                 clipboardFilterRow.style.display = showFilter ? 'flex' : 'none';
                 if (showFilter) renderClipboardTagFilters();
+                // #241: クリア手段を常時露出。アクティブでないときは disabled でグレー表示。
+                clipboardFilterClearBtn.disabled = !filterActive;
 
                 const filtered = applyClipboardFilter(items);
                 if (clipboardDisplayLimit > filtered.length) clipboardDisplayLimit = Math.max(CLIP_PAGE_SIZE, filtered.length);
@@ -1852,6 +1907,14 @@
             });
             clipboardLoadMoreBtn.addEventListener('click', () => {
                 clipboardDisplayLimit += CLIP_PAGE_SIZE;
+                renderClipboardItems(currentClipboardItems);
+            });
+            // #241: フィルタ強制クリア。空 clipboard + 残留フィルタで詰まないよう常時露出。
+            clipboardFilterClearBtn.addEventListener('click', () => {
+                clipboardFilterState = { q: '', tags: [] };
+                persistClipboardFilter();
+                clipboardSearchInput.value = '';
+                clipboardDisplayLimit = CLIP_PAGE_SIZE;
                 renderClipboardItems(currentClipboardItems);
             });
 
@@ -2229,6 +2292,16 @@
                         dlBtn.textContent = 'DL';
                         dlBtn.addEventListener('click', () => downloadFile(item.id, item.name));
                         tdActions.appendChild(dlBtn);
+                        // #216: 拡張子ホワイトリスト外でも「テキストとして開く」を試せる
+                        if (!isTextFile(item.name) && !isVideoFile(item.name) && !isImageFile(item.name)) {
+                            const txtBtn = document.createElement('button');
+                            txtBtn.className = 'btn-view-text';
+                            txtBtn.textContent = 'TXT';
+                            txtBtn.title = 'テキストとして開く';
+                            txtBtn.addEventListener('click', () =>
+                                openTextPreview(item.id, item.name));
+                            tdActions.appendChild(txtBtn);
+                        }
                         if (!isDownloadOnly) {
                             const delBtn = document.createElement('button');
                             delBtn.className = 'btn-delete';
@@ -2465,6 +2538,12 @@
                     const url = `/api/text-preview/${textPreviewState.id}?mode=${mode}&lines=${lines}`;
                     const res = await safeFetch(url);
                     if (!res.ok) {
+                        // #216: サーバが 415 で「binary」と返したら専用メッセージに差し替え
+                        if (res.status === 415) {
+                            textPreviewBody.textContent =
+                                'テキストファイルではないため表示できません（バイナリと判定）。';
+                            return;
+                        }
                         const msg = await res.text();
                         textPreviewBody.textContent = `表示できませんでした: ${msg}`;
                         return;

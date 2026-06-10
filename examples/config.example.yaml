@@ -50,6 +50,7 @@ clipboard:
   max_text_length: 10000
 
 # 親子連携: 自分が「親」のとき子の一覧を書く (#218 で実装)
+# children は複数持てるので **リスト** (`- name: ...` で 1 エントリ)。
 children:
   - name: watcher-pi
     url: https://watcher-pi.tail-xxxx.ts.net:8080
@@ -58,6 +59,9 @@ children:
     max_upload_size: 100MB
 
 # 親子連携: 自分が「子」のとき親を書く (#218 で実装)
+# parent は 1 つだけ。**マッピング** (キー直書き) で、children と同じリスト形式
+# (`- name: ...`) で書くと "parent must be a mapping ... (got: YamlList)"
+# で起動エラーになる。
 parent:
   name: home-server
   url: https://home-server.tail-xxxx.ts.net:8080

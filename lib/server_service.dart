@@ -318,7 +318,11 @@ class ServerService {
   /// アセットのWebファイルを一時ディレクトリに展開する
   Future<void> _deployAssets() async {
     final tempDir = await getTemporaryDirectory();
-    _webRootDir = Directory(p.join(tempDir.path, 'web'));
+    // #242: 同ホストで複数 LocalNode サーバ (CLI / 別 GUI プロセス) が共存しても
+    //       互いの serving content を上書きしないように PID 別ディレクトリへ。
+    const prefix = 'web_';
+    _reapStaleWebDirs(tempDir, prefix);
+    _webRootDir = Directory(p.join(tempDir.path, '$prefix$pid'));
 
     // 既存のディレクトリがあればクリーンアップ
     if (await _webRootDir!.exists()) {
@@ -987,6 +991,67 @@ class ServerService {
   }
 
   // #193: テキストファイルのインラインプレビュー（head / tail / full）
+  // #216: 拡張子に依らず、先頭 8KB を見て NUL バイト無し + UTF-8 として
+  //       decode できるかでテキストらしさを判定。SAF / 実 path 両対応。
+  //       (#244 review)
+  //       - 末尾でマルチバイト境界をまたいだだけの偽陰性は最大 3 バイト
+  //         までトリムして再試行することで吸収する。
+  //       - SAF 経路は現状の readFile が「全ファイル読み」のため、
+  //         巨大ファイルに到達する前にサイズを問い合わせ、5MB を超える
+  //         なら sniff 自体スキップして not-text 扱いで返す
+  //         (preview の maxFullBytes と整合)。巨大バイナリで「TXT として
+  //         開く」誤クリックされても OOM やハングに至らないためのガード。
+  //         本物の範囲読み実装は別 issue (1.7.0+) に切り出す。
+  Future<bool> _sniffTextLike(String decoded) async {
+    try {
+      const sniffBytes = 8 * 1024;
+      const maxFullBytes = 5 * 1024 * 1024;
+      Uint8List buf;
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        try {
+          final size = await _safPlatform
+              .invokeMethod<int>('getFileSize', {'uri': decoded});
+          if (size != null && size > maxFullBytes) return false;
+        } catch (_) {
+          // size 取得失敗時は readFile に委ねる (compatibility)
+        }
+        final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
+        if (bytes == null) return false;
+        final all = bytes as Uint8List;
+        final n = all.length < sniffBytes ? all.length : sniffBytes;
+        buf = Uint8List.sublistView(all, 0, n);
+      } else {
+        final file = File(decoded);
+        final raf = await file.open();
+        try {
+          final size = await raf.length();
+          final n = size < sniffBytes ? size : sniffBytes;
+          if (n == 0) return true;
+          buf = await raf.read(n);
+        } finally {
+          await raf.close();
+        }
+      }
+      if (buf.isEmpty) return true;
+      if (buf.contains(0)) return false;
+      return _utf8DecodesWithTrim(buf);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _utf8DecodesWithTrim(List<int> buf) {
+    for (var trim = 0; trim <= 3 && trim < buf.length; trim++) {
+      try {
+        utf8.decode(buf.sublist(0, buf.length - trim), allowMalformed: false);
+        return true;
+      } catch (_) {
+        // try one more byte off the tail
+      }
+    }
+    return false;
+  }
+
   Future<Response> _textPreviewHandler(Request request, String id) async {
     const maxFullBytes = 5 * 1024 * 1024; // 5MB
     final modeRaw = request.requestedUri.queryParameters['mode'] ?? 'head';
@@ -1024,6 +1089,18 @@ class ServerService {
         if (!p.isWithin(canonicalRoot, canonicalFile)) {
           return Response.forbidden('Access denied');
         }
+      }
+
+      // #216: 拡張子ホワイトリスト外でも binary でなければ preview させる。
+      //       先頭 8KB を sniff。SAF / 実 path のどちらでも動作。
+      final sniffOk = await _sniffTextLike(decoded);
+      if (!sniffOk) {
+        return Response(415,
+            body: jsonEncode({
+              'error': 'not-text',
+              'message': 'File does not look like text (binary content).',
+            }),
+            headers: {'Content-Type': 'application/json'});
       }
 
       // head/tail は全読みせず、行数だけ集める（バウンドメモリ）
@@ -1708,7 +1785,10 @@ class ServerService {
     final tempPath = Platform.environment['TMPDIR'] ??
         Platform.environment['TEMP'] ??
         '/tmp';
-    _webRootDir = Directory(p.join(tempPath, 'localnode_web'));
+    // #242: 同ホストで他 LocalNode と共存しても上書きしないよう PID 別
+    const prefix = 'localnode_web_';
+    _reapStaleWebDirs(Directory(tempPath), prefix);
+    _webRootDir = Directory(p.join(tempPath, '$prefix$pid'));
 
     // 既存のディレクトリがあればクリーンアップ
     if (await _webRootDir!.exists()) {
@@ -1950,6 +2030,13 @@ class ServerService {
     _lockoutUntil.clear();
     _clipboardItems.clear();
     _clipboardLastModified = 0;
+    // #242: 自分用 deploy dir を後片付け。残っても次回起動の reap で拾える。
+    try {
+      final d = _webRootDir;
+      if (d != null && await d.exists()) {
+        await d.delete(recursive: true);
+      }
+    } catch (_) {}
     // WakelockPlusはCLIモードでは使用されないため、try-catchで囲む
     try {
       await WakelockPlus.disable();
@@ -1957,6 +2044,53 @@ class ServerService {
       // CLIモードまたはWSL等DBus未対応環境では無視
     }
     _log('Server stopped.');
+  }
+
+  // #242: 同プレフィックスのきょうだいディレクトリのうち PID が
+  //       生きていないものを削除。長寿の常駐サーバを巻き込まないよう
+  //       PID 生存チェックのみで mtime は見ない。
+  void _reapStaleWebDirs(Directory base, String prefix) {
+    if (!base.existsSync()) return;
+    final myPid = pid;
+    for (final entry in base.listSync(followLinks: false)) {
+      if (entry is! Directory) continue;
+      final name = p.basename(entry.path);
+      if (!name.startsWith(prefix)) continue;
+      final pidStr = name.substring(prefix.length);
+      final otherPid = int.tryParse(pidStr);
+      if (otherPid == null || otherPid == myPid) continue;
+      if (_isProcessAlive(otherPid)) continue;
+      try {
+        entry.deleteSync(recursive: true);
+      } catch (_) {}
+    }
+  }
+
+  bool _isProcessAlive(int otherPid) {
+    if (otherPid <= 0) return false;
+    if (Platform.isWindows) {
+      try {
+        final r = Process.runSync(
+            'tasklist', ['/NH', '/FI', 'PID eq $otherPid'],
+            runInShell: false);
+        final out = r.stdout as String;
+        return !out.contains('No tasks') && out.contains('$otherPid');
+      } catch (_) {
+        return true;
+      }
+    }
+    if (Platform.isAndroid || Platform.isIOS) {
+      // モバイル: ps が制限されることがある + 他プロセスとの共存は通常起きない。
+      // 安全側で「生存」扱いにして消さない (アプリ再起動時の旧 PID dir は次回 reap か
+      // OS の temp 掃除に任せる)。
+      return true;
+    }
+    try {
+      final r = Process.runSync('ps', ['-p', '$otherPid'], runInShell: false);
+      return r.exitCode == 0;
+    } catch (_) {
+      return true;
+    }
   }
 
   // SAF ディレクトリを選択するメソッド

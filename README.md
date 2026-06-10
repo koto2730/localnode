@@ -160,6 +160,21 @@ localnode-cli --config /etc/localnode/config.yaml
 
 To stop the server: **Ctrl+C**.
 
+#### State file (federation `device_id`)
+
+For federation (parent/child pairing introduced in v1.6.0), the CLI persists a stable per-server identity to a small JSON state file. The path follows the XDG Base Directory specification on POSIX so it sits alongside other tools that already follow XDG (and gets picked up by backup tools that target XDG dirs):
+
+- **Linux / macOS:** `$XDG_STATE_HOME/localnode-cli/state.json`, defaulting to `~/.local/state/localnode-cli/state.json` when `$XDG_STATE_HOME` is unset.
+- **Windows:** `%LOCALAPPDATA%\localnode-cli\state.json`.
+
+The file currently contains a single `device_id` UUID generated on first start. It is consulted (and re-created if missing) on every launch so peer identity stays stable across restarts. Override the location with `--state-file <path>` if you need to keep state alongside your config — for example, sharing config and state on a USB stick:
+
+```bash
+localnode-cli --config /mnt/usb/localnode.yaml --state-file /mnt/usb/state.json
+```
+
+> The state file path is currently a CLI flag only — it is not yet exposed as a YAML config key.
+
 ## Platform Support
 
 | Platform | Server | CLI Mode | Distribution |
