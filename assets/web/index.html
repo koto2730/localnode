@@ -307,6 +307,28 @@
             flex-wrap: wrap;
             gap: 0.3rem;
         }
+        /* #241: フィルタ解除ボタンを tag chip と同じ行に */
+        .clip-filter-tags-line {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        #clipboardFilterClearBtn {
+            margin-left: auto;
+            padding: 0.18rem 0.7rem;
+            background: #f5f5f5;
+            color: #555;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            font-size: 0.78rem;
+            cursor: pointer;
+        }
+        #clipboardFilterClearBtn:hover:not(:disabled) { background: #e8e8e8; }
+        #clipboardFilterClearBtn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
         .clip-tag-chip {
             padding: 0.15rem 0.55rem;
             border-radius: 12px;
@@ -1013,7 +1035,11 @@
                     <!-- #229: フィルタ / 検索 -->
                     <div id="clipboard-filter-row" style="display:none;">
                         <input type="search" id="clipboardSearch" placeholder="🔍 テキスト検索" />
-                        <div id="clipboardTagFilters"></div>
+                        <div class="clip-filter-tags-line">
+                            <div id="clipboardTagFilters"></div>
+                            <!-- #241: フィルタ強制クリアを常時露出 -->
+                            <button id="clipboardFilterClearBtn" type="button" disabled>フィルタ解除</button>
+                        </div>
                     </div>
                     <div id="clipboardList" class="clipboard-list">
                         <p class="empty-message">テキストを入力して共有しましょう</p>
@@ -1536,6 +1562,7 @@
             const clipboardTagFilters = document.getElementById('clipboardTagFilters');
             const clipboardFilterRow = document.getElementById('clipboard-filter-row');
             const clipboardLoadMoreBtn = document.getElementById('clipboardLoadMore');
+            const clipboardFilterClearBtn = document.getElementById('clipboardFilterClearBtn');
             const CLIP_PAGE_SIZE = 100;
             const CLIP_FILTER_STORAGE_KEY = 'localnode.clipboard.filter.v1';
             let clipboardFilterState = (() => {
@@ -1780,12 +1807,19 @@
                 const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
 
                 if (items.length === 0) {
+                    // #241: clipboard 空でも localStorage に残った filter が active な場合は
+                    //       filter row を出してクリアできるようにしないと「詰む」 (再起動直後の症状)。
+                    const filterActiveOnEmpty =
+                        (clipboardFilterState.q || '').length > 0
+                            || (clipboardFilterState.tags || []).length > 0;
                     clipboardList.innerHTML = isDownloadOnly
                         ? '<p class="empty-message">クリップボードにアイテムがありません</p>'
                         : '<p class="empty-message">テキストを入力して共有しましょう</p>';
                     clearClipboardBtn.style.display = 'none';
                     downloadClipboardBtn.style.display = 'none';
-                    clipboardFilterRow.style.display = 'none';
+                    clipboardFilterRow.style.display = filterActiveOnEmpty ? 'flex' : 'none';
+                    if (filterActiveOnEmpty) renderClipboardTagFilters();
+                    clipboardFilterClearBtn.disabled = !filterActiveOnEmpty;
                     clipboardLoadMoreBtn.style.display = 'none';
                     return;
                 }
@@ -1793,10 +1827,15 @@
                 clearClipboardBtn.style.display = isDownloadOnly ? 'none' : 'inline-block';
                 downloadClipboardBtn.style.display = 'inline-block';
 
-                // #229: filter row only when there's enough material to need it
-                const showFilter = items.length >= 5;
+                // #229 / #241: filter row は 5 件以上 **または** フィルタ active のとき表示。
+                // 後者を加えることで「空 clipboard + 残留フィルタ」で操作不能にならない。
+                const filterActive = (clipboardFilterState.q || '').length > 0
+                    || (clipboardFilterState.tags || []).length > 0;
+                const showFilter = items.length >= 5 || filterActive;
                 clipboardFilterRow.style.display = showFilter ? 'flex' : 'none';
                 if (showFilter) renderClipboardTagFilters();
+                // #241: クリア手段を常時露出。アクティブでないときは disabled でグレー表示。
+                clipboardFilterClearBtn.disabled = !filterActive;
 
                 const filtered = applyClipboardFilter(items);
                 if (clipboardDisplayLimit > filtered.length) clipboardDisplayLimit = Math.max(CLIP_PAGE_SIZE, filtered.length);
@@ -1860,6 +1899,14 @@
             });
             clipboardLoadMoreBtn.addEventListener('click', () => {
                 clipboardDisplayLimit += CLIP_PAGE_SIZE;
+                renderClipboardItems(currentClipboardItems);
+            });
+            // #241: フィルタ強制クリア。空 clipboard + 残留フィルタで詰まないよう常時露出。
+            clipboardFilterClearBtn.addEventListener('click', () => {
+                clipboardFilterState = { q: '', tags: [] };
+                persistClipboardFilter();
+                clipboardSearchInput.value = '';
+                clipboardDisplayLimit = CLIP_PAGE_SIZE;
                 renderClipboardItems(currentClipboardItems);
             });
 
