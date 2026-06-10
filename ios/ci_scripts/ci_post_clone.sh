@@ -15,6 +15,13 @@ export PATH="$PATH:$HOME/flutter/bin"
 # 2. プロジェクトルートに戻ってFlutter設定
 # ci_scripts の中から実行されるので、cd ../.. でルートに戻る
 cd ../..
+
+# Flutter 3.32+ で SPM が default ON になった。Xcode project 側に SPM の
+# 配線が無いため、SPM 対応プラグイン (device_info_plus 12.x など) が
+# Pod に取り込まれず "Module 'device_info_plus' not found" になる。
+# Pod-only モードに固定して、全プラグインを従来通り CocoaPods 経由で統合する。
+flutter config --no-enable-swift-package-manager
+
 flutter precache --ios
 flutter pub get
 
