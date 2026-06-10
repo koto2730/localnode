@@ -1569,14 +1569,37 @@ class _CliServer {
     }
   }
 
+  // #243: 起動直後だけバックオフを詰めて、Tailscale 等で初回 dial が
+  //       冷えていてもユーザを 45 秒待たせない。一巡したら通常の 45 秒周期へ。
+  static const List<int> _warmupDelaysSec = [5, 10, 20, 30, 45];
+  int _warmupTick = 0;
+
   void _startHeartbeat() {
     if (_federationPeers.isEmpty) return;
-    // 起動直後に 1 回 + 以降周期実行
-    Future.microtask(_heartbeatTick);
-    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _heartbeatTick());
+    _warmupTick = 0;
+    Future.microtask(() async {
+      await _heartbeatTick();
+      _scheduleNextHeartbeat();
+    });
   }
 
+  void _scheduleNextHeartbeat() {
+    if (_heartbeatStopped) return;
+    final delay = _warmupTick < _warmupDelaysSec.length
+        ? Duration(seconds: _warmupDelaysSec[_warmupTick])
+        : _heartbeatInterval;
+    _warmupTick++;
+    _heartbeatTimer = Timer(delay, () async {
+      if (_heartbeatStopped) return;
+      await _heartbeatTick();
+      _scheduleNextHeartbeat();
+    });
+  }
+
+  bool _heartbeatStopped = false;
+
   void _stopHeartbeat() {
+    _heartbeatStopped = true;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _heartbeatClient?.close(force: true);
