@@ -2637,6 +2637,30 @@ class _CliServer {
   }
 
   // #193: テキストファイルのインラインプレビュー
+  // #216: 先頭 8KB を読んでテキストらしさを判定。NUL バイトを含む or
+  //       UTF-8 として decode できないなら binary 扱い。truncate された
+  //       マルチバイト境界の偽陰性を避けるため allowMalformed: true で
+  //       decode し、NUL の有無で最終判定する。
+  Future<bool> _sniffTextLike(File file) async {
+    try {
+      const sniffBytes = 8 * 1024;
+      final raf = await file.open();
+      try {
+        final size = await raf.length();
+        final n = size < sniffBytes ? size : sniffBytes;
+        if (n == 0) return true; // 空ファイルはテキスト扱い
+        final buf = await raf.read(n);
+        if (buf.contains(0)) return false; // NUL バイト → binary
+        utf8.decode(buf, allowMalformed: false);
+        return true;
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<Response> _textPreviewHandler(Request req, String id) async {
     const maxFullBytes = 5 * 1024 * 1024;
     final mode = req.requestedUri.queryParameters['mode'] ?? 'head';
@@ -2660,6 +2684,19 @@ class _CliServer {
       final canonicalFile = await file.resolveSymbolicLinks();
       if (!p.isWithin(canonicalRoot, canonicalFile)) {
         return Response.forbidden('Access denied');
+      }
+
+      // #216: 拡張子ホワイトリスト外 (例: LICENSE, Dockerfile, *.cfg) も
+      //       バイナリでなければプレビューさせる。先頭 8KB を見て NUL バイトや
+      //       UTF-8 不正がないかで判定する。
+      final sniff = await _sniffTextLike(file);
+      if (!sniff) {
+        return Response(415,
+            body: json.encode({
+              'error': 'not-text',
+              'message': 'File does not look like text (binary content).',
+            }),
+            headers: {'Content-Type': 'application/json'});
       }
 
       if (mode == 'head' || mode == 'tail') {

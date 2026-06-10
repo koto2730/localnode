@@ -991,6 +991,39 @@ class ServerService {
   }
 
   // #193: テキストファイルのインラインプレビュー（head / tail / full）
+  // #216: 拡張子に依らず、先頭 8KB を見て NUL バイト無し + UTF-8 として
+  //       decode できるかでテキストらしさを判定。SAF / 実 path 両対応。
+  Future<bool> _sniffTextLike(String decoded) async {
+    try {
+      const sniffBytes = 8 * 1024;
+      Uint8List buf;
+      if (Platform.isAndroid && _safDirectoryUri != null) {
+        final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
+        if (bytes == null) return false;
+        final all = bytes as Uint8List;
+        final n = all.length < sniffBytes ? all.length : sniffBytes;
+        buf = Uint8List.sublistView(all, 0, n);
+      } else {
+        final file = File(decoded);
+        final raf = await file.open();
+        try {
+          final size = await raf.length();
+          final n = size < sniffBytes ? size : sniffBytes;
+          if (n == 0) return true;
+          buf = await raf.read(n);
+        } finally {
+          await raf.close();
+        }
+      }
+      if (buf.isEmpty) return true;
+      if (buf.contains(0)) return false;
+      utf8.decode(buf, allowMalformed: false);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<Response> _textPreviewHandler(Request request, String id) async {
     const maxFullBytes = 5 * 1024 * 1024; // 5MB
     final modeRaw = request.requestedUri.queryParameters['mode'] ?? 'head';
@@ -1028,6 +1061,18 @@ class ServerService {
         if (!p.isWithin(canonicalRoot, canonicalFile)) {
           return Response.forbidden('Access denied');
         }
+      }
+
+      // #216: 拡張子ホワイトリスト外でも binary でなければ preview させる。
+      //       先頭 8KB を sniff。SAF / 実 path のどちらでも動作。
+      final sniffOk = await _sniffTextLike(decoded);
+      if (!sniffOk) {
+        return Response(415,
+            body: jsonEncode({
+              'error': 'not-text',
+              'message': 'File does not look like text (binary content).',
+            }),
+            headers: {'Content-Type': 'application/json'});
       }
 
       // head/tail は全読みせず、行数だけ集める（バウンドメモリ）
