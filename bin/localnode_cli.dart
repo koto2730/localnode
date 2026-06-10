@@ -1090,13 +1090,28 @@ Future<_HttpsHostResult> _resolveHttpsHost({
     exit(1);
   }
 
-  if (candidates.length == 1) {
+  // #234: SAN に hostname と IP の両方あるときは hostname を優先 (ブラウザ警告回避)
+  final hostnameCandidates =
+      candidates.where((c) => InternetAddress.tryParse(c.host) == null).toList();
+  if (hostnameCandidates.length == 1) {
+    final c = hostnameCandidates.first;
+    stdout.writeln('HTTPS: Using "${c.host}" (resolved to ${c.ip})');
+    return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
+  }
+  if (hostnameCandidates.isEmpty && candidates.length == 1) {
+    // SAN が IP のみ → IP をそのまま使う (互換動作)
     final c = candidates.first;
     stdout.writeln('HTTPS: Using "${c.host}" (resolved to ${c.ip})');
     return _HttpsHostResult(bindIp: c.ip, advertisedHost: c.host);
   }
 
-  // 複数候補 → 対話選択
+  // 複数候補 → 対話選択 (hostname を先頭に並べ替えて優先度を視認しやすく)
+  candidates.sort((a, b) {
+    final aIsHost = InternetAddress.tryParse(a.host) == null;
+    final bIsHost = InternetAddress.tryParse(b.host) == null;
+    if (aIsHost == bIsHost) return 0;
+    return aIsHost ? -1 : 1;
+  });
   if (stdin.hasTerminal && _isInteractiveForeground()) {
     stdout.writeln('Multiple HTTPS hostname candidates detected:');
     for (int i = 0; i < candidates.length; i++) {
