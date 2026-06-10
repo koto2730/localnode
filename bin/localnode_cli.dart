@@ -2638,9 +2638,9 @@ class _CliServer {
 
   // #193: テキストファイルのインラインプレビュー
   // #216: 先頭 8KB を読んでテキストらしさを判定。NUL バイトを含む or
-  //       UTF-8 として decode できないなら binary 扱い。truncate された
-  //       マルチバイト境界の偽陰性を避けるため allowMalformed: true で
-  //       decode し、NUL の有無で最終判定する。
+  //       UTF-8 として decode できないなら binary 扱い。
+  //       (#244 review) 末尾でマルチバイト境界をまたいだだけの偽陰性を
+  //       避けるため、末尾を最大 3 バイト削って再 decode を試す。
   Future<bool> _sniffTextLike(File file) async {
     try {
       const sniffBytes = 8 * 1024;
@@ -2651,14 +2651,25 @@ class _CliServer {
         if (n == 0) return true; // 空ファイルはテキスト扱い
         final buf = await raf.read(n);
         if (buf.contains(0)) return false; // NUL バイト → binary
-        utf8.decode(buf, allowMalformed: false);
-        return true;
+        return _utf8DecodesWithTrim(buf);
       } finally {
         await raf.close();
       }
     } catch (_) {
       return false;
     }
+  }
+
+  bool _utf8DecodesWithTrim(List<int> buf) {
+    for (var trim = 0; trim <= 3 && trim < buf.length; trim++) {
+      try {
+        utf8.decode(buf.sublist(0, buf.length - trim), allowMalformed: false);
+        return true;
+      } catch (_) {
+        // try one more byte off the tail
+      }
+    }
+    return false;
   }
 
   Future<Response> _textPreviewHandler(Request req, String id) async {
