@@ -242,7 +242,8 @@
             background-color: #00695c;
         }
         .clipboard-list {
-            max-height: 300px;
+            /* #236: viewport に応じて伸びる。下限はモバイル維持、上限は実用範囲。 */
+            max-height: clamp(300px, 60vh, 80vh);
             overflow-y: auto;
         }
         /* #225: mention picker */
