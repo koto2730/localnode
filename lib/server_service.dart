@@ -429,16 +429,16 @@ class ServerService {
     }
   }
 
+  // ブルートフォースのロックアウト等で使うクライアント識別子。
+  // X-Forwarded-For / X-Real-IP はクライアントが自由に詐称でき、LocalNode は
+  // 信頼できるリバースプロキシ配下にいる前提ではないため **使わない**。
+  // shelf が握っている実 TCP リモートアドレスを使う (詐称不能)。
   String _getClientIp(Request request) {
-    // X-Forwarded-For ヘッダーがあれば使用（プロキシ経由の場合）
-    final forwarded = request.headers['x-forwarded-for'];
-    if (forwarded != null && forwarded.isNotEmpty) {
-      return forwarded.split(',').first.trim();
+    final conn = request.context['shelf.io.connection_info'];
+    if (conn is HttpConnectionInfo) {
+      return conn.remoteAddress.address;
     }
-    // 直接接続の場合はコンテキストから取得を試みる
-    // shelf ではリクエストコンテキストからIPを取得できないため、
-    // デフォルトでは 'unknown' を返す
-    return request.headers['x-real-ip'] ?? 'unknown';
+    return 'unknown';
   }
 
   /// ヘルスチェック: 認証不要。クライアントがサーバ再起動を検知するために使用
@@ -915,6 +915,13 @@ class ServerService {
         if (!await file.exists()) {
           return Response.notFound('File not found: $filename');
         }
+        // path traversal 防止: 共有ルート配下のファイルだけ許可
+        final canonicalRoot =
+            await Directory(storagePath).resolveSymbolicLinks();
+        final canonicalFile = await file.resolveSymbolicLinks();
+        if (!p.isWithin(canonicalRoot, canonicalFile)) {
+          return Response.forbidden('Access denied');
+        }
         imageBytes = await file.readAsBytes();
       }
 
@@ -1239,6 +1246,14 @@ class ServerService {
         final filePath = decoded;
         final file = File(filePath);
         if (await file.exists()) {
+          // path traversal 防止: 共有ルート配下のファイルだけ削除を許可。
+          // (id はクライアント制御なので、download ハンドラと同じ検証を行う)
+          final canonicalRoot =
+              await Directory(storagePath).resolveSymbolicLinks();
+          final canonicalFile = await file.resolveSymbolicLinks();
+          if (!p.isWithin(canonicalRoot, canonicalFile)) {
+            return Response.forbidden('Access denied');
+          }
           await file.delete();
           deleted = true;
         }
