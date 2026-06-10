@@ -2098,10 +2098,16 @@ class _CliServer {
     return base64Url.encode(List.generate(8, (_) => r.nextInt(256)));
   }
 
+  // ブルートフォースのロックアウト等で使うクライアント識別子。
+  // X-Forwarded-For / X-Real-IP はクライアントが自由に詐称でき、LocalNode は
+  // 信頼できるリバースプロキシ配下にいる前提ではないため **使わない**。
+  // shelf が握っている実 TCP リモートアドレスを使う (詐称不能)。
   String _getClientIp(Request req) {
-    final fwd = req.headers['x-forwarded-for'];
-    if (fwd != null && fwd.isNotEmpty) return fwd.split(',').first.trim();
-    return req.headers['x-real-ip'] ?? 'unknown';
+    final conn = req.context['shelf.io.connection_info'];
+    if (conn is HttpConnectionInfo) {
+      return conn.remoteAddress.address;
+    }
+    return 'unknown';
   }
 
   String _getMimeType(String filename) {
@@ -2140,6 +2146,34 @@ class _CliServer {
       json.encode({'error': 'This server is in download-only mode.'}),
       headers: {'Content-Type': 'application/json'},
     );
+  }
+
+  /// id (base64url(絶対パス)) をデコードし、共有ルート配下に収まっていることを
+  /// 検証する。id はクライアント制御なので、全ての id デコード系ハンドラは
+  /// ファイルを開く/消す前にこれを通すこと (path traversal 防止)。
+  /// 正常時は解決済みの File を返し、範囲外/不正なら null + 適切な Response を返す。
+  Future<({File? file, Response? error})> _resolveSharedFile(String id) async {
+    String filePath;
+    try {
+      filePath = utf8.decode(base64Url.decode(id));
+    } catch (_) {
+      return (file: null, error: Response.badRequest(body: 'Invalid id.'));
+    }
+    final file = File(filePath);
+    if (!await file.exists()) {
+      return (file: null, error: Response.notFound('File not found.'));
+    }
+    try {
+      final canonicalRoot =
+          await Directory(_storagePath!).resolveSymbolicLinks();
+      final canonicalFile = await file.resolveSymbolicLinks();
+      if (!p.isWithin(canonicalRoot, canonicalFile)) {
+        return (file: null, error: Response.forbidden('Access denied'));
+      }
+    } catch (_) {
+      return (file: null, error: Response.forbidden('Access denied'));
+    }
+    return (file: file, error: null);
   }
 
   // --- 認証ミドルウェア ---
@@ -2574,9 +2608,11 @@ class _CliServer {
 
   Future<Response> _downloadHandler(Request req, String id) async {
     try {
-      final filePath = utf8.decode(base64Url.decode(id));
-      final file = File(filePath);
-      if (!await file.exists()) return Response.notFound('File not found.');
+      // path traversal 防止: 共有ルート配下のファイルだけ許可
+      final resolved = await _resolveSharedFile(id);
+      if (resolved.error != null) return resolved.error!;
+      final file = resolved.file!;
+      final filePath = file.path;
       final mimeType = _getMimeType(p.basename(filePath));
       final length = await file.length();
       // #200: Range リクエスト対応 (動画サムネ生成等で部分取得を可能に)
@@ -2803,7 +2839,12 @@ class _CliServer {
       return Response.internalServerError(body: 'Server not initialized.');
     }
     try {
-      final filePath = utf8.decode(base64Url.decode(id));
+      // path traversal 防止: 共有ルート配下のファイルだけ許可。
+      // (キャッシュ参照より先に検証する — 範囲外パスのキャッシュ汚染も防ぐ)
+      final resolved = await _resolveSharedFile(id);
+      if (resolved.error != null) return resolved.error!;
+      final src = resolved.file!;
+      final filePath = src.path;
       final filename = p.basename(filePath);
       if (!_isImage(filename)) {
         return Response.badRequest(body: 'Not an image.');
@@ -2813,8 +2854,6 @@ class _CliServer {
         return Response.ok(cache.openRead(),
             headers: {'Content-Type': 'image/jpeg'});
       }
-      final src = File(filePath);
-      if (!await src.exists()) return Response.notFound('File not found.');
       final bytes = await src.readAsBytes();
       final image = img.decodeImage(bytes);
       if (image == null) {
@@ -2888,16 +2927,16 @@ class _CliServer {
     final guard = _guardDownloadOnly();
     if (guard != null) return guard;
     try {
-      final filePath = utf8.decode(base64Url.decode(id));
-      final file = File(filePath);
-      if (await file.exists()) {
-        await file.delete();
-        final cache = File(
-            p.join(_thumbnailCacheDir!.path, '${p.basename(filePath)}.jpg'));
-        if (await cache.exists()) await cache.delete();
-        return Response.ok('File deleted.');
-      }
-      return Response.internalServerError(body: 'File not found.');
+      // path traversal 防止: 共有ルート配下のファイルだけ削除を許可
+      final resolved = await _resolveSharedFile(id);
+      if (resolved.error != null) return resolved.error!;
+      final file = resolved.file!;
+      final filePath = file.path;
+      await file.delete();
+      final cache = File(
+          p.join(_thumbnailCacheDir!.path, '${p.basename(filePath)}.jpg'));
+      if (await cache.exists()) await cache.delete();
+      return Response.ok('File deleted.');
     } catch (e) {
       return Response.internalServerError(body: 'Delete failed: $e');
     }
