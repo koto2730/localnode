@@ -1474,6 +1474,33 @@ class _CliServer {
         'description': 'show this list',
       },
     ];
+    // #240: federation 設定があるときは予約 mention も含める
+    final hasChildren = _federationPeers.any((p) => p.kind == 'child');
+    final hasParent = _federationPeers.any((p) => p.kind == 'parent');
+    if (hasChildren) {
+      items.add({
+        'label': '@list <child>',
+        'insert': '@list ',
+        'description': "fetch a child's mention list",
+      });
+      items.add({
+        'label': '@to <child|all> <message>',
+        'insert': '@to ',
+        'description': "post to a child's clipboard",
+      });
+      items.add({
+        'label': '@run_to <child> <alias>',
+        'insert': '@run_to ',
+        'description': 'run @run on a child',
+      });
+    }
+    if (hasParent) {
+      items.add({
+        'label': '@up <message>',
+        'insert': '@up ',
+        'description': 'mark as important (forwarded under equally relation)',
+      });
+    }
     for (final e in _mentionActions.entries) {
       items.add({
         'label': '@run ${e.key}',
@@ -2469,6 +2496,20 @@ class _CliServer {
 
     lines.add('Mention commands:');
     lines.add('  @list — show this list');
+
+    // #240: federation 設定があるときだけ予約 mention を案内する
+    //       (children/parent 未設定のサーバでノイズにならないように)
+    final hasChildren = _federationPeers.any((p) => p.kind == 'child');
+    final hasParent = _federationPeers.any((p) => p.kind == 'parent');
+    if (hasChildren) {
+      lines.add('  @list <childname> — fetch a child\'s mention list');
+      lines.add('  @to <childname|all> <message> — post to a child\'s clipboard');
+      lines.add('  @run_to <childname> <alias> — run @run on a child');
+    }
+    if (hasParent) {
+      lines.add('  @up <message> — mark as important (forwarded under equally relation)');
+    }
+
     if (_mentionActions.isEmpty) {
       lines.add('  (no @run actions registered)');
     } else {
