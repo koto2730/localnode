@@ -993,11 +993,28 @@ class ServerService {
   // #193: テキストファイルのインラインプレビュー（head / tail / full）
   // #216: 拡張子に依らず、先頭 8KB を見て NUL バイト無し + UTF-8 として
   //       decode できるかでテキストらしさを判定。SAF / 実 path 両対応。
+  //       (#244 review)
+  //       - 末尾でマルチバイト境界をまたいだだけの偽陰性は最大 3 バイト
+  //         までトリムして再試行することで吸収する。
+  //       - SAF 経路は現状の readFile が「全ファイル読み」のため、
+  //         巨大ファイルに到達する前にサイズを問い合わせ、5MB を超える
+  //         なら sniff 自体スキップして not-text 扱いで返す
+  //         (preview の maxFullBytes と整合)。巨大バイナリで「TXT として
+  //         開く」誤クリックされても OOM やハングに至らないためのガード。
+  //         本物の範囲読み実装は別 issue (1.7.0+) に切り出す。
   Future<bool> _sniffTextLike(String decoded) async {
     try {
       const sniffBytes = 8 * 1024;
+      const maxFullBytes = 5 * 1024 * 1024;
       Uint8List buf;
       if (Platform.isAndroid && _safDirectoryUri != null) {
+        try {
+          final size = await _safPlatform
+              .invokeMethod<int>('getFileSize', {'uri': decoded});
+          if (size != null && size > maxFullBytes) return false;
+        } catch (_) {
+          // size 取得失敗時は readFile に委ねる (compatibility)
+        }
         final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
         if (bytes == null) return false;
         final all = bytes as Uint8List;
@@ -1017,11 +1034,22 @@ class ServerService {
       }
       if (buf.isEmpty) return true;
       if (buf.contains(0)) return false;
-      utf8.decode(buf, allowMalformed: false);
-      return true;
+      return _utf8DecodesWithTrim(buf);
     } catch (_) {
       return false;
     }
+  }
+
+  bool _utf8DecodesWithTrim(List<int> buf) {
+    for (var trim = 0; trim <= 3 && trim < buf.length; trim++) {
+      try {
+        utf8.decode(buf.sublist(0, buf.length - trim), allowMalformed: false);
+        return true;
+      } catch (_) {
+        // try one more byte off the tail
+      }
+    }
+    return false;
   }
 
   Future<Response> _textPreviewHandler(Request request, String id) async {

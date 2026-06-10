@@ -173,7 +173,7 @@ The file currently contains a single `device_id` UUID generated on first start. 
 localnode-cli --config /mnt/usb/localnode.yaml --state-file /mnt/usb/state.json
 ```
 
-> The state file is **not** a YAML config option. It is consulted before the config loader runs, so it has to come from the CLI flag.
+> The state file path is currently a CLI flag only — it is not yet exposed as a YAML config key.
 
 ## Platform Support
 
