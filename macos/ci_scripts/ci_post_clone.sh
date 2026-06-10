@@ -16,6 +16,12 @@ export PATH="$PATH:$HOME/flutter/bin"
 # ci_scripts の中から実行されるので、cd ../.. でルートに戻る
 cd ../..
 flutter config --enable-macos-desktop
+
+# Flutter 3.32+ で SPM が default ON。Xcode project 側に SPM の配線が無いと
+# SPM 対応プラグイン (device_info_plus 12.x など) が Pod に取り込まれず
+# "Module 'XXX' not found" でビルドが落ちる。Pod-only モードに固定する。
+flutter config --no-enable-swift-package-manager
+
 flutter precache --macos
 flutter pub get
 
