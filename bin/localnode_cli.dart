@@ -1767,11 +1767,11 @@ class _CliServer {
         req.headers.set(_kFedSeenBy, _deviceId);
         req.headers.set(_kFedEvent, 'clipboard');
         req.headers.set(_kFedRelation, peer.relation);
-        req.write(json.encode({
+        req.add(utf8.encode(json.encode({
           'text': item.text,
           // tag: 親側で「どの子から」かが分かるよう自サーバ名を入れる
           'tag': _serverName,
-        }));
+        })));
         final res = await req.close().timeout(const Duration(seconds: 15));
         await res.drain();
 
@@ -3379,7 +3379,7 @@ class _CliServer {
         r.headers.set(_kFedSeenBy, _deviceId);
         r.headers.set(_kFedEvent, 'clipboard');
         r.headers.set(_kFedRelation, peer.relation);
-        r.write(json.encode({'text': text, 'tag': _serverName}));
+        r.add(utf8.encode(json.encode({'text': text, 'tag': _serverName})));
         final res = await r.close().timeout(const Duration(seconds: 15));
         await res.drain();
         if (res.statusCode >= 200 && res.statusCode < 300) return;
