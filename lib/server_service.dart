@@ -925,9 +925,11 @@ class ServerService {
       final decoded = utf8.decode(base64Url.decode(id));
       // #209: ネストした SAF パス由来の呼び出しでは URI 末尾に `/` が混じり得るので
       //       呼び出し側のヒントを優先する。無ければ従来のロジック。
+      // SAF の pathSegments.last は percent-decode 後に '/' を含む場合がある
+      // (例: "primary:LocalNode/file.png")。p.basename で末尾ファイル名だけにする。
       final filename = filenameHint ??
           (Platform.isAndroid && _safDirectoryUri != null
-              ? Uri.parse(decoded).pathSegments.last
+              ? p.basename(Uri.parse(decoded).pathSegments.last)
               : p.basename(decoded));
 
       if (!_isImageFile(filename)) {
