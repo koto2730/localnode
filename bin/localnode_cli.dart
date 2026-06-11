@@ -2307,17 +2307,18 @@ class _CliServer {
           }
           if (token != null && _sessions.contains(token)) return inner(req);
 
-          // #173/#188: Bearer トークンによる API 認証
-          //   - POST /api/upload / POST /api/clipboard … 既存の外部ツール向け
-          //   - federation peer (x-fed-origin あり) は任意の API エンドポイントに
-          //     アクセス可能（@list <child> の GET /api/mentions 等に対応）
+          // #173/#188: Bearer トークンによる API 認証（スコープ限定）
+          //   - POST /api/upload      … ファイルアップロード（#173）
+          //   - POST /api/clipboard   … クリップボードへの送信（#188）
+          //   - GET  /api/mentions    … federation @list <child> 用（#220）
+          // x-fed-origin の有無でスコープを広げない。ヘッダは任意クライアントが
+          // 付加できるため、列挙したエンドポイント以外への昇格には使えない。
           if (_uploadToken != null) {
             final authHeader = req.headers['authorization'] ?? '';
             if (authHeader == 'Bearer $_uploadToken') {
-              final isFedPeer = req.headers[_kFedOrigin] != null;
-              if (isFedPeer ||
-                  (req.method == 'POST' &&
-                      (path == 'api/upload' || path == 'api/clipboard'))) {
+              if ((req.method == 'POST' &&
+                      (path == 'api/upload' || path == 'api/clipboard')) ||
+                  (req.method == 'GET' && path == 'api/mentions')) {
                 return inner(req);
               }
             }
