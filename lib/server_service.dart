@@ -78,6 +78,7 @@ class ServerService {
   String? _displayPath; // 表示用のパス
   Directory? _webRootDir; // Webルートディレクトリのパス
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
+  static final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
   String? _pin;
   final Set<String> _sessions = {};
   OperationMode _operationMode = OperationMode.normal;
@@ -907,6 +908,12 @@ class ServerService {
     return mimeTypes[extension] ?? 'application/octet-stream';
   }
 
+  static Uint8List _buildPlaceholderJpeg() {
+    final placeholder = img.Image(width: 120, height: 120);
+    img.fill(placeholder, color: img.ColorRgb8(180, 180, 180));
+    return Uint8List.fromList(img.encodeJpg(placeholder, quality: 70));
+  }
+
   Future<Response> _thumbnailHandler(Request request, String id,
       {String? filenameHint}) async {
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
@@ -958,13 +965,18 @@ class ServerService {
 
       final thumbnailBytes = await Isolate.run(() {
         final image = img.decodeImage(imageBytes!);
-        if (image == null) throw Exception('Failed to decode image.');
+        if (image == null) return null;
         final thumb = img.copyResize(image, width: 120);
         return Uint8List.fromList(img.encodeJpg(thumb, quality: 85));
       });
 
+      if (thumbnailBytes == null) {
+        return Response.ok(_placeholderThumbBytes,
+            headers: {'Content-Type': 'image/jpeg'});
+      }
+
       await cacheFile.writeAsBytes(thumbnailBytes);
-      
+
       return Response.ok(thumbnailBytes, headers: {'Content-Type': 'image/jpeg'});
 
     } catch (e) {
@@ -1246,7 +1258,7 @@ class ServerService {
 
   bool _isImageFile(String filename) {
     final extension = p.extension(filename).toLowerCase();
-    const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};
+    const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif'};
     return imageExtensions.contains(extension);
   }
 
