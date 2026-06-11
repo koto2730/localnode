@@ -2,6 +2,8 @@
 
 A Flutter application that transforms your phone or computer into a secure, personal file server. Share and manage files on your local network (e.g., Wi-Fi, Tailscale) via a web browser, with easy access through a QR code and PIN authentication.
 
+> **⚠️ Security Notice**: Versions prior to v1.6.0 contain known security vulnerabilities and are no longer supported. **Do not use v1.5.x or earlier.** Upgrade to v1.6.0 or later.
+
 ## Features
 
 *   **Cross-Platform Server:** Turn your iOS, Android, Windows, macOS, or Linux device into a local HTTP/HTTPS file server.
@@ -96,7 +98,7 @@ localnode --cli [options]
 | `--ip` | IP address to advertise (skip auto-detection) |
 | `--name`, `-n` | Custom server name (shown in browser tab/title) |
 | `--pin` | Fixed PIN (random if not specified) |
-| `--pin-length` | PIN length for random generation: 4..8 (default 4) |
+| `--pin-length` | PIN length for random generation: 8..16 (default 8) |
 | `--pin-charset` | PIN character set for random generation: `digits` (default), `alnum`, or `alnum_symbols` |
 | `--dir`, `-d` | Shared directory path |
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
@@ -106,7 +108,7 @@ localnode --cli [options]
 | `--mention-action` | Register clipboard mention command: `alias=script` (repeatable) |
 | `--token` | Fixed Bearer token for upload and clipboard POST (random if not specified) |
 | `--no-token` | Disable token-based authentication for upload and clipboard POST |
-| `--no-pin` | Disable PIN authentication |
+| `--no-pin` | Disable PIN authentication (upload token is also disabled in this mode) |
 | `--no-clipboard` | Hide clipboard content from console output |
 | `--verbose`, `-v` | Enable verbose request logging |
 | `--help`, `-h` | Show help |
@@ -118,7 +120,7 @@ localnode --cli [options]
 localnode-cli
 
 # Specify port, PIN, and shared directory
-localnode-cli -p 3000 --pin 1234 -d /home/user/share
+localnode-cli -p 3000 --pin 12345678 -d /home/user/share
 
 # Specify IP address (useful for WSL, VPN, multi-NIC)
 localnode-cli -d /path/to/share --ip 192.168.1.100
@@ -174,6 +176,52 @@ localnode-cli --config /mnt/usb/localnode.yaml --state-file /mnt/usb/state.json
 ```
 
 > The state file path is currently a CLI flag only — it is not yet exposed as a YAML config key.
+
+## Federation (v1.6.0+)
+
+Federation lets multiple CLI instances form a parent-child network so that clipboard entries and file uploads flow between nodes automatically.
+
+**Requirements**: both sides must run over HTTPS with a fixed Bearer token (`--token`). `--no-pin` is not supported with federation.
+
+### Configuration (YAML)
+
+```yaml
+server:
+  token: "your-fixed-bearer-token"
+  https-cert: /path/to/cert.pem
+  https-key:  /path/to/key.pem
+
+# Parent role — send events up to this node
+parent:
+  url:      https://parent-host:8080
+  token:    "parent-issued-bearer-token"
+  relation: friendly   # or: equally
+
+# Child role — receive events from these nodes
+children:
+  - name:     child-pi
+    url:      https://child-host:8080
+    token:    "child-issued-bearer-token"
+    relation: friendly
+```
+
+**Relations**
+
+| Relation | Clipboard forwarding | File forwarding | `@run_to` result |
+|----------|----------------------|-----------------|-----------------|
+| `friendly` | Every item | Streams file to parent | Returned to parent |
+| `equally` | `@up` items only | Notification post only | Not forwarded |
+
+**Mention commands** (available when federation is configured)
+
+| Command | Description |
+|---------|-------------|
+| `@up <text>` | Mark as important; forwarded even on `equally` links |
+| `@list <child>` | Fetch the named child's mention list |
+| `@to <child\|all> <message>` | Post a message to one or all children |
+| `@run_to <child> <alias>` | Run a `@run` alias on the child; result returns to parent clipboard |
+
+> **Note**: Mention commands (`@run`, `@run_to`, etc.) can only be triggered from a browser session. Requests authenticated via Bearer token (e.g. `curl`) cannot execute mentions.
 
 ## Platform Support
 
