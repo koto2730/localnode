@@ -47,7 +47,7 @@ class MainActivity: FlutterActivity() {
 
                     val fileList = documentFile.listFiles().filter { it.isFile }.map { file ->
                         mapOf(
-                            "name" to file.name,
+                            "name" to (file.name ?: ""),
                             "uri" to file.uri.toString(),
                             "size" to file.length(),
                             "modified" to file.lastModified()
@@ -88,7 +88,7 @@ class MainActivity: FlutterActivity() {
                         }
                         val list = dir.listFiles().map { f ->
                             mapOf(
-                                "name" to f.name,
+                                "name" to (f.name ?: ""),
                                 "uri" to f.uri.toString(),
                                 "size" to f.length(),
                                 "modified" to f.lastModified(),
