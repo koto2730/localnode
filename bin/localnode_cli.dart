@@ -2498,12 +2498,26 @@ class _CliServer {
 
     // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
     // (Copilot #207 review): セグメント単位で .. のみ拒否
-    final relPath = req.requestedUri.queryParameters['path'] ?? '';
-    if (relPath.startsWith('/') || relPath.startsWith(r'\')) {
-      return Response.badRequest(body: 'Invalid path.');
-    }
-    if (p.split(relPath).contains('..')) {
-      return Response.badRequest(body: 'Invalid path.');
+    // spec §1.5: federation 由来のアップロードは子が指定した path を無視し、
+    // 親の config に登録されている children[i].name から保存先を決定する。
+    // 子がフォルダ名を自由に決められないようにする。
+    String relPath;
+    final fedOrigin = req.headers[_kFedOrigin];
+    if (fedOrigin != null && fedOrigin.isNotEmpty) {
+      final senderPeer = _federationPeers.firstWhereOrNullExt(
+          (p) => p.kind == 'child' && p.learnedDeviceId == fedOrigin);
+      if (senderPeer == null) {
+        return Response.forbidden('Unknown federation sender.');
+      }
+      relPath = 'children/${senderPeer.name}';
+    } else {
+      relPath = req.requestedUri.queryParameters['path'] ?? '';
+      if (relPath.startsWith('/') || relPath.startsWith(r'\')) {
+        return Response.badRequest(body: 'Invalid path.');
+      }
+      if (p.split(relPath).contains('..')) {
+        return Response.badRequest(body: 'Invalid path.');
+      }
     }
     // (Copilot #207 review): root 不在を resolveSymbolicLinks より先に検出
     final rootDir = Directory(_storagePath!);
