@@ -1378,6 +1378,7 @@ class _CliServer {
   String? _storagePath;
   Directory? _webRootDir;
   Directory? _thumbnailCacheDir;
+  late final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
 
   final List<_ClipboardItem> _clipboardItems = [];
   int _clipboardLastModified = 0;
@@ -1743,6 +1744,7 @@ class _CliServer {
         req.headers.set(_kFedOrigin, _deviceId);
         req.headers.set(_kFedSeenBy, _deviceId);
         req.headers.set(_kFedEvent, 'clipboard');
+        req.headers.set(_kFedRelation, peer.relation);
         req.write(json.encode({
           'text': item.text,
           // tag: 親側で「どの子から」かが分かるよう自サーバ名を入れる
@@ -1794,6 +1796,7 @@ class _CliServer {
         req.headers.set(_kFedOrigin, _deviceId);
         req.headers.set(_kFedSeenBy, _deviceId);
         req.headers.set(_kFedEvent, 'upload');
+        req.headers.set(_kFedRelation, peer.relation);
         req.contentLength = length;
         await req.addStream(file.openRead());
         final res = await req.close().timeout(const Duration(minutes: 5));
@@ -2125,7 +2128,7 @@ class _CliServer {
   }
 
   bool _isImage(String filename) {
-    const exts = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};
+    const exts = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif'};
     return exts.contains(p.extension(filename).toLowerCase());
   }
 
@@ -2184,6 +2187,7 @@ class _CliServer {
   // （HTTP エラー扱いにすると意味のないリトライを誘発しかねないため）。
   static const String _kFedOrigin = 'x-fed-origin';
   static const String _kFedSeenBy = 'x-fed-seen-by';
+  static const String _kFedRelation = 'x-fed-relation';
 
   Middleware get _federationLoopGuard => (inner) {
         return (req) {
@@ -2211,14 +2215,32 @@ class _CliServer {
             if (path != 'api/health' && path != 'api/info') {
               final peer = _federationPeers
                   .firstWhereOrNullExt((p) => p.learnedDeviceId == origin);
-              if (peer != null && peer.isPaused()) {
-                _log('[fed] paused-block ${peer.name} path=$path');
-                return Response(503,
-                    body: json.encode({
-                      'paused': true,
-                      'pauseUntilMs': peer.pauseUntilMs,
-                    }),
-                    headers: {'Content-Type': 'application/json'});
+              if (peer != null) {
+                if (peer.isPaused()) {
+                  _log('[fed] paused-block ${peer.name} path=$path');
+                  return Response(503,
+                      body: json.encode({
+                        'paused': true,
+                        'pauseUntilMs': peer.pauseUntilMs,
+                      }),
+                      headers: {'Content-Type': 'application/json'});
+                }
+                // spec §1.3: relation は双方一致が前提。送信元の relation が
+                // 自分の設定と異なれば連携不可。
+                final senderRelation = req.headers[_kFedRelation];
+                if (senderRelation != null &&
+                    senderRelation.isNotEmpty &&
+                    senderRelation != peer.relation) {
+                  _log('[fed] relation-mismatch ${peer.name}'
+                      ' local=${peer.relation} remote=$senderRelation');
+                  return Response(409,
+                      body: json.encode({
+                        'error': 'relation mismatch',
+                        'local': peer.relation,
+                        'remote': senderRelation,
+                      }),
+                      headers: {'Content-Type': 'application/json'});
+                }
               }
             }
           }
@@ -2834,6 +2856,12 @@ class _CliServer {
     return _thumbnailHandler(req, id);
   }
 
+  static Uint8List _buildPlaceholderJpeg() {
+    final placeholder = img.Image(width: 120, height: 120);
+    img.fill(placeholder, color: img.ColorRgb8(180, 180, 180));
+    return Uint8List.fromList(img.encodeJpg(placeholder, quality: 70));
+  }
+
   Future<Response> _thumbnailHandler(Request req, String id) async {
     if (_thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Server not initialized.');
@@ -2857,7 +2885,8 @@ class _CliServer {
       final bytes = await src.readAsBytes();
       final image = img.decodeImage(bytes);
       if (image == null) {
-        return Response.internalServerError(body: 'Failed to decode image.');
+        return Response.ok(_placeholderThumbBytes,
+            headers: {'Content-Type': 'image/jpeg'});
       }
       final thumb = img.copyResize(image, width: 120);
       final thumbBytes = img.encodeJpg(thumb, quality: 85);
@@ -3200,8 +3229,8 @@ class _CliServer {
   }
 
   /// 子に `@list` を投げる。子側で `@list` の結果が自分の clipboard に
-  /// 投稿され、friendly 転送なら親へ戻ってくる (equally では戻らないので
-  /// equally 子に対しては警告として local clipboard に注記)。
+  /// 子の /api/mentions を直接 GET して結果を自分の clipboard に投稿する。
+  /// friendly/equally 問わず動作する（転送に依存しない）。
   void _dispatchListToChild(String childName) {
     final peer = _federationPeers.firstWhereOrNullExt(
         (p) => p.kind == 'child' && p.name == childName);
@@ -3209,16 +3238,33 @@ class _CliServer {
       _replyToClipboard('@list $childName: child not found');
       return;
     }
-    if (peer.relation == 'equally') {
-      _replyToClipboard(
-          '@list $childName: equally relation — result will not be auto-forwarded');
-    }
     () async {
       try {
-        await _sendBareTextToPeer(peer, '@list');
-        _log('[fed] dispatched @list -> ${peer.name}');
+        _heartbeatClient ??=
+            HttpClient()..connectionTimeout = const Duration(seconds: 10);
+        final uri = Uri.parse('${peer.url}/api/mentions');
+        final req = await _heartbeatClient!.getUrl(uri);
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        final res = await req.close().timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final body = await res.transform(utf8.decoder).join();
+          final data = json.decode(body) as Map<String, dynamic>;
+          final items =
+              (data['items'] as List? ?? []).cast<Map<String, dynamic>>();
+          final lines = <String>['[$childName] Mention commands:'];
+          for (final item in items) {
+            final label = item['label'] as String? ?? '';
+            final desc = item['description'] as String? ?? '';
+            lines.add(desc.isNotEmpty ? '  $label — $desc' : '  $label');
+          }
+          _replyToClipboard(lines.join('\n'));
+          _log('[fed] @list $childName ok (${items.length} items)');
+        } else {
+          await res.drain();
+          _replyToClipboard('@list $childName: failed (HTTP ${res.statusCode})');
+        }
       } catch (e) {
-        _log('[fed] @list ${peer.name} fail: $e');
+        _log('[fed] @list $childName fail: $e');
         _replyToClipboard('@list $childName: dispatch failed');
       }
     }();
@@ -3286,6 +3332,7 @@ class _CliServer {
         r.headers.set(_kFedOrigin, _deviceId);
         r.headers.set(_kFedSeenBy, _deviceId);
         r.headers.set(_kFedEvent, 'clipboard');
+        r.headers.set(_kFedRelation, peer.relation);
         r.write(json.encode({'text': text, 'tag': _serverName}));
         final res = await r.close().timeout(const Duration(seconds: 15));
         await res.drain();

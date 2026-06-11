@@ -55,6 +55,51 @@ class MainActivity: FlutterActivity() {
                     }
                     result.success(fileList)
                 }
+                "listFilesAtPath" -> {
+                    // #209+ : ルートからの相対パスを辿った先のフォルダの中身を返す。
+                    //         サブフォルダ対応のため、ファイルだけでなくディレクトリも
+                    //         含め、isDirectory フラグを付ける。
+                    val uriString = call.argument<String>("uri")
+                    val relPath = call.argument<String>("path") ?: ""
+                    if (uriString == null) {
+                        result.error("ARGUMENT_ERROR", "URI is required.", null)
+                        return@setMethodCallHandler
+                    }
+                    val segments = relPath.split('/', '\\').filter { it.isNotEmpty() }
+                    if (segments.any { it == ".." || it == "." } || segments.size > 16) {
+                        result.error("INVALID_PATH", "Invalid relative path.", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        var current: DocumentFile? =
+                            DocumentFile.fromTreeUri(context, Uri.parse(uriString))
+                        for (seg in segments) {
+                            val next = current?.findFile(seg)
+                            if (next == null || !next.isDirectory) {
+                                result.error("NOT_FOUND", "Directory not found: $seg", null)
+                                return@setMethodCallHandler
+                            }
+                            current = next
+                        }
+                        val dir = current
+                        if (dir == null || !dir.isDirectory) {
+                            result.error("NOT_FOUND", "Target is not a directory.", null)
+                            return@setMethodCallHandler
+                        }
+                        val list = dir.listFiles().map { f ->
+                            mapOf(
+                                "name" to f.name,
+                                "uri" to f.uri.toString(),
+                                "size" to f.length(),
+                                "modified" to f.lastModified(),
+                                "isDirectory" to f.isDirectory
+                            )
+                        }
+                        result.success(list)
+                    } catch (e: Exception) {
+                        result.error("LIST_FAILED", "Failed to list: ${e.message}", null)
+                    }
+                }
                 "createFile" -> {
                     val uriString = call.argument<String>("uri")
                     val filename = call.argument<String>("filename")

@@ -78,6 +78,7 @@ class ServerService {
   String? _displayPath; // 表示用のパス
   Directory? _webRootDir; // Webルートディレクトリのパス
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
+  static final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
   String? _pin;
   final Set<String> _sessions = {};
   OperationMode _operationMode = OperationMode.normal;
@@ -483,19 +484,46 @@ class ServerService {
 
     // AndroidでSAF URIが設定されている場合は、Platform Channel経由でファイルリストを取得
     if (Platform.isAndroid && _safDirectoryUri != null) {
+      // #209+ : ?path= でサブフォルダもナビゲートできるようにする。SAF はパスでなく
+      //         tree URI ベースなので、Kotlin 側でルートから相対パスを辿って中身を返す。
+      final relPath = request.requestedUri.queryParameters['path'] ?? '';
       try {
-        final List<dynamic>? files = await _safPlatform.invokeMethod('listFiles', {'uri': _safDirectoryUri});
-        if (files == null) {
+        final List<dynamic>? entries = await _safPlatform.invokeMethod(
+          'listFilesAtPath',
+          {'uri': _safDirectoryUri, 'path': relPath},
+        );
+        if (entries == null) {
           return Response.internalServerError(body: 'Failed to list files.');
         }
-        // URIをBase64エンコードしてIDとして追加
-        final filesWithId = files.map((file) {
-          final uri = file['uri'] as String;
+        // URI を Base64 エンコードして ID に。ディレクトリには type を付与。
+        final list = entries.map((e) {
+          final m = Map<String, dynamic>.from(e as Map);
+          final uri = m['uri'] as String;
           final id = base64Url.encode(utf8.encode(uri));
-          return {...file, 'id': id};
+          if (m['isDirectory'] == true) {
+            return {'name': m['name'], 'type': 'directory', 'id': id};
+          }
+          return {
+            'name': m['name'],
+            'type': 'file',
+            'size': m['size'],
+            'modified': m['modified'],
+            'id': id,
+          };
         }).toList();
-        return Response.ok(jsonEncode(filesWithId), headers: {'Content-Type': 'application/json'});
+        // ディレクトリを先頭に、その後ファイル。各群で名前順。
+        list.sort((a, b) {
+          if (a['type'] != b['type']) return a['type'] == 'directory' ? -1 : 1;
+          return (a['name'] as String).compareTo(b['name'] as String);
+        });
+        return Response.ok(jsonEncode(list), headers: {'Content-Type': 'application/json'});
       } on PlatformException catch (e) {
+        if (e.code == 'NOT_FOUND') {
+          return Response.notFound('Directory not found.');
+        }
+        if (e.code == 'INVALID_PATH') {
+          return Response.badRequest(body: 'Invalid path.');
+        }
         return Response.internalServerError(body: "Failed to list files: ${e.message}");
       }
     }
@@ -880,6 +908,12 @@ class ServerService {
     return mimeTypes[extension] ?? 'application/octet-stream';
   }
 
+  static Uint8List _buildPlaceholderJpeg() {
+    final placeholder = img.Image(width: 120, height: 120);
+    img.fill(placeholder, color: img.ColorRgb8(180, 180, 180));
+    return Uint8List.fromList(img.encodeJpg(placeholder, quality: 70));
+  }
+
   Future<Response> _thumbnailHandler(Request request, String id,
       {String? filenameHint}) async {
     final storagePath = _safDirectoryUri ?? _fallbackStoragePath;
@@ -931,13 +965,18 @@ class ServerService {
 
       final thumbnailBytes = await Isolate.run(() {
         final image = img.decodeImage(imageBytes!);
-        if (image == null) throw Exception('Failed to decode image.');
+        if (image == null) return null;
         final thumb = img.copyResize(image, width: 120);
         return Uint8List.fromList(img.encodeJpg(thumb, quality: 85));
       });
 
+      if (thumbnailBytes == null) {
+        return Response.ok(_placeholderThumbBytes,
+            headers: {'Content-Type': 'image/jpeg'});
+      }
+
       await cacheFile.writeAsBytes(thumbnailBytes);
-      
+
       return Response.ok(thumbnailBytes, headers: {'Content-Type': 'image/jpeg'});
 
     } catch (e) {
@@ -1219,7 +1258,7 @@ class ServerService {
 
   bool _isImageFile(String filename) {
     final extension = p.extension(filename).toLowerCase();
-    const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};
+    const imageExtensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif'};
     return imageExtensions.contains(extension);
   }
 
