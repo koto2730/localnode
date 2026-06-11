@@ -1378,6 +1378,7 @@ class _CliServer {
   String? _storagePath;
   Directory? _webRootDir;
   Directory? _thumbnailCacheDir;
+  late final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
 
   final List<_ClipboardItem> _clipboardItems = [];
   int _clipboardLastModified = 0;
@@ -2125,7 +2126,7 @@ class _CliServer {
   }
 
   bool _isImage(String filename) {
-    const exts = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'};
+    const exts = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif'};
     return exts.contains(p.extension(filename).toLowerCase());
   }
 
@@ -2834,6 +2835,12 @@ class _CliServer {
     return _thumbnailHandler(req, id);
   }
 
+  static Uint8List _buildPlaceholderJpeg() {
+    final placeholder = img.Image(width: 120, height: 120);
+    img.fill(placeholder, color: img.ColorRgb8(180, 180, 180));
+    return Uint8List.fromList(img.encodeJpg(placeholder, quality: 70));
+  }
+
   Future<Response> _thumbnailHandler(Request req, String id) async {
     if (_thumbnailCacheDir == null) {
       return Response.internalServerError(body: 'Server not initialized.');
@@ -2857,7 +2864,8 @@ class _CliServer {
       final bytes = await src.readAsBytes();
       final image = img.decodeImage(bytes);
       if (image == null) {
-        return Response.internalServerError(body: 'Failed to decode image.');
+        return Response.ok(_placeholderThumbBytes,
+            headers: {'Content-Type': 'image/jpeg'});
       }
       final thumb = img.copyResize(image, width: 120);
       final thumbBytes = img.encodeJpg(thumb, quality: 85);
