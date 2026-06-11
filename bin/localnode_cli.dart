@@ -1299,7 +1299,8 @@ class _FederationPeer {
   // #219: 子→親アップロードの 1 回の最大バイト数 (child peer 設定のみ意味あり)
   final int? maxUploadSizeBytes;
   String? learnedDeviceId; // /api/info から学習
-  String status = 'unknown'; // 'connected' / 'offline' / 'paused'
+  String? learnedRelation; // heartbeat で相手から学習した relation
+  String status = 'unknown'; // 'connected' / 'offline' / 'paused' / 'relation-mismatch'
   int lastOkMs = 0;
   int lastTryMs = 0;
   String? lastError;
@@ -1332,6 +1333,7 @@ class _FederationPeer {
         'lastOkMs': lastOkMs,
         'lastTryMs': lastTryMs,
         'learnedDeviceId': learnedDeviceId,
+        'learnedRelation': learnedRelation,
         'lastError': lastError,
         'pauseUntilMs': pauseUntilMs,
       };
@@ -1573,14 +1575,34 @@ class _CliServer {
         // #221: ループ防止のため自分の id を seen_by に乗せる
         req.headers.set(_kFedOrigin, _deviceId);
         req.headers.set(_kFedSeenBy, _deviceId);
+        // spec §1.3: 相手に自分の relation を通知し、相手側の healthHandler が
+        // こちらの設定値を返すことで双方一致を検証できるようにする。
+        req.headers.set(_kFedRelation, peer.relation);
         final res = await req.close().timeout(const Duration(seconds: 10));
-        await res.drain();
         if (res.statusCode >= 200 && res.statusCode < 300) {
           peer.lastOkMs = DateTime.now().millisecondsSinceEpoch;
-          // #223: pause 中はその表示を優先
-          peer.status = peer.isPaused() ? 'paused' : 'connected';
+          // レスポンスボディから相手の relation 設定を学習する
+          try {
+            final body = await res.transform(utf8.decoder).join();
+            final dec = json.decode(body);
+            if (dec is Map && dec['relation'] is String) {
+              peer.learnedRelation = dec['relation'] as String;
+            }
+          } catch (_) {
+            await res.drain();
+          }
+          // relation 不一致なら専用ステータスに設定
+          if (peer.learnedRelation != null &&
+              peer.learnedRelation != peer.relation) {
+            peer.status = 'relation-mismatch';
+          } else if (peer.isPaused()) {
+            peer.status = 'paused';
+          } else {
+            peer.status = 'connected';
+          }
           peer.lastError = null;
         } else {
+          await res.drain();
           peer.status = peer.isPaused() ? 'paused' : 'offline';
           peer.lastError = 'HTTP ${res.statusCode}';
         }
@@ -2286,13 +2308,19 @@ class _CliServer {
           if (token != null && _sessions.contains(token)) return inner(req);
 
           // #173/#188: Bearer トークンによる API 認証
-          //   - POST /api/upload      … ファイルアップロード（#173）
-          //   - POST /api/clipboard   … クリップボードへの送信（#188）
-          if (_uploadToken != null &&
-              req.method == 'POST' &&
-              (path == 'api/upload' || path == 'api/clipboard')) {
+          //   - POST /api/upload / POST /api/clipboard … 既存の外部ツール向け
+          //   - federation peer (x-fed-origin あり) は任意の API エンドポイントに
+          //     アクセス可能（@list <child> の GET /api/mentions 等に対応）
+          if (_uploadToken != null) {
             final authHeader = req.headers['authorization'] ?? '';
-            if (authHeader == 'Bearer $_uploadToken') return inner(req);
+            if (authHeader == 'Bearer $_uploadToken') {
+              final isFedPeer = req.headers[_kFedOrigin] != null;
+              if (isFedPeer ||
+                  (req.method == 'POST' &&
+                      (path == 'api/upload' || path == 'api/clipboard'))) {
+                return inner(req);
+              }
+            }
           }
 
           return Response.unauthorized(
@@ -2359,9 +2387,24 @@ class _CliServer {
     }
   }
 
-  Response _healthHandler(Request _) =>
-      Response.ok(json.encode({'startedAt': _startedAt}),
-          headers: {'Content-Type': 'application/json'});
+  Response _healthHandler(Request req) {
+    // 送信元が federation peer なら、こちらが設定している relation を返す。
+    // 相手はこれを自分の設定と比較して不一致を検出できる。
+    final origin = req.headers[_kFedOrigin];
+    String? myRelationForSender;
+    if (origin != null && origin.isNotEmpty) {
+      final peer = _federationPeers
+          .firstWhereOrNullExt((p) => p.learnedDeviceId == origin);
+      myRelationForSender = peer?.relation;
+    }
+    return Response.ok(
+      json.encode({
+        'startedAt': _startedAt,
+        if (myRelationForSender != null) 'relation': myRelationForSender,
+      }),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
 
   // #201: 認証チェック専用エンドポイント。認証ミドルウェアを通るので、
   // 200 が返れば有効、401 が返ればセッション切れ。
