@@ -1529,6 +1529,8 @@ class _CliServer {
       );
     }
     try {
+      // コマンドテキストを先に積む（旧: POST /api/clipboard 受信時と同じ挙動）
+      _replyToClipboard('@run $alias');
       final cmd = _buildCommand(entry.script, []);
       final result = await Process.run(
         cmd.$1, cmd.$2,
