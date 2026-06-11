@@ -2514,7 +2514,9 @@ class _CliServer {
     final targetDirPath = p.normalize(p.join(canonicalRoot, relPath));
     final dir = Directory(targetDirPath);
     if (!await dir.exists()) {
-      return Response.notFound('Target directory not found.');
+      // federation の children/<childname>/ は初回アップロード時に自動作成する。
+      // パストラバーサルチェック済みなので作成は安全。
+      await dir.create(recursive: true);
     }
     final canonicalTarget = await dir.resolveSymbolicLinks();
     if (canonicalTarget != canonicalRoot &&
