@@ -346,7 +346,7 @@ class ServerService {
   // === Handlers ===
 
   String _generatePin() {
-    return (1000 + Random().nextInt(9000)).toString();
+    return (1000 + Random.secure().nextInt(9000)).toString();
   }
 
   String _generateSessionToken() {
@@ -360,7 +360,7 @@ class ServerService {
     if (_authMode == AuthMode.noPin) {
       final token = _generateSessionToken();
       _sessions.add(token);
-      final cookie = 'localnode_session=$token; Path=/; HttpOnly';
+      final cookie = 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict';
       return Response.ok(json.encode({'status': 'success'}),
           headers: {'Content-Type': 'application/json', 'Set-Cookie': cookie});
     }
@@ -392,9 +392,9 @@ class ServerService {
         final token = _generateSessionToken();
         _sessions.add(token);
 
-        _log('Auth success: Generated token $token. Current sessions: $_sessions');
+        _log('Auth success. Active sessions: ${_sessions.length}');
 
-        final cookie = 'localnode_session=$token; Path=/; HttpOnly';
+        final cookie = 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict';
         final headers = {
           'Content-Type': 'application/json',
           'Set-Cookie': cookie,
@@ -713,6 +713,10 @@ class ServerService {
 
       // AndroidでSAF URIが設定されている場合
       if (Platform.isAndroid && _safDirectoryUri != null) {
+        // F1: SAF ツリー外のファイルへのアクセスを拒否
+        if (!decoded.startsWith(_safDirectoryUri!)) {
+          return Response.forbidden('Access denied');
+        }
         final fileUri = decoded;
         final Uint8List? bytes = await _safPlatform.invokeMethod('readFile', {'uri': fileUri});
 
@@ -945,6 +949,10 @@ class ServerService {
       Uint8List? imageBytes;
 
       if (Platform.isAndroid && _safDirectoryUri != null) {
+        // F1: SAF ツリー外のファイルへのアクセスを拒否
+        if (!decoded.startsWith(_safDirectoryUri!)) {
+          return Response.forbidden('Access denied');
+        }
         imageBytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
       } else {
         final file = File(decoded);
@@ -1279,6 +1287,10 @@ class ServerService {
 
       // AndroidでSAF URIが設定されている場合
       if (Platform.isAndroid && _safDirectoryUri != null) {
+        // F1: SAF ツリー外のファイルへのアクセスを拒否
+        if (!decoded.startsWith(_safDirectoryUri!)) {
+          return Response.forbidden('Access denied');
+        }
         final fileUri = decoded;
         deleted = await _safPlatform.invokeMethod('deleteFile', {'uri': fileUri});
       } 
@@ -2024,7 +2036,7 @@ class ServerService {
     _failedAttempts.clear();
     _lockoutUntil.clear();
     _startedAt = DateTime.now().millisecondsSinceEpoch;
-    _log('Your PIN is: $_pin');
+    _log('Server starting (auth: ${_authMode.name}).');
 
     try {
       await _init();

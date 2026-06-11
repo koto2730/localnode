@@ -363,10 +363,10 @@ Future<void> main(List<String> args) async {
     final raw = results.wasParsed('pin-length')
         ? results['pin-length'] as String?
         : (cfg?.pinLength?.toString());
-    if (raw == null) return 4;
+    if (raw == null) return 8;
     final n = int.tryParse(raw);
-    if (n == null || n < 4 || n > 8) {
-      stderr.writeln('Error: --pin-length must be an integer 4..8 (got "$raw").');
+    if (n == null || n < 8 || n > 16) {
+      stderr.writeln('Error: --pin-length must be an integer 8..16 (got "$raw").');
       exit(1);
     }
     return n;
@@ -561,8 +561,9 @@ Future<void> main(List<String> args) async {
   stdout.writeln('LocalNode CLI Server');
   stdout.writeln('=' * 40);
 
-  // #173: アップロードトークンの決定（download-only モードでは不要）
-  final String? uploadToken = (!noToken && !downloadOnly)
+  // #173: アップロードトークンの決定（download-only / no-pin モードでは不要）
+  // no-pin では認証がないためトークンを発行しても意味がなく、逆に誤った安心感を与える
+  final String? uploadToken = (!noToken && !downloadOnly && !noPin)
       ? (fixedToken ?? _generateUploadToken())
       : null;
 
@@ -1454,6 +1455,7 @@ class _CliServer {
       ..post('/api/files/delete-batch', _deleteBatchHandler)
       ..get('/api/clipboard', _getClipboardHandler)
       ..get('/api/mentions', _mentionsHandler)  // #225
+      ..get('/api/run/<alias>', _runActionHandler)  // #220 @run_to result
       ..post('/api/clipboard', _postClipboardHandler)
       ..delete('/api/clipboard/<id>', _deleteClipboardItemHandler)
       ..delete('/api/clipboard', _clearClipboardHandler)
@@ -1515,6 +1517,41 @@ class _CliServer {
       json.encode({'items': items}),
       headers: {'Content-Type': 'application/json'},
     );
+  }
+
+  /// #220 @run_to: child 側でエイリアスを実行して結果を返す
+  Future<Response> _runActionHandler(Request req, String alias) async {
+    final entry = _mentionActions[alias];
+    if (entry == null) {
+      return Response.notFound(
+        json.encode({'error': 'alias not found: $alias'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    try {
+      final cmd = _buildCommand(entry.script, []);
+      final result = await Process.run(
+        cmd.$1, cmd.$2,
+        runInShell: !Platform.isWindows,
+      ).timeout(const Duration(seconds: 30));
+      final ok = result.exitCode == 0;
+      final resultText =
+          ok ? '@run $alias: OK' : '@run $alias: FAILED (exit ${result.exitCode})';
+      if (!ok && (result.stderr as String).isNotEmpty) {
+        stderr.writeln('[mention-action] "$alias" stderr: ${result.stderr}');
+      }
+      _replyToClipboard(resultText);
+      _log('[mention-action] "$alias" via federation -> $resultText');
+      return Response.ok(
+        json.encode({'ok': ok, 'result': resultText}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return Response(500,
+        body: json.encode({'error': '$e'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
   }
 
   Response _federationStatusHandler(Request _) => Response.ok(
@@ -2318,7 +2355,21 @@ class _CliServer {
             if (authHeader == 'Bearer $_uploadToken') {
               if ((req.method == 'POST' &&
                       (path == 'api/upload' || path == 'api/clipboard')) ||
-                  (req.method == 'GET' && path == 'api/mentions')) {
+                  (req.method == 'GET' &&
+                      (path == 'api/mentions' ||
+                          path.startsWith('api/run/')))) {
+                // F10: x-fed-origin が存在する場合、既知の peer の deviceId と一致するか検証。
+                // 存在しない場合は通常の Bearer 利用（curl 等）として許可。
+                // 一致しない deviceId を使った peer 偽装を防ぐ。
+                final origin = req.headers[_kFedOrigin];
+                if (origin != null &&
+                    !_federationPeers
+                        .any((p) => p.learnedDeviceId == origin)) {
+                  return Response.forbidden(
+                    json.encode({'error': 'Unknown federation origin.'}),
+                    headers: {'Content-Type': 'application/json'},
+                  );
+                }
                 return inner(req);
               }
             }
@@ -2339,7 +2390,7 @@ class _CliServer {
       _sessions.add(token);
       return Response.ok(json.encode({'status': 'success'}), headers: {
         'Content-Type': 'application/json',
-        'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly',
+        'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
       });
     }
 
@@ -2363,7 +2414,7 @@ class _CliServer {
         _sessions.add(token);
         return Response.ok(json.encode({'status': 'success'}), headers: {
           'Content-Type': 'application/json',
-          'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly',
+          'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
         });
       } else {
         final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
@@ -2561,13 +2612,18 @@ class _CliServer {
   (String executable, List<String> args) _buildCommand(
       String script, List<String> extraArgs) {
     if (Platform.isWindows) {
+      // cmd.exe メタ文字（& | ^ < > ( ) % ! ;）をアンダースコアに置換して
+      // ファイル名経由のコマンドインジェクションを防ぐ
+      final safeArgs = extraArgs
+          .map((a) => a.replaceAll(RegExp(r'[&|^<>()\%;!]'), '_'))
+          .toList();
       if (script.toLowerCase().endsWith('.ps1')) {
         return (
           'cmd',
-          ['/c', 'powershell.exe', '-ExecutionPolicy', 'Bypass', '-File', script, ...extraArgs]
+          ['/c', 'powershell.exe', '-ExecutionPolicy', 'Bypass', '-File', script, ...safeArgs]
         );
       }
-      return ('cmd', ['/c', script, ...extraArgs]);
+      return ('cmd', ['/c', script, ...safeArgs]);
     }
     return (script, extraArgs);
   }
@@ -3209,10 +3265,11 @@ class _CliServer {
       _forwardClipboardItemWithImportance(item, req, important);
 
       // #174 / #220: メンションコマンド検出
-      // 重要フラグで剥がした text はもうコマンドではないので、元の text で判定する
-      // ためここで再度組み立てる必要はなく、剥がし前の text を扱うべき。
-      // → 改修簡素化のため: important なら mention 検出はスキップ
-      if (!important) {
+      // F11: Bearer トークン経由（federation / curl）からは mention を実行しない。
+      //      ブラウザのセッション Cookie 経由のローカル操作のみ許可。
+      final isBearerRequest =
+          (req.headers['authorization'] ?? '').startsWith('Bearer ');
+      if (!important && !isBearerRequest) {
         await _handleMentionInClipboard(text);
       }
 
@@ -3318,6 +3375,10 @@ class _CliServer {
             lines.add(desc.isNotEmpty ? '  $label — $desc' : '  $label');
           }
           _replyToClipboard(lines.join('\n'));
+          if (peer.relation == 'equally') {
+            _replyToClipboard(
+                '[$childName] Note: @run_to results will not be forwarded from equally-relation child');
+          }
           _log('[fed] @list $childName ok (${items.length} items)');
         } else {
           await res.drain();
@@ -3356,7 +3417,7 @@ class _CliServer {
     }
   }
 
-  /// `@run_to <name> <alias>` を解決して `@run <alias>` を送信
+  /// `@run_to <name> <alias>` を解決して子の /api/run/<alias> を直接 GET し結果を自分の clipboard に投稿する
   void _dispatchRunToChild(String childName, String alias) {
     final peer = _federationPeers.firstWhereOrNullExt(
         (p) => p.kind == 'child' && p.name == childName);
@@ -3366,8 +3427,27 @@ class _CliServer {
     }
     () async {
       try {
-        await _sendBareTextToPeer(peer, '@run $alias');
-        _log('[fed] @run_to ${peer.name} $alias dispatched');
+        _heartbeatClient ??=
+            HttpClient()..connectionTimeout = const Duration(seconds: 10);
+        final uri = Uri.parse(
+            '${peer.url}/api/run/${Uri.encodeComponent(alias)}');
+        final req = await _heartbeatClient!.getUrl(uri);
+        req.headers.set('Authorization', 'Bearer ${peer.token}');
+        req.headers.set(_kFedRelation, peer.relation);
+        final res =
+            await req.close().timeout(const Duration(seconds: 35));
+        if (res.statusCode == 200) {
+          final body = await res.transform(utf8.decoder).join();
+          final data = json.decode(body) as Map<String, dynamic>;
+          final resultText =
+              data['result'] as String? ?? '@run_to $childName $alias: ok';
+          _replyToClipboard('[$childName] $resultText');
+          _log('[fed] @run_to ${peer.name} $alias ok');
+        } else {
+          await res.drain();
+          _replyToClipboard(
+              '@run_to $childName $alias: failed (HTTP ${res.statusCode})');
+        }
       } catch (e) {
         _log('[fed] @run_to ${peer.name} fail: $e');
         _replyToClipboard('@run_to $childName: dispatch failed');
