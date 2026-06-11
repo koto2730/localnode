@@ -955,7 +955,7 @@
             <h2>PIN認証</h2>
             <p>サーバーに接続するにはPINコードを入力してください。</p>
             <form id="pinForm">
-                <input type="password" id="pinInput" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" required autocomplete="one-time-code">
+                <input type="password" id="pinInput" maxlength="20" inputmode="numeric" required autocomplete="one-time-code">
                 <button type="submit">接続</button>
             </form>
             <div id="pinStatus" class="status"></div>
@@ -1226,7 +1226,7 @@
             const showPinModal = () => {
                 // #206: PIN charset / length のヒントに応じて input mode を切り替え
                 const charset = serverInfo.pinCharset || 'digits';
-                const length = Number.isInteger(serverInfo.pinLength) ? serverInfo.pinLength : 4;
+                const length = Number.isInteger(serverInfo.pinLength) ? serverInfo.pinLength : 8;
                 if (charset === 'digits') {
                     pinInput.setAttribute('inputmode', 'numeric');
                     pinInput.setAttribute('pattern', `[0-9]{${length}}`);
@@ -1237,9 +1237,7 @@
                     pinInput.setAttribute('autocomplete', 'one-time-code');
                     pinInput.setAttribute('spellcheck', 'false');
                 }
-                // maxlength は最低でも 4 を許容しつつ、固定 PIN の場合 length と異なる可能性があるので
-                // length+4 までの余裕を持たせる
-                pinInput.setAttribute('maxlength', String(Math.max(length, 4) + 4));
+                pinInput.setAttribute('maxlength', String(length + 4));
                 mainContent.style.display = 'none';
                 pinModal.style.display = 'flex';
                 pinInput.focus();
