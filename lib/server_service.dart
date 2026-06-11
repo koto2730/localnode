@@ -514,7 +514,7 @@ class ServerService {
         // ディレクトリを先頭に、その後ファイル。各群で名前順。
         list.sort((a, b) {
           if (a['type'] != b['type']) return a['type'] == 'directory' ? -1 : 1;
-          return (a['name'] as String).compareTo(b['name'] as String);
+          return (a['name'] as String? ?? '').compareTo(b['name'] as String? ?? '');
         });
         return Response.ok(jsonEncode(list), headers: {'Content-Type': 'application/json'});
       } on PlatformException catch (e) {
@@ -573,7 +573,7 @@ class ServerService {
       // フォルダ先頭、名前順でソート
       results.sort((a, b) {
         if (a['type'] != b['type']) return a['type'] == 'directory' ? -1 : 1;
-        return (a['name'] as String).compareTo(b['name'] as String);
+        return (a['name'] as String? ?? '').compareTo(b['name'] as String? ?? '');
       });
       return Response.ok(jsonEncode(results), headers: {'Content-Type': 'application/json'});
     }

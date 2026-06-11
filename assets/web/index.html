@@ -1283,7 +1283,7 @@
                     const ALLOWED_STATUS = new Set(['connected', 'offline', 'paused', 'relation-mismatch']);
                     const chips = peers.map(p => {
                         const status = ALLOWED_STATUS.has(p.status) ? p.status : 'unknown';
-                        const cls = `fed-peer fed-${status.replace('-', '-')}`;
+                        const cls = `fed-peer fed-${status}`;
                         let label = `${p.name}: ${status}`;
                         if (p.pauseUntilMs && p.pauseUntilMs > now) {
                             const remainSec = Math.round((p.pauseUntilMs - now) / 1000);
