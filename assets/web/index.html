@@ -38,6 +38,7 @@
         #fed-status .fed-offline { background: #ffcdd2; color: #b71c1c; }
         #fed-status .fed-paused { background: #fff3cd; color: #856404; }
         #fed-status .fed-unknown { background: #eee; color: #555; }
+        #fed-status .fed-relation-mismatch { background: #ffcdd2; color: #b71c1c; }
 
         #version-badge {
             position: absolute;
@@ -1279,10 +1280,10 @@
                     const now = Date.now();
                     // peer.* は config 由来の任意文字列。HTML/属性インジェクション防止のため
                     // status は enum に丸めて className を固定、それ以外はすべて escapeHtml。
-                    const ALLOWED_STATUS = new Set(['connected', 'offline', 'paused']);
+                    const ALLOWED_STATUS = new Set(['connected', 'offline', 'paused', 'relation-mismatch']);
                     const chips = peers.map(p => {
                         const status = ALLOWED_STATUS.has(p.status) ? p.status : 'unknown';
-                        const cls = `fed-peer fed-${status}`;
+                        const cls = `fed-peer fed-${status.replace('-', '-')}`;
                         let label = `${p.name}: ${status}`;
                         if (p.pauseUntilMs && p.pauseUntilMs > now) {
                             const remainSec = Math.round((p.pauseUntilMs - now) / 1000);
@@ -1291,7 +1292,12 @@
                                 : `${Math.round(remainSec / 60)}min`;
                             label += ` (${remainStr})`;
                         }
-                        const title = `${p.kind ?? ''} • ${p.relation ?? ''}${p.lastError ? ' • ' + p.lastError : ''}`;
+                        let titleParts = [`${p.kind ?? ''} • local: ${p.relation ?? ''}`];
+                        if (p.learnedRelation && p.learnedRelation !== p.relation) {
+                            titleParts.push(`remote: ${p.learnedRelation}`);
+                        }
+                        if (p.lastError) titleParts.push(p.lastError);
+                        const title = titleParts.join(' • ');
                         return `<span class="${cls}" title="${escapeHtml(title)}" data-peer-name="${escapeHtml(p.name)}" data-paused="${p.pauseUntilMs && p.pauseUntilMs > now ? '1' : '0'}">${escapeHtml(label)}</span>`;
                     }).join('');
                     fedStatusEl.innerHTML = `Federation: ${chips}`;
