@@ -1462,7 +1462,8 @@ class _CliServer {
       // #222: federation 状態（peer 一覧と接続状態）
       ..get('/api/federation/status', _federationStatusHandler)
       ..post('/api/federation/peers/<name>/pause', _federationPausePeerHandler)  // #223
-      ..delete('/api/federation/peers/<name>/pause', _federationResumePeerHandler);  // #223
+      ..delete('/api/federation/peers/<name>/pause', _federationResumePeerHandler)  // #223
+      ..delete('/api/cache/thumbnails', _clearThumbnailCacheHandler);  // #272
   }
 
   /// #222: federation peer を起動前に登録する
@@ -2009,11 +2010,41 @@ class _CliServer {
         await d.delete(recursive: true);
       }
     } catch (_) {}
+    // #271: PID ベースのサムネイルキャッシュも同様に削除
+    try {
+      final t = _thumbnailCacheDir;
+      if (t != null && await t.exists()) {
+        await t.delete(recursive: true);
+      }
+    } catch (_) {}
   }
 
   // #242: 同プレフィックスのきょうだいディレクトリのうち、対応する PID が
   //       生きていないものを削除する。長寿の常駐サーバを巻き込まないよう
   //       mtime ベースの judge は使わず、PID 生存チェック一本でいく。
+  // #269: Unix のみ、ディレクトリのパーミッションを 700 に制限
+  void _chmodDir(Directory dir) {
+    if (Platform.isWindows) return;
+    try {
+      Process.runSync('chmod', ['700', dir.path], runInShell: false);
+    } catch (_) {}
+  }
+
+  // #269: Unix のみ、ファイルのパーミッションを 600 に制限
+  void _chmodFile(File file) {
+    if (Platform.isWindows) return;
+    try {
+      Process.runSync('chmod', ['600', file.path], runInShell: false);
+    } catch (_) {}
+  }
+
+  // #259: サムネイルキャッシュキーをファイルの相対パス (base64url) で生成。
+  //       basename のみだとサブフォルダの同名ファイルが衝突する。
+  String _thumbCacheKey(String filePath) {
+    final rel = p.relative(filePath, from: _storagePath!);
+    return base64Url.encode(utf8.encode(rel)).replaceAll('=', '');
+  }
+
   void _reapStaleDeployDirs(Directory base, String prefix) {
     if (!base.existsSync()) return;
     final myPid = pid;
@@ -2071,11 +2102,17 @@ class _CliServer {
     final tmpBase = Platform.environment['TMPDIR'] ??
         Platform.environment['TEMP'] ??
         '/tmp';
+    // #271: PID ベースでインスタンス分離。共有キャッシュだと basename 衝突が
+    //       起き得るうえ、終了時の削除も他インスタンスを壊さずに行える (#259)。
+    const thumbPrefix = 'localnode_cli_thumbnails_';
+    _reapStaleDeployDirs(Directory(tmpBase), thumbPrefix);
     _thumbnailCacheDir =
-        Directory(p.join(tmpBase, 'localnode_cli_thumbnails'));
+        Directory(p.join(tmpBase, '$thumbPrefix$pid'));
     if (!await _thumbnailCacheDir!.exists()) {
       await _thumbnailCacheDir!.create(recursive: true);
     }
+    // #269: 他ユーザーから読めないようにパーミッションを制限
+    _chmodDir(_thumbnailCacheDir!);
   }
 
   Future<void> _deployAssets() async {
@@ -2092,6 +2129,7 @@ class _CliServer {
       await _webRootDir!.delete(recursive: true);
     }
     await _webRootDir!.create(recursive: true);
+    _chmodDir(_webRootDir!); // #269
 
     final exeDir = p.dirname(Platform.resolvedExecutable);
     final candidates = [
@@ -2359,7 +2397,9 @@ class _CliServer {
                       (path == 'api/upload' || path == 'api/clipboard')) ||
                   (req.method == 'GET' &&
                       (path == 'api/mentions' ||
-                          path.startsWith('api/run/')))) {
+                          path.startsWith('api/run/'))) ||
+                  (req.method == 'DELETE' &&
+                      path == 'api/cache/thumbnails')) {
                 // F10: x-fed-origin が存在する場合、既知の peer の deviceId と一致するか検証。
                 // 存在しない場合は通常の Bearer 利用（curl 等）として許可。
                 // 一致しない deviceId を使った peer 偽装を防ぐ。
@@ -2995,7 +3035,8 @@ class _CliServer {
       if (!_isImage(filename)) {
         return Response.badRequest(body: 'Not an image.');
       }
-      final cache = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+      // #259: キャッシュキーに相対パスを使い、サブフォルダの同名ファイルの衝突を防ぐ
+      final cache = File(p.join(_thumbnailCacheDir!.path, '${_thumbCacheKey(filePath)}.jpg'));
       if (await cache.exists()) {
         return Response.ok(cache.openRead(),
             headers: {'Content-Type': 'image/jpeg'});
@@ -3008,7 +3049,8 @@ class _CliServer {
       }
       final thumb = img.copyResize(image, width: 120);
       final thumbBytes = img.encodeJpg(thumb, quality: 85);
-      cache.writeAsBytes(thumbBytes);
+      await cache.writeAsBytes(thumbBytes);
+      _chmodFile(cache); // #269
       return Response.ok(thumbBytes, headers: {'Content-Type': 'image/jpeg'});
     } catch (e) {
       return Response.internalServerError(body: 'Thumbnail failed: $e');
@@ -3081,7 +3123,7 @@ class _CliServer {
       final filePath = file.path;
       await file.delete();
       final cache = File(
-          p.join(_thumbnailCacheDir!.path, '${p.basename(filePath)}.jpg'));
+          p.join(_thumbnailCacheDir!.path, '${_thumbCacheKey(filePath)}.jpg'));
       if (await cache.exists()) await cache.delete();
       return Response.ok('File deleted.');
     } catch (e) {
@@ -3120,10 +3162,9 @@ class _CliServer {
           skipped.add(raw);
           continue;
         }
-        final filename = p.basename(filePath);
         await file.delete();
         deleted++;
-        final cache = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+        final cache = File(p.join(_thumbnailCacheDir!.path, '${_thumbCacheKey(filePath)}.jpg'));
         if (await cache.exists()) await cache.delete();
       } catch (_) {
         failed++;
@@ -3511,6 +3552,24 @@ class _CliServer {
     }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return Response.ok(json.encode({'status': 'cleared', 'count': count}),
+        headers: {'Content-Type': 'application/json'});
+  }
+
+  // #272: 起動中にサムネイルキャッシュをクリアする（認証はミドルウェア済み）
+  Future<Response> _clearThumbnailCacheHandler(Request req) async {
+    final dir = _thumbnailCacheDir;
+    if (dir == null || !await dir.exists()) {
+      return Response.ok(json.encode({'status': 'cleared', 'count': 0}),
+          headers: {'Content-Type': 'application/json'});
+    }
+    int count = 0;
+    await for (final entry in dir.list()) {
+      try {
+        await entry.delete();
+        count++;
+      } catch (_) {}
+    }
     return Response.ok(json.encode({'status': 'cleared', 'count': count}),
         headers: {'Content-Type': 'application/json'});
   }
