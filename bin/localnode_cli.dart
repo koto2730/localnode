@@ -2016,7 +2016,11 @@ class _CliServer {
       if (t != null && await t.exists()) {
         await t.delete(recursive: true);
       }
-    } catch (_) {}
+    } catch (e) {
+      stderr.writeln(
+          'Warning: could not remove thumbnail cache ${_thumbnailCacheDir?.path}: $e');
+      stderr.writeln('  You can remove it manually.');
+    }
   }
 
   // #242: 同プレフィックスのきょうだいディレクトリのうち、対応する PID が
