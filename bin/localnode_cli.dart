@@ -26,7 +26,7 @@ import 'package:shelf_static/shelf_static.dart';
 import 'package:yaml/yaml.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.6.0';
+const String _appVersion = '1.7.0';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
@@ -558,7 +558,7 @@ Future<void> main(List<String> args) async {
   }
 
   stdout.writeln('');
-  stdout.writeln('LocalNode CLI Server');
+  stdout.writeln('LocalNode CLI Server v$_appVersion');
   stdout.writeln('=' * 40);
 
   // #173: アップロードトークンの決定（download-only / no-pin モードでは不要）

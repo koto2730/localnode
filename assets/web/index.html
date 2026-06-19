@@ -1038,9 +1038,8 @@
                         <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
                         <button id="mentionPickerBtn" type="button" title="メンション一覧" aria-label="メンション一覧">@</button>
                         <button id="sendClipboardBtn">送信</button>
+                        <div id="mentionPickerPopover" role="listbox" aria-label="メンション候補" hidden></div>
                     </div>
-                    <!-- #225: mention picker popover -->
-                    <div id="mentionPickerPopover" role="listbox" aria-label="メンション候補" hidden></div>
                     <!-- #229: フィルタ / 検索 -->
                     <div id="clipboard-filter-row" style="display:none;">
                         <input type="search" id="clipboardSearch" placeholder="🔍 テキスト検索" />
