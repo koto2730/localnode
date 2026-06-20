@@ -108,13 +108,6 @@
             font-size: 0.75rem;
             margin-left: 0.8rem;
         }
-        /* #216: 拡張子未登録ファイルに「テキストとして開く」 */
-        .btn-view-text {
-            background-color: #607d8b;
-            padding: 0.2rem 0.5rem;
-            font-size: 0.75rem;
-            margin-left: 0.4rem;
-        }
         .upload-form {
             margin-top: 2rem;
             padding: 1.5rem;
@@ -2226,6 +2219,8 @@
             const renderTableView = (items) => {
                 const fileList = document.getElementById('file-list');
                 const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
+                // #270/#216: lightbox も list view で機能するよう画像リストを更新
+                lightboxImageList = items.filter(i => i.type !== 'directory' && isImageFile(i.name));
 
                 if (items.length === 0) {
                     fileList.innerHTML = '<table><tbody><tr><td colspan="3" style="text-align:center;">ファイルはありません。</td></tr></tbody></table>';
@@ -2295,16 +2290,6 @@
                         dlBtn.textContent = 'DL';
                         dlBtn.addEventListener('click', () => downloadFile(item.id, item.name));
                         tdActions.appendChild(dlBtn);
-                        // #216: 拡張子ホワイトリスト外でも「テキストとして開く」を試せる
-                        if (!isTextFile(item.name) && !isVideoFile(item.name) && !isImageFile(item.name)) {
-                            const txtBtn = document.createElement('button');
-                            txtBtn.className = 'btn-view-text';
-                            txtBtn.textContent = 'TXT';
-                            txtBtn.title = 'テキストとして開く';
-                            txtBtn.addEventListener('click', () =>
-                                openTextPreview(item.id, item.name));
-                            tdActions.appendChild(txtBtn);
-                        }
                         if (!isDownloadOnly) {
                             const delBtn = document.createElement('button');
                             delBtn.className = 'btn-delete';
@@ -2313,20 +2298,22 @@
                             tdActions.appendChild(delBtn);
                         }
                         row.append(tdIcon, tdName, tdActions);
-                        // #193/#189: テキスト→プレビュー、動画→プレイヤー
-                        if (isTextFile(item.name)) {
-                            row.style.cursor = 'pointer';
-                            row.addEventListener('click', (e) => {
-                                if (e.target.tagName === 'BUTTON') return;
-                                openTextPreview(item.id, item.name);
-                            });
-                        } else if (isVideoFile(item.name)) {
-                            row.style.cursor = 'pointer';
-                            row.addEventListener('click', (e) => {
-                                if (e.target.tagName === 'BUTTON') return;
+                        // #270/#216: 行クリックで開く動作をファイル種別に応じて統一
+                        //   画像 → ライトボックス / 動画 → プレイヤー
+                        //   テキスト（登録済み・未登録とも）→ テキストプレビュー
+                        //   バイナリ判定なら 415 が返り「バイナリ」メッセージ表示
+                        row.style.cursor = 'pointer';
+                        row.addEventListener('click', (e) => {
+                            if (e.target.tagName === 'BUTTON') return;
+                            if (isImageFile(item.name)) {
+                                const imgIdx = lightboxImageList.findIndex(i => i.id === item.id);
+                                if (imgIdx >= 0) openLightbox(imgIdx);
+                            } else if (isVideoFile(item.name)) {
                                 openVideoPlayer(item.id, item.name);
-                            });
-                        }
+                            } else {
+                                openTextPreview(item.id, item.name);
+                            }
+                        });
                     }
                     tbody.appendChild(row);
                 });
@@ -2417,11 +2404,8 @@
                         iconDiv.className = 'viewer-icon';
                         iconDiv.textContent = getFilePreview(item);
                         viewerItem.append(iconDiv, nameDiv);
-                        if (isTextFile(item.name)) {
-                            viewerItem.addEventListener('click', () => openTextPreview(item.id, item.name));
-                        } else {
-                            viewerItem.addEventListener('click', () => downloadFile(item.id, item.name));
-                        }
+                        // #270/#216: グリッドの未登録拡張子も text preview を試みる
+                        viewerItem.addEventListener('click', () => openTextPreview(item.id, item.name));
                     }
                     grid.appendChild(viewerItem);
                 });
