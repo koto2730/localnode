@@ -118,9 +118,11 @@ class _LoadedConfig {
   bool? noClipboard;
   bool? verbose;
   bool? noToken;
-  // #206 hooks (consumed by #206)
+  // #206
   int? pinLength;
   String? pinCharset;
+  // #262
+  String? maxUploadSize;
   // lists
   List<_LoadedMentionAction>? mentionActions;
   List<_LoadedPostAction>? postActions;
@@ -180,6 +182,7 @@ _LoadedConfig _loadConfig(String path) {
     cfg.noToken = _yamlBool(server, 'no-token');
     cfg.pinLength = _yamlInt(server, 'pin-length');
     cfg.pinCharset = _yamlString(server, 'pin-charset');
+    cfg.maxUploadSize = _yamlString(server, 'max-upload-size');
   } else if (server != null) {
     stderr.writeln('Error: server section must be a mapping.');
     exit(1);
@@ -392,6 +395,11 @@ Future<void> main(List<String> args) async {
   final fixedToken = results.wasParsed('token')
       ? results['token'] as String?
       : (cfg?.token ?? results['token'] as String?);
+  // #262: 直接アップロードのサイズ上限
+  final maxUploadSizeStr = results.wasParsed('max-upload-size')
+      ? results['max-upload-size'] as String?
+      : (cfg?.maxUploadSize ?? results['max-upload-size'] as String?);
+  final int? maxDirectUploadBytes = _parseSizeBytes(maxUploadSizeStr);
 
   // post_actions: CLI > config (どちらかが存在すればその全体を使う)
   final List<String> postActionRaw;
@@ -612,6 +620,7 @@ Future<void> main(List<String> args) async {
       uploadToken: uploadToken,
       postActions: postActions,
       mentionActions: mentionActions,
+      maxDirectUploadBytes: maxDirectUploadBytes, // #262
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -783,6 +792,9 @@ ArgParser _buildParser() {
     ..addOption('token', help: 'Fixed upload token (random if not specified)')
     ..addFlag('no-token',
         help: 'Disable token-based upload authentication', negatable: false)
+    ..addOption('max-upload-size',
+        help: 'Maximum size for direct file uploads, e.g. 100M, 2G (default: unlimited)',
+        valueHelp: 'SIZE')
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -1424,6 +1436,7 @@ class _CliServer {
   // #206
   int _pinLength = 4;
   String _pinCharset = 'digits';
+  int? _maxDirectUploadBytes; // #262: 直接アップロードのサイズ上限 (null = 無制限)
 
   late final Router _router;
 
@@ -1945,6 +1958,7 @@ class _CliServer {
     String? uploadToken,
     List<({String pattern, String script})> postActions = const [],
     Map<String, ({String script, String? description})> mentionActions = const {},
+    int? maxDirectUploadBytes,    // #262
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -1955,6 +1969,7 @@ class _CliServer {
     _serverName = serverName;
     _pinLength = pinLength;       // #206
     _pinCharset = pinCharset;     // #206
+    _maxDirectUploadBytes = maxDirectUploadBytes; // #262
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -2192,6 +2207,34 @@ class _CliServer {
       buf.write(pool[rnd.nextInt(pool.length)]);
     }
     return buf.toString();
+  }
+
+  // #265: セッション Cookie または Bearer トークンが有効なリクエストか判定
+  bool _isAuthenticatedRequest(Request req) {
+    if (_authMode == _AuthMode.noPin) return true;
+    final cookie = req.headers['cookie'] ?? '';
+    for (final c in cookie.split(';')) {
+      final t = c.trim();
+      if (t.startsWith('localnode_session=')) {
+        final token = t.substring(t.indexOf('=') + 1);
+        if (_sessions.contains(token)) return true;
+      }
+    }
+    if (_uploadToken != null) {
+      final auth = req.headers['authorization'] ?? '';
+      if (auth == 'Bearer $_uploadToken') return true;
+    }
+    return false;
+  }
+
+  // #260: タイミング攻撃を防ぐ定数時間文字列比較
+  bool _constantTimeEquals(String a, String b) {
+    if (a.length != b.length) return false;
+    var result = 0;
+    for (var i = 0; i < a.length; i++) {
+      result |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+    }
+    return result == 0;
   }
 
   String _generateToken() {
@@ -2453,7 +2496,7 @@ class _CliServer {
     final body = await req.readAsString();
     try {
       final params = json.decode(body) as Map<String, dynamic>;
-      if (params['pin'] == _pin) {
+      if (_pin != null && _constantTimeEquals(params['pin'] as String? ?? '', _pin!)) {
         _failedAttempts.remove(clientIp);
         _lockoutUntil.remove(clientIp);
         final token = _generateToken();
@@ -2510,28 +2553,31 @@ class _CliServer {
       Response.ok(json.encode({'ok': true}),
           headers: {'Content-Type': 'application/json'});
 
-  Response _infoHandler(Request _) => Response.ok(
-        json.encode({
-          'version': _appVersion,
-          'name': _serverName,
-          'serverName': _serverName,
-          'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
-          'authMode': _authMode == _AuthMode.fixedPin
-              ? 'fixedPin'
-              : _authMode == _AuthMode.noPin
-                  ? 'noPin'
-                  : 'randomPin',
-          'requiresAuth': _authMode != _AuthMode.noPin,
-          'clipboardEnabled': _clipboardEnabled,
-          // #218: federation 識別子。public エンドポイントなので未認証で見える。
-          // peer 同士の identity 確認に使うが、機密ではない。
-          'deviceId': _deviceId,
-          // #206: Web UI が PIN 入力モードを切り替えるためのヒント
-          'pinCharset': _pinCharset,
-          'pinLength': _pinLength,
-        }),
-        headers: {'Content-Type': 'application/json'},
-      );
+  Response _infoHandler(Request req) {
+    final authed = _isAuthenticatedRequest(req);
+    return Response.ok(
+      json.encode({
+        'version': _appVersion,
+        'name': _serverName,
+        'serverName': _serverName,
+        'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
+        'authMode': _authMode == _AuthMode.fixedPin
+            ? 'fixedPin'
+            : _authMode == _AuthMode.noPin
+                ? 'noPin'
+                : 'randomPin',
+        'requiresAuth': _authMode != _AuthMode.noPin,
+        'clipboardEnabled': _clipboardEnabled,
+        // #265: deviceId は認証済みリクエストにのみ返す
+        // federation heartbeat は Bearer トークン付きで /api/info を叩くため引き続き取得可能
+        if (authed) 'deviceId': _deviceId,
+        // #206: Web UI が PIN 入力モードを切り替えるためのヒント
+        'pinCharset': _pinCharset,
+        'pinLength': _pinLength,
+      }),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
 
   Future<Response> _getFilesHandler(Request req) async {
     final root = Directory(_storagePath!);
@@ -2584,13 +2630,23 @@ class _CliServer {
     }
     final filename = p.basename(Uri.decodeComponent(encodedName));
 
-    // #219: federation 由来のアップロードなら、送信元 child の
-    // max_upload_size を Content-Length で先に検査
+    // サイズ検査: federation quota → 直接アップロード上限
     final clHeader = req.headers['content-length'];
     final cl = clHeader != null ? int.tryParse(clHeader) : null;
     if (cl != null) {
+      // #219: federation 由来のアップロードなら送信元 child の max_upload_size を検査
       final quotaResp = _checkFederationUploadQuota(req, cl);
       if (quotaResp != null) return quotaResp;
+      // #262: 直接アップロード（非 federation）にグローバル上限を適用
+      final isFed = req.headers[_kFedOrigin]?.isNotEmpty == true;
+      if (!isFed && _maxDirectUploadBytes != null && cl > _maxDirectUploadBytes!) {
+        return Response(413,
+            body: json.encode({
+              'error': 'too-large',
+              'message': 'Upload exceeds server limit of $_maxDirectUploadBytes bytes.',
+            }),
+            headers: {'Content-Type': 'application/json'});
+      }
     }
 
     // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
