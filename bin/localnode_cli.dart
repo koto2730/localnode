@@ -1427,7 +1427,12 @@ class _CliServer {
     return _clipboardItems.removeLast();
   }
 
-  final Set<String> _sessions = {};
+  // #261: token → expiry epoch (ms)
+  final Map<String, int> _sessions = {};
+  static const Duration _sessionTtl = Duration(hours: 24);
+  static const int _maxNoPinSessions = 1000;
+  // #258: DNS rebinding 対策 — 許可する Host 値のセット
+  Set<String> _allowedHosts = {};
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
@@ -1984,10 +1989,25 @@ class _CliServer {
     await _init(storagePath);
     await _deployAssets();
 
+    // #258: DNS rebinding — 許可する Host 値を事前収集
+    _allowedHosts = {'localhost', '127.0.0.1', '[::1]', ipAddress};
+    try {
+      final ifaces = await NetworkInterface.list(includeLoopback: true);
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          _allowedHosts.add(addr.address);
+          if (addr.type == InternetAddressType.IPv6) {
+            _allowedHosts.add('[${addr.address}]');
+          }
+        }
+      }
+    } catch (_) {}
+
     final staticHandler =
         createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
     final apiHandler = const Pipeline()
-        .addMiddleware(_federationLoopGuard)  // #221
+        .addMiddleware(_hostGuardMiddleware)   // #258
+        .addMiddleware(_federationLoopGuard)   // #221
         .addMiddleware(_authMiddleware)
         .addHandler(_router.call);
     final cascade = Cascade().add(apiHandler).add(staticHandler);
@@ -2209,6 +2229,22 @@ class _CliServer {
     return buf.toString();
   }
 
+  // #261: 期限切れチェック付きセッション検証
+  bool _isValidSession(String token) {
+    final expiry = _sessions[token];
+    if (expiry == null) return false;
+    if (DateTime.now().millisecondsSinceEpoch > expiry) {
+      _sessions.remove(token);
+      return false;
+    }
+    return true;
+  }
+
+  void _pruneExpiredSessions() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _sessions.removeWhere((_, expiry) => expiry < now);
+  }
+
   // #265: セッション Cookie または Bearer トークンが有効なリクエストか判定
   bool _isAuthenticatedRequest(Request req) {
     if (_authMode == _AuthMode.noPin) return true;
@@ -2217,7 +2253,7 @@ class _CliServer {
       final t = c.trim();
       if (t.startsWith('localnode_session=')) {
         final token = t.substring(t.indexOf('=') + 1);
-        if (_sessions.contains(token)) return true;
+        if (_isValidSession(token)) return true;
       }
     }
     if (_uploadToken != null) {
@@ -2235,6 +2271,21 @@ class _CliServer {
       result |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
     }
     return result == 0;
+  }
+
+  // #263: アップロードファイル名のサニタイズ。空になった場合は null を返す
+  String? _sanitizeFilename(String name) {
+    // 制御文字 (0x00–0x1F, 0x7F) を除去
+    var s = name.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '');
+    // パス区切り・Windows 禁止文字を除去
+    s = s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    // 先頭・末尾のドット/スペース（Windows で非表示になる）を除去
+    s = s.replaceAll(RegExp(r'^[.\s]+|[.\s]+$'), '');
+    // Windows 予約デバイス名 (CON, PRN, AUX, NUL, COM1-9, LPT1-9) に接頭辞を付加
+    if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..+)?$', caseSensitive: false).hasMatch(s)) {
+      s = '_$s';
+    }
+    return s.isEmpty ? null : s;
   }
 
   String _generateToken() {
@@ -2407,6 +2458,25 @@ class _CliServer {
     return ids;
   }
 
+  // #258: DNS rebinding 対策 — Host ヘッダが既知の IP/ホスト名と一致しない場合は拒否
+  Middleware get _hostGuardMiddleware => (inner) {
+        return (req) {
+          if (_allowedHosts.isEmpty) return inner(req);
+          final host = req.headers['host'];
+          if (host == null) return inner(req);
+          // Host ヘッダはポート付き ("192.168.1.1:8080") の場合があるのでポートを除去
+          final hostWithoutPort = host.replaceFirst(RegExp(r':\d+$'), '');
+          if (!_allowedHosts.contains(hostWithoutPort)) {
+            return Response(
+              421,
+              body: 'Misdirected Request',
+              headers: {'Content-Type': 'text/plain'},
+            );
+          }
+          return inner(req);
+        };
+      };
+
   Middleware get _authMiddleware => (inner) {
         return (req) {
           final path = req.url.path;
@@ -2429,7 +2499,7 @@ class _CliServer {
               }
             }
           }
-          if (token != null && _sessions.contains(token)) return inner(req);
+          if (token != null && _isValidSession(token)) return inner(req);
 
           // #173/#188: Bearer トークンによる API 認証（スコープ限定）
           //   - POST /api/upload      … ファイルアップロード（#173）
@@ -2476,7 +2546,12 @@ class _CliServer {
   Future<Response> _authHandler(Request req) async {
     if (_authMode == _AuthMode.noPin) {
       final token = _generateToken();
-      _sessions.add(token);
+      _pruneExpiredSessions();
+      if (_sessions.length >= _maxNoPinSessions) {
+        final oldest = _sessions.entries.reduce((a, b) => a.value < b.value ? a : b);
+        _sessions.remove(oldest.key);
+      }
+      _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
       return Response.ok(json.encode({'status': 'success'}), headers: {
         'Content-Type': 'application/json',
         'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
@@ -2500,7 +2575,7 @@ class _CliServer {
         _failedAttempts.remove(clientIp);
         _lockoutUntil.remove(clientIp);
         final token = _generateToken();
-        _sessions.add(token);
+        _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
         return Response.ok(json.encode({'status': 'success'}), headers: {
           'Content-Type': 'application/json',
           'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
@@ -2628,7 +2703,10 @@ class _CliServer {
     if (encodedName == null || encodedName.isEmpty) {
       return Response.badRequest(body: 'x-filename header is required.');
     }
-    final filename = p.basename(Uri.decodeComponent(encodedName));
+    final filename = _sanitizeFilename(p.basename(Uri.decodeComponent(encodedName)));
+    if (filename == null) {
+      return Response.badRequest(body: 'Invalid filename.');
+    }
 
     // サイズ検査: federation quota → 直接アップロード上限
     final clHeader = req.headers['content-length'];
