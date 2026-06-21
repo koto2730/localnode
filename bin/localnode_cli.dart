@@ -1433,6 +1433,8 @@ class _CliServer {
   static const int _maxNoPinSessions = 1000;
   // #258: DNS rebinding 対策 — 許可する Host 値のセット
   Set<String> _allowedHosts = {};
+  // #6: HTTPS 起動時は Secure 属性を付与
+  bool _httpsEnabled = false;
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
@@ -2019,6 +2021,7 @@ class _CliServer {
         : const Pipeline().addHandler(cascade.handler);
 
     if (httpsCertPath != null && httpsKeyPath != null) {
+      _httpsEnabled = true; // #6: Secure Cookie 付与のために記憶
       final secCtx = SecurityContext()
         ..useCertificateChain(httpsCertPath)
         ..usePrivateKey(httpsKeyPath);
@@ -2028,6 +2031,7 @@ class _CliServer {
       );
       _log('Serving at https://$ipAddress:$port');
     } else {
+      _httpsEnabled = false;
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
       _log('Serving at http://$ipAddress:$port');
     }
@@ -2091,7 +2095,8 @@ class _CliServer {
       if (entry is! Directory) continue;
       final name = p.basename(entry.path);
       if (!name.startsWith(prefix)) continue;
-      final pidStr = name.substring(prefix.length);
+      // #264: 新形式 <prefix><pid>_<random> と旧形式 <prefix><pid> の両方に対応
+      final pidStr = name.substring(prefix.length).split('_').first;
       final otherPid = int.tryParse(pidStr);
       if (otherPid == null || otherPid == myPid) continue;
       if (_isProcessAlive(otherPid)) continue;
@@ -2138,18 +2143,12 @@ class _CliServer {
     final dir = Directory(_storagePath!);
     if (!await dir.exists()) await dir.create(recursive: true);
 
-    final tmpBase = Platform.environment['TMPDIR'] ??
-        Platform.environment['TEMP'] ??
-        '/tmp';
-    // #271: PID ベースでインスタンス分離。共有キャッシュだと basename 衝突が
-    //       起き得るうえ、終了時の削除も他インスタンスを壊さずに行える (#259)。
+    // #271/#264: PID + OS ランダムサフィックスでインスタンス分離かつ symlink poisoning を防ぐ
     const thumbPrefix = 'localnode_cli_thumbnails_';
-    _reapStaleDeployDirs(Directory(tmpBase), thumbPrefix);
+    _reapStaleDeployDirs(Directory.systemTemp, thumbPrefix);
+    // #264: createTemp で OS がアトミックにディレクトリを生成 → パスが推測不能
     _thumbnailCacheDir =
-        Directory(p.join(tmpBase, '$thumbPrefix$pid'));
-    if (!await _thumbnailCacheDir!.exists()) {
-      await _thumbnailCacheDir!.create(recursive: true);
-    }
+        await Directory.systemTemp.createTemp('${thumbPrefix}${pid}_');
     // #269: 他ユーザーから読めないようにパーミッションを制限
     _chmodDir(_thumbnailCacheDir!);
   }
@@ -2554,7 +2553,7 @@ class _CliServer {
       _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
       return Response.ok(json.encode({'status': 'success'}), headers: {
         'Content-Type': 'application/json',
-        'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
+        'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict${_httpsEnabled ? '; Secure' : ''}',
       });
     }
 
@@ -2578,7 +2577,7 @@ class _CliServer {
         _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
         return Response.ok(json.encode({'status': 'success'}), headers: {
           'Content-Type': 'application/json',
-          'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
+          'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict${_httpsEnabled ? '; Secure' : ''}',
         });
       } else {
         final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
