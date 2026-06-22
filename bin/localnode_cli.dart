@@ -123,6 +123,11 @@ class _LoadedConfig {
   String? pinCharset;
   // #262
   String? maxUploadSize;
+  // #237
+  String? stateFile;
+  // #208
+  String? pinFile;
+  String? tokenFile;
   // lists
   List<_LoadedMentionAction>? mentionActions;
   List<_LoadedPostAction>? postActions;
@@ -183,6 +188,9 @@ _LoadedConfig _loadConfig(String path) {
     cfg.pinLength = _yamlInt(server, 'pin-length');
     cfg.pinCharset = _yamlString(server, 'pin-charset');
     cfg.maxUploadSize = _yamlString(server, 'max-upload-size');
+    cfg.stateFile = _yamlString(server, 'state-file');   // #237
+    cfg.pinFile = _yamlString(server, 'pin-file');       // #208
+    cfg.tokenFile = _yamlString(server, 'token-file');   // #208
   } else if (server != null) {
     stderr.writeln('Error: server section must be a mapping.');
     exit(1);
@@ -401,6 +409,14 @@ Future<void> main(List<String> args) async {
       : (cfg?.maxUploadSize ?? results['max-upload-size'] as String?);
   final int? maxDirectUploadBytes = _parseSizeBytes(maxUploadSizeStr);
 
+  // #208: CLI > YAML config
+  final String? pinFile = results.wasParsed('pin-file')
+      ? results['pin-file'] as String?
+      : cfg?.pinFile;
+  final String? tokenFile = results.wasParsed('token-file')
+      ? results['token-file'] as String?
+      : cfg?.tokenFile;
+
   // post_actions: CLI > config (どちらかが存在すればその全体を使う)
   final List<String> postActionRaw;
   if (results.wasParsed('post-action')) {
@@ -485,7 +501,8 @@ Future<void> main(List<String> args) async {
           : _AuthMode.randomPin;
 
   // #218 / §1.11: 端末識別 UUID。federation 参加時の固定 ID として使う。
-  final statePath = results['state-file'] as String? ?? _defaultStateFilePath();
+  // #237: CLI > YAML config > デフォルト
+  final statePath = results['state-file'] as String? ?? cfg?.stateFile ?? _defaultStateFilePath();
   final deviceId = _loadOrCreateDeviceId(statePath);
 
   // #218: federation 設定 (parent / children) があるなら、構成の整合性を検証
@@ -694,6 +711,22 @@ Future<void> main(List<String> args) async {
   stdout.writeln('Press Ctrl+C to stop.');
   stdout.writeln('');
 
+  // #208: PIN / token をファイルに書き出す（daemon / systemd 連携用）
+  if (pinFile != null && server.pin != null) {
+    try {
+      File(pinFile).writeAsStringSync('${server.pin}\n');
+    } catch (e) {
+      stderr.writeln('Warning: could not write PIN to $pinFile: $e');
+    }
+  }
+  if (tokenFile != null && uploadToken != null) {
+    try {
+      File(tokenFile).writeAsStringSync('$uploadToken\n');
+    } catch (e) {
+      stderr.writeln('Warning: could not write upload token to $tokenFile: $e');
+    }
+  }
+
   // #222: federation peer を登録してハートビート開始
   if (hasFederation) {
     if (cfg?.childrenRaw != null) {
@@ -795,6 +828,13 @@ ArgParser _buildParser() {
     ..addOption('max-upload-size',
         help: 'Maximum size for direct file uploads, e.g. 100M, 2G (default: unlimited)',
         valueHelp: 'SIZE')
+    // #208: daemon / systemd 連携用 — 生成値をファイルに書き出す
+    ..addOption('pin-file',
+        help: 'Write the generated PIN to this file on startup',
+        valueHelp: 'PATH')
+    ..addOption('token-file',
+        help: 'Write the generated upload token to this file on startup',
+        valueHelp: 'PATH')
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
