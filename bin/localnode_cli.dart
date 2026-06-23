@@ -26,7 +26,7 @@ import 'package:shelf_static/shelf_static.dart';
 import 'package:yaml/yaml.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.6.0';
+const String _appVersion = '1.7.0';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
@@ -118,9 +118,16 @@ class _LoadedConfig {
   bool? noClipboard;
   bool? verbose;
   bool? noToken;
-  // #206 hooks (consumed by #206)
+  // #206
   int? pinLength;
   String? pinCharset;
+  // #262
+  String? maxUploadSize;
+  // #237
+  String? stateFile;
+  // #208
+  String? pinFile;
+  String? tokenFile;
   // lists
   List<_LoadedMentionAction>? mentionActions;
   List<_LoadedPostAction>? postActions;
@@ -180,6 +187,10 @@ _LoadedConfig _loadConfig(String path) {
     cfg.noToken = _yamlBool(server, 'no-token');
     cfg.pinLength = _yamlInt(server, 'pin-length');
     cfg.pinCharset = _yamlString(server, 'pin-charset');
+    cfg.maxUploadSize = _yamlString(server, 'max-upload-size');
+    cfg.stateFile = _yamlString(server, 'state-file');   // #237
+    cfg.pinFile = _yamlString(server, 'pin-file');       // #208
+    cfg.tokenFile = _yamlString(server, 'token-file');   // #208
   } else if (server != null) {
     stderr.writeln('Error: server section must be a mapping.');
     exit(1);
@@ -392,6 +403,19 @@ Future<void> main(List<String> args) async {
   final fixedToken = results.wasParsed('token')
       ? results['token'] as String?
       : (cfg?.token ?? results['token'] as String?);
+  // #262: 直接アップロードのサイズ上限
+  final maxUploadSizeStr = results.wasParsed('max-upload-size')
+      ? results['max-upload-size'] as String?
+      : (cfg?.maxUploadSize ?? results['max-upload-size'] as String?);
+  final int? maxDirectUploadBytes = _parseSizeBytes(maxUploadSizeStr);
+
+  // #208: CLI > YAML config
+  final String? pinFile = results.wasParsed('pin-file')
+      ? results['pin-file'] as String?
+      : cfg?.pinFile;
+  final String? tokenFile = results.wasParsed('token-file')
+      ? results['token-file'] as String?
+      : cfg?.tokenFile;
 
   // post_actions: CLI > config (どちらかが存在すればその全体を使う)
   final List<String> postActionRaw;
@@ -477,7 +501,8 @@ Future<void> main(List<String> args) async {
           : _AuthMode.randomPin;
 
   // #218 / §1.11: 端末識別 UUID。federation 参加時の固定 ID として使う。
-  final statePath = results['state-file'] as String? ?? _defaultStateFilePath();
+  // #237: CLI > YAML config > デフォルト
+  final statePath = results['state-file'] as String? ?? cfg?.stateFile ?? _defaultStateFilePath();
   final deviceId = _loadOrCreateDeviceId(statePath);
 
   // #218: federation 設定 (parent / children) があるなら、構成の整合性を検証
@@ -558,7 +583,7 @@ Future<void> main(List<String> args) async {
   }
 
   stdout.writeln('');
-  stdout.writeln('LocalNode CLI Server');
+  stdout.writeln('LocalNode CLI Server v$_appVersion');
   stdout.writeln('=' * 40);
 
   // #173: アップロードトークンの決定（download-only / no-pin モードでは不要）
@@ -612,6 +637,7 @@ Future<void> main(List<String> args) async {
       uploadToken: uploadToken,
       postActions: postActions,
       mentionActions: mentionActions,
+      maxDirectUploadBytes: maxDirectUploadBytes, // #262
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -684,6 +710,22 @@ Future<void> main(List<String> args) async {
   stdout.writeln('');
   stdout.writeln('Press Ctrl+C to stop.');
   stdout.writeln('');
+
+  // #208: PIN / token をファイルに書き出す（daemon / systemd 連携用）
+  if (pinFile != null && server.pin != null) {
+    try {
+      File(pinFile).writeAsStringSync('${server.pin}\n');
+    } catch (e) {
+      stderr.writeln('Warning: could not write PIN to $pinFile: $e');
+    }
+  }
+  if (tokenFile != null && uploadToken != null) {
+    try {
+      File(tokenFile).writeAsStringSync('$uploadToken\n');
+    } catch (e) {
+      stderr.writeln('Warning: could not write upload token to $tokenFile: $e');
+    }
+  }
 
   // #222: federation peer を登録してハートビート開始
   if (hasFederation) {
@@ -783,6 +825,16 @@ ArgParser _buildParser() {
     ..addOption('token', help: 'Fixed upload token (random if not specified)')
     ..addFlag('no-token',
         help: 'Disable token-based upload authentication', negatable: false)
+    ..addOption('max-upload-size',
+        help: 'Maximum size for direct file uploads, e.g. 100M, 2G (default: unlimited)',
+        valueHelp: 'SIZE')
+    // #208: daemon / systemd 連携用 — 生成値をファイルに書き出す
+    ..addOption('pin-file',
+        help: 'Write the generated PIN to this file on startup',
+        valueHelp: 'PATH')
+    ..addOption('token-file',
+        help: 'Write the generated upload token to this file on startup',
+        valueHelp: 'PATH')
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -1415,7 +1467,14 @@ class _CliServer {
     return _clipboardItems.removeLast();
   }
 
-  final Set<String> _sessions = {};
+  // #261: token → expiry epoch (ms)
+  final Map<String, int> _sessions = {};
+  static const Duration _sessionTtl = Duration(hours: 24);
+  static const int _maxNoPinSessions = 1000;
+  // #258: DNS rebinding 対策 — 許可する Host 値のセット
+  Set<String> _allowedHosts = {};
+  // #6: HTTPS 起動時は Secure 属性を付与
+  bool _httpsEnabled = false;
   final Map<String, int> _failedAttempts = {};
   final Map<String, DateTime> _lockoutUntil = {};
   String? _uploadToken;
@@ -1424,6 +1483,7 @@ class _CliServer {
   // #206
   int _pinLength = 4;
   String _pinCharset = 'digits';
+  int? _maxDirectUploadBytes; // #262: 直接アップロードのサイズ上限 (null = 無制限)
 
   late final Router _router;
 
@@ -1462,7 +1522,8 @@ class _CliServer {
       // #222: federation 状態（peer 一覧と接続状態）
       ..get('/api/federation/status', _federationStatusHandler)
       ..post('/api/federation/peers/<name>/pause', _federationPausePeerHandler)  // #223
-      ..delete('/api/federation/peers/<name>/pause', _federationResumePeerHandler);  // #223
+      ..delete('/api/federation/peers/<name>/pause', _federationResumePeerHandler)  // #223
+      ..delete('/api/cache/thumbnails', _clearThumbnailCacheHandler);  // #272
   }
 
   /// #222: federation peer を起動前に登録する
@@ -1944,6 +2005,7 @@ class _CliServer {
     String? uploadToken,
     List<({String pattern, String script})> postActions = const [],
     Map<String, ({String script, String? description})> mentionActions = const {},
+    int? maxDirectUploadBytes,    // #262
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -1954,6 +2016,7 @@ class _CliServer {
     _serverName = serverName;
     _pinLength = pinLength;       // #206
     _pinCharset = pinCharset;     // #206
+    _maxDirectUploadBytes = maxDirectUploadBytes; // #262
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -1968,10 +2031,25 @@ class _CliServer {
     await _init(storagePath);
     await _deployAssets();
 
+    // #258: DNS rebinding — 許可する Host 値を事前収集
+    _allowedHosts = {'localhost', '127.0.0.1', '[::1]', ipAddress};
+    try {
+      final ifaces = await NetworkInterface.list(includeLoopback: true);
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          _allowedHosts.add(addr.address);
+          if (addr.type == InternetAddressType.IPv6) {
+            _allowedHosts.add('[${addr.address}]');
+          }
+        }
+      }
+    } catch (_) {}
+
     final staticHandler =
         createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
     final apiHandler = const Pipeline()
-        .addMiddleware(_federationLoopGuard)  // #221
+        .addMiddleware(_hostGuardMiddleware)   // #258
+        .addMiddleware(_federationLoopGuard)   // #221
         .addMiddleware(_authMiddleware)
         .addHandler(_router.call);
     final cascade = Cascade().add(apiHandler).add(staticHandler);
@@ -1983,6 +2061,7 @@ class _CliServer {
         : const Pipeline().addHandler(cascade.handler);
 
     if (httpsCertPath != null && httpsKeyPath != null) {
+      _httpsEnabled = true; // #6: Secure Cookie 付与のために記憶
       final secCtx = SecurityContext()
         ..useCertificateChain(httpsCertPath)
         ..usePrivateKey(httpsKeyPath);
@@ -1992,6 +2071,7 @@ class _CliServer {
       );
       _log('Serving at https://$ipAddress:$port');
     } else {
+      _httpsEnabled = false;
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
       _log('Serving at http://$ipAddress:$port');
     }
@@ -2009,11 +2089,45 @@ class _CliServer {
         await d.delete(recursive: true);
       }
     } catch (_) {}
+    // #271: PID ベースのサムネイルキャッシュも同様に削除
+    try {
+      final t = _thumbnailCacheDir;
+      if (t != null && await t.exists()) {
+        await t.delete(recursive: true);
+      }
+    } catch (e) {
+      stderr.writeln(
+          'Warning: could not remove thumbnail cache ${_thumbnailCacheDir?.path}: $e');
+      stderr.writeln('  You can remove it manually.');
+    }
   }
 
   // #242: 同プレフィックスのきょうだいディレクトリのうち、対応する PID が
   //       生きていないものを削除する。長寿の常駐サーバを巻き込まないよう
   //       mtime ベースの judge は使わず、PID 生存チェック一本でいく。
+  // #269: Unix のみ、ディレクトリのパーミッションを 700 に制限
+  void _chmodDir(Directory dir) {
+    if (Platform.isWindows) return;
+    try {
+      Process.runSync('chmod', ['700', dir.path], runInShell: false);
+    } catch (_) {}
+  }
+
+  // #269: Unix のみ、ファイルのパーミッションを 600 に制限
+  void _chmodFile(File file) {
+    if (Platform.isWindows) return;
+    try {
+      Process.runSync('chmod', ['600', file.path], runInShell: false);
+    } catch (_) {}
+  }
+
+  // #259: サムネイルキャッシュキーをファイルの相対パス (base64url) で生成。
+  //       basename のみだとサブフォルダの同名ファイルが衝突する。
+  String _thumbCacheKey(String filePath) {
+    final rel = p.relative(filePath, from: _storagePath!);
+    return base64Url.encode(utf8.encode(rel)).replaceAll('=', '');
+  }
+
   void _reapStaleDeployDirs(Directory base, String prefix) {
     if (!base.existsSync()) return;
     final myPid = pid;
@@ -2021,7 +2135,8 @@ class _CliServer {
       if (entry is! Directory) continue;
       final name = p.basename(entry.path);
       if (!name.startsWith(prefix)) continue;
-      final pidStr = name.substring(prefix.length);
+      // #264: 新形式 <prefix><pid>_<random> と旧形式 <prefix><pid> の両方に対応
+      final pidStr = name.substring(prefix.length).split('_').first;
       final otherPid = int.tryParse(pidStr);
       if (otherPid == null || otherPid == myPid) continue;
       if (_isProcessAlive(otherPid)) continue;
@@ -2068,14 +2183,14 @@ class _CliServer {
     final dir = Directory(_storagePath!);
     if (!await dir.exists()) await dir.create(recursive: true);
 
-    final tmpBase = Platform.environment['TMPDIR'] ??
-        Platform.environment['TEMP'] ??
-        '/tmp';
+    // #271/#264: PID + OS ランダムサフィックスでインスタンス分離かつ symlink poisoning を防ぐ
+    const thumbPrefix = 'localnode_cli_thumbnails_';
+    _reapStaleDeployDirs(Directory.systemTemp, thumbPrefix);
+    // #264: createTemp で OS がアトミックにディレクトリを生成 → パスが推測不能
     _thumbnailCacheDir =
-        Directory(p.join(tmpBase, 'localnode_cli_thumbnails'));
-    if (!await _thumbnailCacheDir!.exists()) {
-      await _thumbnailCacheDir!.create(recursive: true);
-    }
+        await Directory.systemTemp.createTemp('${thumbPrefix}${pid}_');
+    // #269: 他ユーザーから読めないようにパーミッションを制限
+    _chmodDir(_thumbnailCacheDir!);
   }
 
   Future<void> _deployAssets() async {
@@ -2092,6 +2207,7 @@ class _CliServer {
       await _webRootDir!.delete(recursive: true);
     }
     await _webRootDir!.create(recursive: true);
+    _chmodDir(_webRootDir!); // #269
 
     final exeDir = p.dirname(Platform.resolvedExecutable);
     final candidates = [
@@ -2150,6 +2266,65 @@ class _CliServer {
       buf.write(pool[rnd.nextInt(pool.length)]);
     }
     return buf.toString();
+  }
+
+  // #261: 期限切れチェック付きセッション検証
+  bool _isValidSession(String token) {
+    final expiry = _sessions[token];
+    if (expiry == null) return false;
+    if (DateTime.now().millisecondsSinceEpoch > expiry) {
+      _sessions.remove(token);
+      return false;
+    }
+    return true;
+  }
+
+  void _pruneExpiredSessions() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _sessions.removeWhere((_, expiry) => expiry < now);
+  }
+
+  // #265: セッション Cookie または Bearer トークンが有効なリクエストか判定
+  bool _isAuthenticatedRequest(Request req) {
+    if (_authMode == _AuthMode.noPin) return true;
+    final cookie = req.headers['cookie'] ?? '';
+    for (final c in cookie.split(';')) {
+      final t = c.trim();
+      if (t.startsWith('localnode_session=')) {
+        final token = t.substring(t.indexOf('=') + 1);
+        if (_isValidSession(token)) return true;
+      }
+    }
+    if (_uploadToken != null) {
+      final auth = req.headers['authorization'] ?? '';
+      if (auth == 'Bearer $_uploadToken') return true;
+    }
+    return false;
+  }
+
+  // #260: タイミング攻撃を防ぐ定数時間文字列比較
+  bool _constantTimeEquals(String a, String b) {
+    if (a.length != b.length) return false;
+    var result = 0;
+    for (var i = 0; i < a.length; i++) {
+      result |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+    }
+    return result == 0;
+  }
+
+  // #263: アップロードファイル名のサニタイズ。空になった場合は null を返す
+  String? _sanitizeFilename(String name) {
+    // 制御文字 (0x00–0x1F, 0x7F) を除去
+    var s = name.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '');
+    // パス区切り・Windows 禁止文字を除去
+    s = s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    // 先頭・末尾のドット/スペース（Windows で非表示になる）を除去
+    s = s.replaceAll(RegExp(r'^[.\s]+|[.\s]+$'), '');
+    // Windows 予約デバイス名 (CON, PRN, AUX, NUL, COM1-9, LPT1-9) に接頭辞を付加
+    if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..+)?$', caseSensitive: false).hasMatch(s)) {
+      s = '_$s';
+    }
+    return s.isEmpty ? null : s;
   }
 
   String _generateToken() {
@@ -2322,6 +2497,25 @@ class _CliServer {
     return ids;
   }
 
+  // #258: DNS rebinding 対策 — Host ヘッダが既知の IP/ホスト名と一致しない場合は拒否
+  Middleware get _hostGuardMiddleware => (inner) {
+        return (req) {
+          if (_allowedHosts.isEmpty) return inner(req);
+          final host = req.headers['host'];
+          if (host == null) return inner(req);
+          // Host ヘッダはポート付き ("192.168.1.1:8080") の場合があるのでポートを除去
+          final hostWithoutPort = host.replaceFirst(RegExp(r':\d+$'), '');
+          if (!_allowedHosts.contains(hostWithoutPort)) {
+            return Response(
+              421,
+              body: 'Misdirected Request',
+              headers: {'Content-Type': 'text/plain'},
+            );
+          }
+          return inner(req);
+        };
+      };
+
   Middleware get _authMiddleware => (inner) {
         return (req) {
           final path = req.url.path;
@@ -2344,7 +2538,7 @@ class _CliServer {
               }
             }
           }
-          if (token != null && _sessions.contains(token)) return inner(req);
+          if (token != null && _isValidSession(token)) return inner(req);
 
           // #173/#188: Bearer トークンによる API 認証（スコープ限定）
           //   - POST /api/upload      … ファイルアップロード（#173）
@@ -2359,7 +2553,9 @@ class _CliServer {
                       (path == 'api/upload' || path == 'api/clipboard')) ||
                   (req.method == 'GET' &&
                       (path == 'api/mentions' ||
-                          path.startsWith('api/run/')))) {
+                          path.startsWith('api/run/'))) ||
+                  (req.method == 'DELETE' &&
+                      path == 'api/cache/thumbnails')) {
                 // F10: x-fed-origin が存在する場合、既知の peer の deviceId と一致するか検証。
                 // 存在しない場合は通常の Bearer 利用（curl 等）として許可。
                 // 一致しない deviceId を使った peer 偽装を防ぐ。
@@ -2389,10 +2585,15 @@ class _CliServer {
   Future<Response> _authHandler(Request req) async {
     if (_authMode == _AuthMode.noPin) {
       final token = _generateToken();
-      _sessions.add(token);
+      _pruneExpiredSessions();
+      if (_sessions.length >= _maxNoPinSessions) {
+        final oldest = _sessions.entries.reduce((a, b) => a.value < b.value ? a : b);
+        _sessions.remove(oldest.key);
+      }
+      _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
       return Response.ok(json.encode({'status': 'success'}), headers: {
         'Content-Type': 'application/json',
-        'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
+        'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict${_httpsEnabled ? '; Secure' : ''}',
       });
     }
 
@@ -2409,14 +2610,14 @@ class _CliServer {
     final body = await req.readAsString();
     try {
       final params = json.decode(body) as Map<String, dynamic>;
-      if (params['pin'] == _pin) {
+      if (_pin != null && _constantTimeEquals(params['pin'] as String? ?? '', _pin!)) {
         _failedAttempts.remove(clientIp);
         _lockoutUntil.remove(clientIp);
         final token = _generateToken();
-        _sessions.add(token);
+        _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
         return Response.ok(json.encode({'status': 'success'}), headers: {
           'Content-Type': 'application/json',
-          'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict',
+          'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict${_httpsEnabled ? '; Secure' : ''}',
         });
       } else {
         final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
@@ -2466,28 +2667,31 @@ class _CliServer {
       Response.ok(json.encode({'ok': true}),
           headers: {'Content-Type': 'application/json'});
 
-  Response _infoHandler(Request _) => Response.ok(
-        json.encode({
-          'version': _appVersion,
-          'name': _serverName,
-          'serverName': _serverName,
-          'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
-          'authMode': _authMode == _AuthMode.fixedPin
-              ? 'fixedPin'
-              : _authMode == _AuthMode.noPin
-                  ? 'noPin'
-                  : 'randomPin',
-          'requiresAuth': _authMode != _AuthMode.noPin,
-          'clipboardEnabled': _clipboardEnabled,
-          // #218: federation 識別子。public エンドポイントなので未認証で見える。
-          // peer 同士の identity 確認に使うが、機密ではない。
-          'deviceId': _deviceId,
-          // #206: Web UI が PIN 入力モードを切り替えるためのヒント
-          'pinCharset': _pinCharset,
-          'pinLength': _pinLength,
-        }),
-        headers: {'Content-Type': 'application/json'},
-      );
+  Response _infoHandler(Request req) {
+    final authed = _isAuthenticatedRequest(req);
+    return Response.ok(
+      json.encode({
+        'version': _appVersion,
+        'name': _serverName,
+        'serverName': _serverName,
+        'operationMode': _downloadOnly ? 'downloadOnly' : 'normal',
+        'authMode': _authMode == _AuthMode.fixedPin
+            ? 'fixedPin'
+            : _authMode == _AuthMode.noPin
+                ? 'noPin'
+                : 'randomPin',
+        'requiresAuth': _authMode != _AuthMode.noPin,
+        'clipboardEnabled': _clipboardEnabled,
+        // #265: deviceId は認証済みリクエストにのみ返す
+        // federation heartbeat は Bearer トークン付きで /api/info を叩くため引き続き取得可能
+        if (authed) 'deviceId': _deviceId,
+        // #206: Web UI が PIN 入力モードを切り替えるためのヒント
+        'pinCharset': _pinCharset,
+        'pinLength': _pinLength,
+      }),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
 
   Future<Response> _getFilesHandler(Request req) async {
     final root = Directory(_storagePath!);
@@ -2538,15 +2742,28 @@ class _CliServer {
     if (encodedName == null || encodedName.isEmpty) {
       return Response.badRequest(body: 'x-filename header is required.');
     }
-    final filename = p.basename(Uri.decodeComponent(encodedName));
+    final filename = _sanitizeFilename(p.basename(Uri.decodeComponent(encodedName)));
+    if (filename == null) {
+      return Response.badRequest(body: 'Invalid filename.');
+    }
 
-    // #219: federation 由来のアップロードなら、送信元 child の
-    // max_upload_size を Content-Length で先に検査
+    // サイズ検査: federation quota → 直接アップロード上限
     final clHeader = req.headers['content-length'];
     final cl = clHeader != null ? int.tryParse(clHeader) : null;
     if (cl != null) {
+      // #219: federation 由来のアップロードなら送信元 child の max_upload_size を検査
       final quotaResp = _checkFederationUploadQuota(req, cl);
       if (quotaResp != null) return quotaResp;
+      // #262: 直接アップロード（非 federation）にグローバル上限を適用
+      final isFed = req.headers[_kFedOrigin]?.isNotEmpty == true;
+      if (!isFed && _maxDirectUploadBytes != null && cl > _maxDirectUploadBytes!) {
+        return Response(413,
+            body: json.encode({
+              'error': 'too-large',
+              'message': 'Upload exceeds server limit of $_maxDirectUploadBytes bytes.',
+            }),
+            headers: {'Content-Type': 'application/json'});
+      }
     }
 
     // #203: ?path=<relpath> でサブフォルダ宛のアップロードを許可
@@ -2995,7 +3212,8 @@ class _CliServer {
       if (!_isImage(filename)) {
         return Response.badRequest(body: 'Not an image.');
       }
-      final cache = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+      // #259: キャッシュキーに相対パスを使い、サブフォルダの同名ファイルの衝突を防ぐ
+      final cache = File(p.join(_thumbnailCacheDir!.path, '${_thumbCacheKey(filePath)}.jpg'));
       if (await cache.exists()) {
         return Response.ok(cache.openRead(),
             headers: {'Content-Type': 'image/jpeg'});
@@ -3008,7 +3226,8 @@ class _CliServer {
       }
       final thumb = img.copyResize(image, width: 120);
       final thumbBytes = img.encodeJpg(thumb, quality: 85);
-      cache.writeAsBytes(thumbBytes);
+      await cache.writeAsBytes(thumbBytes);
+      _chmodFile(cache); // #269
       return Response.ok(thumbBytes, headers: {'Content-Type': 'image/jpeg'});
     } catch (e) {
       return Response.internalServerError(body: 'Thumbnail failed: $e');
@@ -3081,7 +3300,7 @@ class _CliServer {
       final filePath = file.path;
       await file.delete();
       final cache = File(
-          p.join(_thumbnailCacheDir!.path, '${p.basename(filePath)}.jpg'));
+          p.join(_thumbnailCacheDir!.path, '${_thumbCacheKey(filePath)}.jpg'));
       if (await cache.exists()) await cache.delete();
       return Response.ok('File deleted.');
     } catch (e) {
@@ -3120,10 +3339,9 @@ class _CliServer {
           skipped.add(raw);
           continue;
         }
-        final filename = p.basename(filePath);
         await file.delete();
         deleted++;
-        final cache = File(p.join(_thumbnailCacheDir!.path, '$filename.jpg'));
+        final cache = File(p.join(_thumbnailCacheDir!.path, '${_thumbCacheKey(filePath)}.jpg'));
         if (await cache.exists()) await cache.delete();
       } catch (_) {
         failed++;
@@ -3511,6 +3729,24 @@ class _CliServer {
     }
     _clipboardItems.clear();
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+    return Response.ok(json.encode({'status': 'cleared', 'count': count}),
+        headers: {'Content-Type': 'application/json'});
+  }
+
+  // #272: 起動中にサムネイルキャッシュをクリアする（認証はミドルウェア済み）
+  Future<Response> _clearThumbnailCacheHandler(Request req) async {
+    final dir = _thumbnailCacheDir;
+    if (dir == null || !await dir.exists()) {
+      return Response.ok(json.encode({'status': 'cleared', 'count': 0}),
+          headers: {'Content-Type': 'application/json'});
+    }
+    int count = 0;
+    await for (final entry in dir.list()) {
+      try {
+        await entry.delete();
+        count++;
+      } catch (_) {}
+    }
     return Response.ok(json.encode({'status': 'cleared', 'count': count}),
         headers: {'Content-Type': 'application/json'});
   }
