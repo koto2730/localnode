@@ -128,6 +128,8 @@ class _LoadedConfig {
   // #208
   String? pinFile;
   String? tokenFile;
+  // #275: DNS rebinding guard に追加で許可するホスト名（リバースプロキシ等）
+  List<String>? allowedHosts;
   // lists
   List<_LoadedMentionAction>? mentionActions;
   List<_LoadedPostAction>? postActions;
@@ -191,6 +193,14 @@ _LoadedConfig _loadConfig(String path) {
     cfg.stateFile = _yamlString(server, 'state-file');   // #237
     cfg.pinFile = _yamlString(server, 'pin-file');       // #208
     cfg.tokenFile = _yamlString(server, 'token-file');   // #208
+    // #275: allowed-hosts はホスト名文字列のリスト
+    final ah = server['allowed-hosts'];
+    if (ah is YamlList) {
+      cfg.allowedHosts = ah.map((e) => e.toString()).toList();
+    } else if (ah != null) {
+      stderr.writeln('Error: server.allowed-hosts must be a list of host names.');
+      exit(1);
+    }
   } else if (server != null) {
     stderr.writeln('Error: server section must be a mapping.');
     exit(1);
@@ -582,6 +592,15 @@ Future<void> main(List<String> args) async {
     advertisedHost = ipAddress;
   }
 
+  // #275: DNS-rebinding guard が許可する追加ホスト名。HTTPS の場合は cert SAN から
+  // 選ばれた advertisedHost（peer / ブラウザが実際に到達する名前）を必ず含める。
+  // これが無いと federation や Tailscale の DNS 名アクセスが 421 で拒否される。
+  final extraAllowedHosts = <String>{
+    advertisedHost,
+    ...?(cfg?.allowedHosts),
+    ...(results['allowed-host'] as List<String>? ?? const []),
+  }.where((h) => h.isNotEmpty).toList();
+
   stdout.writeln('');
   stdout.writeln('LocalNode CLI Server v$_appVersion');
   stdout.writeln('=' * 40);
@@ -638,6 +657,7 @@ Future<void> main(List<String> args) async {
       postActions: postActions,
       mentionActions: mentionActions,
       maxDirectUploadBytes: maxDirectUploadBytes, // #262
+      extraAllowedHosts: extraAllowedHosts,       // #275
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -836,6 +856,11 @@ ArgParser _buildParser() {
     ..addOption('token-file',
         help: 'Write the generated upload token to this file on startup',
         valueHelp: 'PATH')
+    // #275: DNS-rebinding guard が拒否しない追加ホスト名（リバースプロキシ等、repeatable）
+    ..addMultiOption('allowed-host',
+        help: 'Extra Host header value to accept (e.g. a reverse-proxy or DNS '
+            'name). HTTPS cert hostnames are accepted automatically (repeatable).',
+        valueHelp: 'HOST')
     ..addFlag('help', abbr: 'h', help: 'Show this help', negatable: false);
 }
 
@@ -2019,6 +2044,7 @@ class _CliServer {
     List<({String pattern, String script})> postActions = const [],
     Map<String, ({String script, String? description})> mentionActions = const {},
     int? maxDirectUploadBytes,    // #262
+    List<String> extraAllowedHosts = const [],   // #275
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -2057,6 +2083,9 @@ class _CliServer {
         }
       }
     } catch (_) {}
+    // #275: cert SAN から選ばれた広告ホスト名や設定で明示された名前を許可。
+    // federation（両端 HTTPS）や Tailscale の DNS 名アクセスが 421 にならないようにする。
+    _allowedHosts.addAll(extraAllowedHosts);
 
     final staticHandler =
         createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
@@ -2515,7 +2544,14 @@ class _CliServer {
         return (req) {
           if (_allowedHosts.isEmpty) return inner(req);
           final host = req.headers['host'];
-          if (host == null) return inner(req);
+          // #275: Host 欠落は fail-closed で拒否（正規のブラウザ/peer/curl は必ず付与する）
+          if (host == null) {
+            return Response(
+              421,
+              body: 'Missing Host header',
+              headers: {'Content-Type': 'text/plain'},
+            );
+          }
           // Host ヘッダはポート付き ("192.168.1.1:8080") の場合があるのでポートを除去
           final hostWithoutPort = host.replaceFirst(RegExp(r':\d+$'), '');
           if (!_allowedHosts.contains(hostWithoutPort)) {
