@@ -712,16 +712,17 @@ Future<void> main(List<String> args) async {
   stdout.writeln('');
 
   // #208: PIN / token をファイルに書き出す（daemon / systemd 連携用）
+  // #274: 秘密情報なので 0600 で書き出す（_writeSecretFile）
   if (pinFile != null && server.pin != null) {
     try {
-      File(pinFile).writeAsStringSync('${server.pin}\n');
+      _writeSecretFile(pinFile, '${server.pin}\n');
     } catch (e) {
       stderr.writeln('Warning: could not write PIN to $pinFile: $e');
     }
   }
   if (tokenFile != null && uploadToken != null) {
     try {
-      File(tokenFile).writeAsStringSync('$uploadToken\n');
+      _writeSecretFile(tokenFile, '$uploadToken\n');
     } catch (e) {
       stderr.writeln('Warning: could not write upload token to $tokenFile: $e');
     }
@@ -1214,6 +1215,18 @@ String _defaultStateFilePath() {
   }
   final home = Platform.environment['HOME'] ?? '.';
   return p.join(home, '.local', 'state', 'localnode-cli', 'state.json');
+}
+
+/// #274: 秘密情報（PIN / token）をファイルに書き出す。Unix では先に空ファイルを
+/// 0600 に絞ってから中身を書くことで、ワールドリーダブルな窓を作らない。
+void _writeSecretFile(String path, String content) {
+  final file = File(path);
+  if (!Platform.isWindows) {
+    // 空で作成 → chmod 600 → 中身を書く。秘密はパーミッション制限後にのみ書かれる。
+    file.writeAsStringSync('');
+    Process.runSync('chmod', ['600', path], runInShell: false);
+  }
+  file.writeAsStringSync(content);
 }
 
 /// UUID v4 (random) を生成して `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx` 形式で返す。
