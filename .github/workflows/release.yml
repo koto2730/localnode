@@ -223,7 +223,7 @@ jobs:
       - name: Extract version from pubspec.yaml
         id: version
         run: |
-          VERSION=$(grep '^version:' LocalNode/pubspec.yaml | sed 's/version: *//' | sed 's/+.*//' | tr -d '[:space:]')
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: *//' | sed 's/+.*//' | tr -d '[:space:]')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts
