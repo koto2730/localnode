@@ -2070,15 +2070,14 @@ class _CliServer {
     await _init(storagePath);
     await _deployAssets();
 
-    // #258: DNS rebinding — 許可する Host 値を事前収集
-    _allowedHosts = {'localhost', '127.0.0.1', '[::1]', ipAddress};
+    // #258: DNS rebinding — 許可する Host 値を事前収集（IPv4 のみ。IPv6 バインド未対応）
+    _allowedHosts = {'localhost', '127.0.0.1', ipAddress};
     try {
       final ifaces = await NetworkInterface.list(includeLoopback: true);
       for (final iface in ifaces) {
         for (final addr in iface.addresses) {
-          _allowedHosts.add(addr.address);
-          if (addr.type == InternetAddressType.IPv6) {
-            _allowedHosts.add('[${addr.address}]');
+          if (addr.type == InternetAddressType.IPv4) {
+            _allowedHosts.add(addr.address);
           }
         }
       }
@@ -2791,7 +2790,11 @@ class _CliServer {
     if (encodedName == null || encodedName.isEmpty) {
       return Response.badRequest(body: 'x-filename header is required.');
     }
-    final filename = _sanitizeFilename(p.basename(Uri.decodeComponent(encodedName)));
+    final rawName = p.basename(Uri.decodeComponent(encodedName));
+    if (rawName.codeUnits.any((c) => c < 32 || c == 127)) {
+      return Response.badRequest(body: 'Invalid filename.');
+    }
+    final filename = _sanitizeFilename(rawName);
     if (filename == null) {
       return Response.badRequest(body: 'Invalid filename.');
     }
