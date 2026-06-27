@@ -947,8 +947,8 @@
         <div class="pin-box">
             <h2>PIN認証</h2>
             <p>サーバーに接続するにはPINコードを入力してください。</p>
-            <form id="pinForm">
-                <input type="password" id="pinInput" maxlength="20" inputmode="numeric" required autocomplete="one-time-code">
+            <form id="pinForm" novalidate>
+                <input type="password" id="pinInput" maxlength="20" inputmode="numeric" autocomplete="one-time-code">
                 <button type="submit">接続</button>
             </form>
             <div id="pinStatus" class="status"></div>
@@ -1006,6 +1006,7 @@
                     </div>
                     <div>
                         <button id="refreshBtn" title="更新">⟳</button>
+                        <button id="clearCacheBtn" title="サムネイルキャッシュをクリア" style="font-size:0.8rem;">🗑 キャッシュ</button>
                         <button id="viewerModeBtn">🖼 グリッド</button>
                     </div>
                 </div>
@@ -1221,7 +1222,7 @@
                 const length = Number.isInteger(serverInfo.pinLength) ? serverInfo.pinLength : 8;
                 if (charset === 'digits') {
                     pinInput.setAttribute('inputmode', 'numeric');
-                    pinInput.setAttribute('pattern', `[0-9]{${length}}`);
+                    pinInput.removeAttribute('pattern');
                 } else {
                     pinInput.setAttribute('inputmode', 'text');
                     pinInput.removeAttribute('pattern');
@@ -1506,7 +1507,10 @@
                             body: file
                         });
                         if (!response.ok) {
-                            throw new Error(`'${file.name}' のアップロード失敗`);
+                            if (response.status === 413) {
+                                throw new Error(`'${file.name}' はサーバのサイズ制限を超えています`);
+                            }
+                            throw new Error(`'${file.name}' のアップロード失敗 (HTTP ${response.status})`);
                         }
                     }
                     uploadStatus.style.color = 'green';
@@ -2038,7 +2042,10 @@
                 const cached = loadMentionsCache();
                 if (cached) return cached;
                 const res = await safeFetch('/api/mentions');
-                if (!res.ok) throw new Error('/api/mentions HTTP ' + res.status);
+                if (!res.ok) {
+                    if (res.status === 404) return [];
+                    throw new Error('/api/mentions HTTP ' + res.status);
+                }
                 const data = await res.json();
                 const items = Array.isArray(data?.items) ? data.items : [];
                 saveMentionsCache(items);
@@ -2629,6 +2636,25 @@
             });
             document.getElementById('refreshBtn').addEventListener('click', () => {
                 fetchFiles();
+            });
+
+            document.getElementById('clearCacheBtn').addEventListener('click', async () => {
+                const btn = document.getElementById('clearCacheBtn');
+                btn.disabled = true;
+                try {
+                    const res = await safeFetch('/api/cache/thumbnails', { method: 'DELETE' });
+                    if (res.ok) {
+                        const data = await res.json();
+                        fetchFiles();
+                        const orig = btn.textContent;
+                        btn.textContent = `✓ ${data.count}件削除`;
+                        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+                    } else {
+                        btn.disabled = false;
+                    }
+                } catch (_) {
+                    btn.disabled = false;
+                }
             });
 
             // 初期化処理：サーバー情報を取得し、認証モードに応じてPINモーダルを表示
