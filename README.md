@@ -13,7 +13,7 @@ A Flutter application that transforms your phone or computer into a secure, pers
 *   **HTTPS/TLS Support:** Enable secure connections using your own TLS certificate and private key (e.g., from Tailscale). The SAN-aware selector automatically matches certificate entries to your device's IP addresses.
 *   **Access Control:** Configure download-only mode or disable PIN authentication for trusted networks.
 *   **Easy Connection:** Connect quickly using a QR code or by manually entering the displayed IP address.
-*   **IP Address Selection:** Choose which network interface (e.g., Wi-Fi, Tailscale) to use for serving files.
+*   **IP Address Selection:** Choose which network interface (e.g., Wi-Fi, Tailscale) to use for serving files. IPv4 only; IPv6 is not yet supported (#277).
 *   **Custom Server Name:** Set a custom name displayed in the browser tab and page title.
 *   **Custom Shared Folder:** Select any folder on your device as the shared directory.
 *   **Settings Reset:** Reset all saved settings to defaults with a single button.
