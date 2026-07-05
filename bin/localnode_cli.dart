@@ -26,7 +26,7 @@ import 'package:shelf_static/shelf_static.dart';
 import 'package:yaml/yaml.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.7.0';
+const String _appVersion = '1.8.0';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
