@@ -2596,7 +2596,8 @@ class _CliServer {
           // 付加できるため、列挙したエンドポイント以外への昇格には使えない。
           if (_uploadToken != null) {
             final authHeader = req.headers['authorization'] ?? '';
-            if (authHeader == 'Bearer $_uploadToken') {
+            // #284: トークン比較も定数時間で（PIN と一貫性を取る）
+            if (_constantTimeEquals(authHeader, 'Bearer $_uploadToken')) {
               if ((req.method == 'POST' &&
                       (path == 'api/upload' || path == 'api/clipboard')) ||
                   (req.method == 'GET' &&
