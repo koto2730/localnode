@@ -88,6 +88,8 @@ class ServerService {
   Set<String> _allowedHosts = {};
   // #6: TLS 有効時のみ Set-Cookie に Secure 属性を付ける。
   bool _httpsEnabled = false;
+  // #285: 直接アップロードの上限バイト数（null = 無制限）。ストレージ枯渇 DoS 対策。
+  int? _maxUploadBytes;
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
   bool _verboseLogging = false;
@@ -618,6 +620,17 @@ class ServerService {
       return Response.badRequest(body: 'Invalid filename.');
     }
 
+    // #285: 直接アップロードのサイズ上限。content-length で早期に弾く
+    // （ヘッダを詐称された場合はストリーム中でも打ち切る）。
+    final maxBytes = _maxUploadBytes;
+    if (maxBytes != null) {
+      final clHeader = request.headers['content-length'];
+      final cl = clHeader != null ? int.tryParse(clHeader) : null;
+      if (cl != null && cl > maxBytes) {
+        return _tooLargeResponse(maxBytes);
+      }
+    }
+
     final relPath = request.requestedUri.queryParameters['path'] ?? '';
 
     // AndroidでSAF URIが設定されている場合
@@ -629,7 +642,13 @@ class ServerService {
             body: 'Subfolder upload is not supported on Android SAF.');
       }
       try {
-        final bytes = await request.read().fold<List<int>>([], (prev, chunk) => prev..addAll(chunk));
+        final bytes = <int>[];
+        await for (final chunk in request.read()) {
+          bytes.addAll(chunk);
+          if (maxBytes != null && bytes.length > maxBytes) {
+            return _tooLargeResponse(maxBytes); // #285
+          }
+        }
         final mimeType = _getMimeType(sanitizedFilename);
 
         final String? newFileUri = await _safPlatform.invokeMethod('createFile', {
@@ -683,6 +702,14 @@ class ServerService {
         int totalBytes = 0;
         await for (final chunk in request.read()) {
           totalBytes += chunk.length;
+          // #285: content-length を詐称されても書き込み途中で打ち切る
+          if (maxBytes != null && totalBytes > maxBytes) {
+            await sink.close();
+            try {
+              await file.delete();
+            } catch (_) {}
+            return _tooLargeResponse(maxBytes);
+          }
           sink.add(chunk);
         }
         await sink.close();
@@ -694,6 +721,17 @@ class ServerService {
         return Response.internalServerError(body: 'Failed to save file: $e');
       }
     }
+  }
+
+  // #285: アップロード上限超過の 413 応答。Web UI は status===413 を見て
+  // 専用メッセージを表示する（#262）。
+  Response _tooLargeResponse(int maxBytes) {
+    return Response(413,
+        body: json.encode({
+          'error': 'too-large',
+          'message': 'Upload exceeds server limit of $maxBytes bytes.',
+        }),
+        headers: {'Content-Type': 'application/json'});
   }
 
   Future<File> _getUniqueFilePath(Directory dir, String filename) async {
@@ -2039,6 +2077,7 @@ class ServerService {
     String? httpsCertPath,
     String? httpsKeyPath,
     String? httpsHostname,
+    int? maxUploadBytes,
   }) async {
     if (_server != null) return;
 
@@ -2046,6 +2085,7 @@ class ServerService {
 
     _operationMode = operationMode;
     _authMode = authMode;
+    _maxUploadBytes = maxUploadBytes; // #285
     _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
 
     // 認証モードに応じたPIN設定
@@ -2122,6 +2162,7 @@ class ServerService {
     _httpsHostname = null;
     _httpsEnabled = false;
     _allowedHosts = {};
+    _maxUploadBytes = null;
     _ipAddress = null;
     _port = null;
     _pin = null;

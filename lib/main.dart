@@ -36,6 +36,7 @@ class ServerState {
     this.httpsHostname,
     this.certSanCandidates = const [],
     this.resolvedHttpsIp,
+    this.maxUploadMB,
   });
 
   final ServerStatus status;
@@ -56,6 +57,8 @@ class ServerState {
   final List<String> certSanCandidates;
   // ホスト名をデバイスIPに解決した結果（非nullならIPドロップダウンをロック）(#985)
   final String? resolvedHttpsIp;
+  // #285: 直接アップロードの上限 (MB)。null / 0 = 無制限。
+  final int? maxUploadMB;
 
   bool get httpsMode =>
       httpsCertPath != null &&
@@ -81,6 +84,8 @@ class ServerState {
     String? httpsHostname,
     List<String>? certSanCandidates,
     String? resolvedHttpsIp,
+    int? maxUploadMB,
+    bool clearMaxUploadMB = false,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
@@ -115,6 +120,8 @@ class ServerState {
           : (certSanCandidates ?? this.certSanCandidates),
       resolvedHttpsIp:
           clearResolvedHttpsIp ? null : (resolvedHttpsIp ?? this.resolvedHttpsIp),
+      maxUploadMB:
+          clearMaxUploadMB ? null : (maxUploadMB ?? this.maxUploadMB),
     );
   }
 }
@@ -202,6 +209,8 @@ class ServerNotifier extends Notifier<ServerState> {
     final authModeStr = prefs.getString('auth_mode');
     final savedFixedPin = prefs.getString('fixed_pin');
     final savedServerName = prefs.getString('server_name') ?? 'LocalNode';
+    // #285: 0 / 未設定は無制限
+    final savedMaxUploadMB = prefs.getInt('max_upload_mb');
     final savedHttpsEnabled = prefs.getBool('https_enabled') ?? false;
     // cert/key は https_enabled が true の場合のみ読み込む (#141)
     final savedHttpsCertPath =
@@ -225,6 +234,9 @@ class ServerNotifier extends Notifier<ServerState> {
       authMode: authMode,
       fixedPin: savedFixedPin,
       serverName: savedServerName,
+      maxUploadMB: (savedMaxUploadMB != null && savedMaxUploadMB > 0)
+          ? savedMaxUploadMB
+          : null,
       httpsEnabled: savedHttpsEnabled,
       httpsCertPath: savedHttpsCertPath,
       httpsKeyPath: savedHttpsKeyPath,
@@ -285,6 +297,19 @@ class ServerNotifier extends Notifier<ServerState> {
     await prefs.setString('operation_mode',
         mode == OperationMode.downloadOnly ? 'downloadOnly' : 'normal');
     state = state.copyWith(operationMode: mode);
+  }
+
+  /// #285: 直接アップロード上限 (MB) を設定して永続化。
+  /// null / 0 以下は無制限として扱う。
+  Future<void> setMaxUploadMB(int? mb) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mb == null || mb <= 0) {
+      await prefs.remove('max_upload_mb');
+      state = state.copyWith(clearMaxUploadMB: true);
+    } else {
+      await prefs.setInt('max_upload_mb', mb);
+      state = state.copyWith(maxUploadMB: mb);
+    }
   }
 
   /// 認証モードを変更して永続化
@@ -361,6 +386,9 @@ class ServerNotifier extends Notifier<ServerState> {
         httpsCertPath: state.httpsCertPath,
         httpsKeyPath: state.httpsKeyPath,
         httpsHostname: state.httpsHostname,
+        maxUploadBytes: (state.maxUploadMB != null && state.maxUploadMB! > 0)
+            ? state.maxUploadMB! * 1024 * 1024
+            : null,
       );
 
       state = state.copyWith(
@@ -549,6 +577,7 @@ class ServerNotifier extends Notifier<ServerState> {
     await prefs.remove('https_cert_path');
     await prefs.remove('https_key_path');
     await prefs.remove('https_hostname');
+    await prefs.remove('max_upload_mb'); // #285
     await prefs.remove('saf_directory_uri');
     await prefs.remove('selected_directory_path');
     // ServerService の in-memory フォルダ状態もリセットしデフォルトに戻す
@@ -562,6 +591,7 @@ class ServerNotifier extends Notifier<ServerState> {
       clearHttpsHostname: true,
       clearCertSanCandidates: true,
       clearResolvedHttpsIp: true,
+      clearMaxUploadMB: true, // #285
       storagePath: _serverService.displayPath ?? _serverService.documentsPath,
     );
   }
@@ -735,6 +765,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   late final TextEditingController _fixedPinController;
   late final TextEditingController _nameController;
   late final TextEditingController _hostnameController;
+  late final TextEditingController _maxUploadController;
   final ScrollController _scrollController = ScrollController();
   ProviderSubscription<ServerState>? _hostnameSubscription;
 
@@ -745,6 +776,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _fixedPinController = TextEditingController();
     _nameController = TextEditingController(text: 'LocalNode');
     _hostnameController = TextEditingController();
+    _maxUploadController = TextEditingController();
     // IP選択時の逆引きDNS結果をホスト名コントローラに反映
     _hostnameSubscription = ref.listenManual<ServerState>(
       serverNotifierProvider,
@@ -768,6 +800,8 @@ class _HomePageState extends ConsumerState<HomePage> {
             _fixedPinController.text = state.fixedPin!;
           }
           _nameController.text = state.serverName;
+          _maxUploadController.text =
+              state.maxUploadMB != null ? state.maxUploadMB.toString() : '';
           if (state.httpsHostname != null) {
             _hostnameController.text = state.httpsHostname!;
           }
@@ -783,6 +817,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _fixedPinController.dispose();
     _nameController.dispose();
     _hostnameController.dispose();
+    _maxUploadController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -1125,6 +1160,40 @@ class _HomePageState extends ConsumerState<HomePage> {
           },
         ),
 
+        // #285: アップロードサイズ上限
+        const SizedBox(height: 20),
+        const Text('アップロード上限', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            SizedBox(
+              width: 120,
+              child: TextField(
+                controller: _maxUploadController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'MB',
+                  hintText: '無制限',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (value) {
+                  final mb = int.tryParse(value.trim());
+                  notifier.setMaxUploadMB(mb);
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                '空欄で無制限。1ファイルあたりの最大サイズ。',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+          ],
+        ),
+
         // 認証モード選択
         const SizedBox(height: 20),
         const Text('認証モード', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -1288,6 +1357,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               _portController.text = '8080';
               _fixedPinController.clear();
               _hostnameController.clear();
+              _maxUploadController.clear();
             }
           },
         ),
