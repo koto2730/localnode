@@ -2030,6 +2030,9 @@ class ServerService {
       _httpsKeyPath = httpsKeyPath;
       _httpsHostname = null; // CLI経由ではホスト名指定なし
       _httpsEnabled = isHttpsMode; // #6
+      // 注: cli_runner は現状 HTTPS 未対応 (httpsCert/Key は常に null, #98)。
+      //     将来 #98 で HTTPS + 証明書ホスト名を配線する際は、cert の SAN を
+      //     _allowedHosts に加えないと Host ガードで 421 になる点に注意。
       await _buildAllowedHosts(ipAddress); // #258
 
       final staticHandler =
@@ -2313,7 +2316,8 @@ class ServerService {
     return s.isEmpty ? null : s;
   }
 
-  // #265: セッション Cookie または Bearer が有効なリクエストか判定。
+  // #265: 有効なセッション Cookie を持つリクエストか判定。
+  // GUI サーバは CLI と違い Bearer/upload-token 認証を持たないため Cookie のみ見る。
   bool _isAuthenticatedRequest(Request request) {
     if (_authMode == AuthMode.noPin) return true;
     final cookie = request.headers['cookie'] ?? '';
