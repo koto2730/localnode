@@ -80,7 +80,16 @@ class ServerService {
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
   static final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
   String? _pin;
-  final Set<String> _sessions = {};
+  // #261: セッショントークン -> 失効エポックミリ秒。TTL 超過で無効化する。
+  final Map<String, int> _sessions = {};
+  static const Duration _sessionTtl = Duration(hours: 24);
+  static const int _maxNoPinSessions = 1000;
+  // #258: DNS rebinding 対策で許可する Host 値（IP / localhost）。空なら無効。
+  Set<String> _allowedHosts = {};
+  // #6: TLS 有効時のみ Set-Cookie に Secure 属性を付ける。
+  bool _httpsEnabled = false;
+  // #285: 直接アップロードの上限バイト数（null = 無制限）。ストレージ枯渇 DoS 対策。
+  int? _maxUploadBytes;
   OperationMode _operationMode = OperationMode.normal;
   AuthMode _authMode = AuthMode.randomPin;
   bool _verboseLogging = false;
@@ -313,6 +322,7 @@ class ServerService {
       if (!await _thumbnailCacheDir!.exists()) {
         await _thumbnailCacheDir!.create(recursive: true);
       }
+      _chmodDir(_thumbnailCacheDir!); // #269: 共有 temp のデスクトップ環境向けに 700 制限
     }
   }
 
@@ -330,6 +340,7 @@ class ServerService {
       await _webRootDir!.delete(recursive: true);
     }
     await _webRootDir!.create(recursive: true);
+    _chmodDir(_webRootDir!); // #269
 
     try {
       // index.htmlを直接読み込んで一時ディレクトリにコピーする
@@ -358,11 +369,11 @@ class ServerService {
   Future<Response> _authHandler(Request request) async {
     // PINなしモードでは自動認証
     if (_authMode == AuthMode.noPin) {
-      final token = _generateSessionToken();
-      _sessions.add(token);
-      final cookie = 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict';
-      return Response.ok(json.encode({'status': 'success'}),
-          headers: {'Content-Type': 'application/json', 'Set-Cookie': cookie});
+      final token = _issueSession();
+      return Response.ok(json.encode({'status': 'success'}), headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': _buildSessionCookie(token),
+      });
     }
 
     // クライアントIPを取得
@@ -382,25 +393,22 @@ class ServerService {
     final body = await request.readAsString();
     try {
       final params = json.decode(body) as Map<String, dynamic>;
-      final submittedPin = params['pin'];
+      final submittedPin = params['pin'] as String? ?? '';
 
-      if (submittedPin == _pin) {
+      // #260: 定数時間比較でタイミング攻撃を防ぐ
+      if (_pin != null && _constantTimeEquals(submittedPin, _pin!)) {
         // 認証成功: 失敗カウントをリセット
         _failedAttempts.remove(clientIp);
         _lockoutUntil.remove(clientIp);
 
-        final token = _generateSessionToken();
-        _sessions.add(token);
+        final token = _issueSession();
 
         _log('Auth success. Active sessions: ${_sessions.length}');
 
-        final cookie = 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict';
-        final headers = {
+        return Response.ok(json.encode({'status': 'success'}), headers: {
           'Content-Type': 'application/json',
-          'Set-Cookie': cookie,
-        };
-
-        return Response.ok(json.encode({'status': 'success'}), headers: headers);
+          'Set-Cookie': _buildSessionCookie(token),
+        });
       } else {
         // 認証失敗: 失敗カウントを増加
         final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
@@ -465,13 +473,15 @@ class ServerService {
       'authMode': _authMode == AuthMode.fixedPin ? 'fixedPin' : _authMode == AuthMode.noPin ? 'noPin' : 'randomPin',
       'requiresAuth': _authMode != AuthMode.noPin,
       'clipboardEnabled': _clipboardEnabled,
-      // #218: federation 識別子
-      'deviceId': _deviceId,
       // #206: Web UI が PIN 入力モードを切り替えるためのヒント。
       // GUI アプリは現状デフォルト固定 (CLI が --pin-length / --pin-charset を持つ)
       'pinCharset': 'digits',
       'pinLength': 4,
     };
+    // #265: 端末識別子は認証済みリクエストにのみ返す（未認証への情報漏洩を防ぐ）。
+    if (_isAuthenticatedRequest(request)) {
+      info['deviceId'] = _deviceId;
+    }
     return Response.ok(json.encode(info),
         headers: {'Content-Type': 'application/json'});
   }
@@ -600,8 +610,26 @@ class ServerService {
     if (encodedFilename == null || encodedFilename.isEmpty) {
       return Response.badRequest(body: 'x-filename header is required.');
     }
-    final filename = Uri.decodeComponent(encodedFilename);
-    final sanitizedFilename = p.basename(filename);
+    final rawName = p.basename(Uri.decodeComponent(encodedFilename));
+    // #263: null バイト/制御文字を含む名前はサニタイズ前に拒否
+    if (rawName.codeUnits.any((c) => c < 32 || c == 127)) {
+      return Response.badRequest(body: 'Invalid filename.');
+    }
+    final sanitizedFilename = _sanitizeFilename(rawName);
+    if (sanitizedFilename == null) {
+      return Response.badRequest(body: 'Invalid filename.');
+    }
+
+    // #285: 直接アップロードのサイズ上限。content-length で早期に弾く
+    // （ヘッダを詐称された場合はストリーム中でも打ち切る）。
+    final maxBytes = _maxUploadBytes;
+    if (maxBytes != null) {
+      final clHeader = request.headers['content-length'];
+      final cl = clHeader != null ? int.tryParse(clHeader) : null;
+      if (cl != null && cl > maxBytes) {
+        return _tooLargeResponse(maxBytes);
+      }
+    }
 
     final relPath = request.requestedUri.queryParameters['path'] ?? '';
 
@@ -614,7 +642,13 @@ class ServerService {
             body: 'Subfolder upload is not supported on Android SAF.');
       }
       try {
-        final bytes = await request.read().fold<List<int>>([], (prev, chunk) => prev..addAll(chunk));
+        final bytes = <int>[];
+        await for (final chunk in request.read()) {
+          bytes.addAll(chunk);
+          if (maxBytes != null && bytes.length > maxBytes) {
+            return _tooLargeResponse(maxBytes); // #285
+          }
+        }
         final mimeType = _getMimeType(sanitizedFilename);
 
         final String? newFileUri = await _safPlatform.invokeMethod('createFile', {
@@ -668,6 +702,14 @@ class ServerService {
         int totalBytes = 0;
         await for (final chunk in request.read()) {
           totalBytes += chunk.length;
+          // #285: content-length を詐称されても書き込み途中で打ち切る
+          if (maxBytes != null && totalBytes > maxBytes) {
+            await sink.close();
+            try {
+              await file.delete();
+            } catch (_) {}
+            return _tooLargeResponse(maxBytes);
+          }
           sink.add(chunk);
         }
         await sink.close();
@@ -679,6 +721,17 @@ class ServerService {
         return Response.internalServerError(body: 'Failed to save file: $e');
       }
     }
+  }
+
+  // #285: アップロード上限超過の 413 応答。Web UI は status===413 を見て
+  // 専用メッセージを表示する（#262）。
+  Response _tooLargeResponse(int maxBytes) {
+    return Response(413,
+        body: json.encode({
+          'error': 'too-large',
+          'message': 'Upload exceeds server limit of $maxBytes bytes.',
+        }),
+        headers: {'Content-Type': 'application/json'});
   }
 
   Future<File> _getUniqueFilePath(Directory dir, String filename) async {
@@ -986,6 +1039,7 @@ class ServerService {
       }
 
       await cacheFile.writeAsBytes(thumbnailBytes);
+      _chmodFile(cacheFile); // #269
 
       return Response.ok(thumbnailBytes, headers: {'Content-Type': 'image/jpeg'});
 
@@ -1788,7 +1842,6 @@ class ServerService {
       }
 
       final cookieHeader = request.headers['cookie'];
-      _log('Auth middleware: Received cookie header: $cookieHeader');
       String? token;
 
       if (cookieHeader != null) {
@@ -1805,10 +1858,11 @@ class ServerService {
         }
       }
 
-      _log('Auth middleware: Parsed token: $token');
+      // #282: verbose ログでもトークン全体は出さない（漏洩でセッション乗っ取り可能なため）
+      _log('Auth middleware: session token ${token == null ? 'absent' : 'present'}');
 
-      // トークンを検証
-      if (token != null && _sessions.contains(token)) {
+      // #261: トークンを TTL 込みで検証
+      if (token != null && _isValidSession(token)) {
         return innerHandler(request); // 認証成功
       }
 
@@ -1839,13 +1893,16 @@ class ServerService {
     }
 
     // サムネイルキャッシュディレクトリの初期化
+    // #264/#269/#271: 共有 /tmp では固定名だと symlink poisoning / 情報漏洩の恐れ。
+    // PID + OS ランダムサフィックスで分離し 700 に制限、死んだ PID の残骸は掃除する。
     final tempPath = Platform.environment['TMPDIR'] ??
         Platform.environment['TEMP'] ??
         '/tmp';
-    _thumbnailCacheDir = Directory(p.join(tempPath, 'localnode_thumbnails'));
-    if (!await _thumbnailCacheDir!.exists()) {
-      await _thumbnailCacheDir!.create(recursive: true);
-    }
+    const thumbPrefix = 'localnode_thumbnails_';
+    _reapStaleWebDirs(Directory(tempPath), thumbPrefix);
+    _thumbnailCacheDir =
+        await Directory(tempPath).createTemp('$thumbPrefix${pid}_');
+    _chmodDir(_thumbnailCacheDir!);
   }
 
   /// CLI用のアセット展開（Flutterプラグインを使用しない）
@@ -1863,6 +1920,7 @@ class ServerService {
       await _webRootDir!.delete(recursive: true);
     }
     await _webRootDir!.create(recursive: true);
+    _chmodDir(_webRootDir!); // #269
 
     // CLIモードでは実行ファイルのバンドル/ディレクトリからassetsを探索
     final executablePath = Platform.resolvedExecutable;
@@ -1971,12 +2029,20 @@ class ServerService {
       _httpsCertPath = httpsCertPath;
       _httpsKeyPath = httpsKeyPath;
       _httpsHostname = null; // CLI経由ではホスト名指定なし
+      _httpsEnabled = isHttpsMode; // #6
+      // 注: cli_runner は現状 HTTPS 未対応 (httpsCert/Key は常に null, #98)。
+      //     将来 #98 で HTTPS + 証明書ホスト名を配線する際は、cert の SAN を
+      //     _allowedHosts に加えないと Host ガードで 421 になる点に注意。
+      await _buildAllowedHosts(ipAddress); // #258
 
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
-      final apiHandler =
-          const Pipeline().addMiddleware(_federationLoopGuard).addMiddleware(_authMiddleware).addHandler(_router.call);
+      final apiHandler = const Pipeline()
+          .addMiddleware(_hostGuardMiddleware) // #258
+          .addMiddleware(_federationLoopGuard)
+          .addMiddleware(_authMiddleware)
+          .addHandler(_router.call);
 
       final cascade = Cascade().add(apiHandler).add(staticHandler);
 
@@ -2014,6 +2080,7 @@ class ServerService {
     String? httpsCertPath,
     String? httpsKeyPath,
     String? httpsHostname,
+    int? maxUploadBytes,
   }) async {
     if (_server != null) return;
 
@@ -2021,6 +2088,7 @@ class ServerService {
 
     _operationMode = operationMode;
     _authMode = authMode;
+    _maxUploadBytes = maxUploadBytes; // #285
     _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
 
     // 認証モードに応じたPIN設定
@@ -2052,12 +2120,17 @@ class ServerService {
       _httpsCertPath = httpsCertPath;
       _httpsKeyPath = httpsKeyPath;
       _httpsHostname = httpsHostname;
+      _httpsEnabled = isHttpsMode; // #6
+      await _buildAllowedHosts(ipAddress); // #258
 
       final staticHandler =
           createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
 
-      final apiHandler =
-          const Pipeline().addMiddleware(_federationLoopGuard).addMiddleware(_authMiddleware).addHandler(_router.call);
+      final apiHandler = const Pipeline()
+          .addMiddleware(_hostGuardMiddleware) // #258
+          .addMiddleware(_federationLoopGuard)
+          .addMiddleware(_authMiddleware)
+          .addHandler(_router.call);
 
       final cascade = Cascade().add(apiHandler).add(staticHandler);
 
@@ -2090,6 +2163,9 @@ class ServerService {
     _httpsCertPath = null;
     _httpsKeyPath = null;
     _httpsHostname = null;
+    _httpsEnabled = false;
+    _allowedHosts = {};
+    _maxUploadBytes = null;
     _ipAddress = null;
     _port = null;
     _pin = null;
@@ -2124,7 +2200,8 @@ class ServerService {
       if (entry is! Directory) continue;
       final name = p.basename(entry.path);
       if (!name.startsWith(prefix)) continue;
-      final pidStr = name.substring(prefix.length);
+      // <prefix><pid> と <prefix><pid>_<random> (createTemp) の両形式に対応
+      final pidStr = name.substring(prefix.length).split('_').first;
       final otherPid = int.tryParse(pidStr);
       if (otherPid == null || otherPid == myPid) continue;
       if (_isProcessAlive(otherPid)) continue;
@@ -2159,6 +2236,139 @@ class ServerService {
     } catch (_) {
       return true;
     }
+  }
+
+  // #269: Unix のみ、ディレクトリ/ファイルのパーミッションを制限。
+  // モバイル (Android/iOS) は temp が app サンドボックス内なので不要 & chmod 不可。
+  void _chmodDir(Directory dir) {
+    if (Platform.isWindows || Platform.isAndroid || Platform.isIOS) return;
+    try {
+      Process.runSync('chmod', ['700', dir.path], runInShell: false);
+    } catch (_) {}
+  }
+
+  void _chmodFile(File file) {
+    if (Platform.isWindows || Platform.isAndroid || Platform.isIOS) return;
+    try {
+      Process.runSync('chmod', ['600', file.path], runInShell: false);
+    } catch (_) {}
+  }
+
+  // #261: セッションの有効性を TTL 込みで判定。失効していたら破棄して false。
+  bool _isValidSession(String token) {
+    final expiry = _sessions[token];
+    if (expiry == null) return false;
+    if (DateTime.now().millisecondsSinceEpoch > expiry) {
+      _sessions.remove(token);
+      return false;
+    }
+    return true;
+  }
+
+  void _pruneExpiredSessions() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _sessions.removeWhere((_, expiry) => expiry < now);
+  }
+
+  // #261: 新しいセッションを発行して失効時刻付きで登録。
+  // no-pin モードは上限を設けて最古から追い出し、メモリ枯渇を防ぐ。
+  String _issueSession() {
+    final token = _generateSessionToken();
+    if (_authMode == AuthMode.noPin) {
+      _pruneExpiredSessions();
+      if (_sessions.length >= _maxNoPinSessions) {
+        final oldest =
+            _sessions.entries.reduce((a, b) => a.value < b.value ? a : b);
+        _sessions.remove(oldest.key);
+      }
+    }
+    _sessions[token] =
+        DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
+    return token;
+  }
+
+  // #6: 認証モードと TLS 状態に応じた Set-Cookie 値を組み立てる。
+  String _buildSessionCookie(String token) {
+    return 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict'
+        '${_httpsEnabled ? '; Secure' : ''}';
+  }
+
+  // #260: タイミング攻撃を防ぐ定数時間文字列比較。
+  bool _constantTimeEquals(String a, String b) {
+    if (a.length != b.length) return false;
+    var result = 0;
+    for (var i = 0; i < a.length; i++) {
+      result |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+    }
+    return result == 0;
+  }
+
+  // #263: アップロードファイル名のサニタイズ。空になった場合は null を返す。
+  String? _sanitizeFilename(String name) {
+    var s = name.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '');
+    s = s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    s = s.replaceAll(RegExp(r'^[.\s]+|[.\s]+$'), '');
+    if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..+)?$',
+            caseSensitive: false)
+        .hasMatch(s)) {
+      s = '_$s';
+    }
+    return s.isEmpty ? null : s;
+  }
+
+  // #265: 有効なセッション Cookie を持つリクエストか判定。
+  // GUI サーバは CLI と違い Bearer/upload-token 認証を持たないため Cookie のみ見る。
+  bool _isAuthenticatedRequest(Request request) {
+    if (_authMode == AuthMode.noPin) return true;
+    final cookie = request.headers['cookie'] ?? '';
+    for (final c in cookie.split(';')) {
+      final t = c.trim();
+      if (t.startsWith('localnode_session=')) {
+        final token = t.substring(t.indexOf('=') + 1);
+        if (_isValidSession(token)) return true;
+      }
+    }
+    return false;
+  }
+
+  // #258: DNS rebinding 対策 — Host ヘッダが既知の IP/localhost と一致しなければ拒否。
+  Middleware get _hostGuardMiddleware => (inner) {
+        return (req) {
+          if (_allowedHosts.isEmpty) return inner(req);
+          final host = req.headers['host'];
+          // #275: Host 欠落は fail-closed（正規クライアントは必ず付与する）。
+          if (host == null) {
+            return Response(421,
+                body: 'Missing Host header',
+                headers: {'Content-Type': 'text/plain'});
+          }
+          final hostWithoutPort = host.replaceFirst(RegExp(r':\d+$'), '');
+          if (!_allowedHosts.contains(hostWithoutPort)) {
+            return Response(421,
+                body: 'Misdirected Request',
+                headers: {'Content-Type': 'text/plain'});
+          }
+          return inner(req);
+        };
+      };
+
+  // #258: 起動時に許可 Host 集合を構築（localhost + 広告 IP + 全 IPv4 NIC）。
+  Future<void> _buildAllowedHosts(String ipAddress) async {
+    _allowedHosts = {'localhost', '127.0.0.1', ipAddress};
+    // HTTPS 証明書のホスト名でアクセスする場合も許可（#275）。
+    if (_httpsHostname != null && _httpsHostname!.isNotEmpty) {
+      _allowedHosts.add(_httpsHostname!);
+    }
+    try {
+      final ifaces = await NetworkInterface.list(includeLoopback: true);
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          if (addr.type == InternetAddressType.IPv4) {
+            _allowedHosts.add(addr.address);
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   // SAF ディレクトリを選択するメソッド

@@ -221,7 +221,9 @@ children:
 | `@to <child\|all> <message>` | Post a message to one or all children |
 | `@run_to <child> <alias>` | Run a `@run` alias on the child; result returns to parent clipboard |
 
-> **Note**: Mention commands (`@run`, `@run_to`, etc.) can only be triggered from a browser session. Requests authenticated via Bearer token (e.g. `curl`) cannot execute mentions.
+> **Note**: Mention commands typed into the clipboard (`@run`, `@run_to`, etc.) are executed only when the clipboard item is posted from an authenticated **browser session**. Clipboard posts authenticated via Bearer token (e.g. `curl`, or forwarded federation items) do **not** execute mentions.
+>
+> **Exception (federation `@run_to`)**: a parent invokes a child's `@run` alias through the dedicated `GET /api/run/<alias>` endpoint, which **is** reachable with the child's Bearer token by design. This means a leaked Bearer token can invoke any `@run` alias registered on that node (it cannot run arbitrary commands — only the pre-registered `--mention-action` scripts). Treat the token accordingly.
 
 ## Platform Support
 
