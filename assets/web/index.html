@@ -759,6 +759,18 @@
             color: rgba(255,255,255,0.5);
             font-size: 0.75rem;
         }
+        /* #280: モバイルでは左右中央の ‹ › が画像に重なって押しづらいので、
+           画像の上（左上）にまとめて出す。close は右上のまま。 */
+        @media (max-width: 600px) {
+            .lightbox-nav {
+                top: 1rem;
+                transform: none;
+                font-size: 1.8rem;
+                padding: 0.3rem 0.9rem;
+            }
+            #lightbox-prev { left: 1rem; right: auto; }
+            #lightbox-next { left: 4.75rem; right: auto; }
+        }
 
         /* 比較ビュー */
         #video-player-overlay {
@@ -1454,7 +1466,10 @@
             };
 
             // 全ファイルダウンロード処理（現在フォルダのみ）
-            downloadAllBtn.addEventListener('click', () => {
+            downloadAllBtn.addEventListener('click', (e) => {
+                // #205: zip 生成は重いので連打で多重リクエストにならないよう
+                // 少し長めのクールダウンを掛ける。
+                if (!disableWithCooldown(e.currentTarget, 3000)) return;
                 const url = currentPath
                     ? `/api/download-all?path=${encodeURIComponent(currentPath)}`
                     : '/api/download-all';
@@ -1523,7 +1538,19 @@
                 }
             });
 
-            window.downloadFile = async (id, filename) => {
+            // #205: 大きい/多数のファイルで DL ボタンを連打すると多重ダウンロードに
+            // なるのを防ぐ。クリック直後にボタンを無効化し、一定時間後に戻す。
+            const disableWithCooldown = (btn, ms = 1200) => {
+                if (!btn) return true;
+                if (btn.disabled) return false;
+                btn.disabled = true;
+                setTimeout(() => { btn.disabled = false; }, ms);
+                return true;
+            };
+
+            window.downloadFile = async (id, filename, btn) => {
+                // #205: 連打ガード（既に押下中なら無視）
+                if (!disableWithCooldown(btn)) return;
                 // #201: 直接 anchor 起動だとセッション期限切れ時に 401 JSON が
                 // ダウンロードされてしまうので、事前に check-auth で確認する。
                 try {
@@ -1919,25 +1946,33 @@
             });
 
             // #198: @file:<relpath> をサムネイル/チップに変換（メッセージあたり最大5個）
+            // #210: @path:<relfolder> をフォルダチップに変換（クリックでそのフォルダへ移動）。
+            //       サムネイル不要なので SAF (#209) など backend を問わず動く。file と枠を共有。
             const renderClipboardText = (text) => {
                 const MAX_FILES = 5;
                 const IMAGE_EXTS_FOR_FILE = new Set(['png','jpg','jpeg','gif','webp','bmp']);
                 let fileCount = 0;
                 const parts = [];
                 let lastIndex = 0;
-                const re = /@file:(\S+)/g;
+                const re = /@(file|path):(\S+)/g;
                 let m;
                 while ((m = re.exec(text)) !== null) {
                     if (m.index > lastIndex) {
                         parts.push(escapeHtml(text.substring(lastIndex, m.index)));
                     }
-                    const path = m[1];
+                    const marker = m[1];
+                    const path = m[2];
                     const invalid = path.includes('..') ||
                         path.startsWith('/') ||
                         path.startsWith('\\') ||
                         path.includes(':');
                     if (invalid || fileCount >= MAX_FILES) {
                         parts.push(escapeHtml(m[0]));
+                    } else if (marker === 'path') {
+                        // #210: フォルダチップ。data-folder はそのフォルダ自身。
+                        fileCount++;
+                        const folderAttr = escapeHtml(path);
+                        parts.push(`<span class="clipboard-file-chip" data-folder="${folderAttr}" title="${escapeHtml(path)}">📂 ${escapeHtml(path)}</span>`);
                     } else {
                         fileCount++;
                         const slash = path.lastIndexOf('/');
@@ -2295,7 +2330,7 @@
                         const dlBtn = document.createElement('button');
                         dlBtn.className = 'btn-download';
                         dlBtn.textContent = 'DL';
-                        dlBtn.addEventListener('click', () => downloadFile(item.id, item.name));
+                        dlBtn.addEventListener('click', () => downloadFile(item.id, item.name, dlBtn));
                         tdActions.appendChild(dlBtn);
                         if (!isDownloadOnly) {
                             const delBtn = document.createElement('button');
@@ -2475,9 +2510,9 @@
 
             document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
             lightboxEl.addEventListener('click', (e) => { if (e.target === lightboxEl) closeLightbox(); });
-            document.getElementById('lightbox-save').addEventListener('click', () => {
+            document.getElementById('lightbox-save').addEventListener('click', (e) => {
                 const item = lightboxImageList[lightboxIndex];
-                if (item) downloadFile(item.id, item.name);
+                if (item) downloadFile(item.id, item.name, e.currentTarget);
             });
 
             // #189: 動画プレイヤー
@@ -2507,9 +2542,9 @@
             videoPlayerOverlay.addEventListener('click', (e) => {
                 if (e.target === videoPlayerOverlay) closeVideoPlayer();
             });
-            document.getElementById('video-player-download').addEventListener('click', () => {
+            document.getElementById('video-player-download').addEventListener('click', (e) => {
                 if (videoPlayerState.id && videoPlayerState.name) {
-                    downloadFile(videoPlayerState.id, videoPlayerState.name);
+                    downloadFile(videoPlayerState.id, videoPlayerState.name, e.currentTarget);
                 }
             });
 
@@ -2573,9 +2608,9 @@
             });
             document.getElementById('text-preview-reload').addEventListener('click', loadTextPreview);
             textPreviewMode.addEventListener('change', loadTextPreview);
-            document.getElementById('text-preview-download').addEventListener('click', () => {
+            document.getElementById('text-preview-download').addEventListener('click', (e) => {
                 if (textPreviewState.id && textPreviewState.name) {
-                    downloadFile(textPreviewState.id, textPreviewState.name);
+                    downloadFile(textPreviewState.id, textPreviewState.name, e.currentTarget);
                 }
             });
 
