@@ -1106,30 +1106,19 @@ class ServerService {
   //       (#244 review)
   //       - 末尾でマルチバイト境界をまたいだだけの偽陰性は最大 3 バイト
   //         までトリムして再試行することで吸収する。
-  //       - SAF 経路は現状の readFile が「全ファイル読み」のため、
-  //         巨大ファイルに到達する前にサイズを問い合わせ、5MB を超える
-  //         なら sniff 自体スキップして not-text 扱いで返す
-  //         (preview の maxFullBytes と整合)。巨大バイナリで「TXT として
-  //         開く」誤クリックされても OOM やハングに至らないためのガード。
-  //         本物の範囲読み実装は別 issue (1.7.0+) に切り出す。
+  //       - #245: SAF 経路も範囲読み (readFileRange) で先頭 8KB だけ取得する。
+  //         以前は readFile が「全ファイル読み」だったため 5MB のサイズ上限で
+  //         ガードしていたが、範囲読みなら sniff はファイルサイズに依存しない。
+  //         (実プレビュー側の maxFullBytes 上限は従来どおり有効)
   Future<bool> _sniffTextLike(String decoded) async {
     try {
       const sniffBytes = 8 * 1024;
-      const maxFullBytes = 5 * 1024 * 1024;
       Uint8List buf;
       if (Platform.isAndroid && _safDirectoryUri != null) {
-        try {
-          final size = await _safPlatform
-              .invokeMethod<int>('getFileSize', {'uri': decoded});
-          if (size != null && size > maxFullBytes) return false;
-        } catch (_) {
-          // size 取得失敗時は readFile に委ねる (compatibility)
-        }
-        final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
+        final bytes = await _safPlatform.invokeMethod(
+            'readFileRange', {'uri': decoded, 'offset': 0, 'length': sniffBytes});
         if (bytes == null) return false;
-        final all = bytes as Uint8List;
-        final n = all.length < sniffBytes ? all.length : sniffBytes;
-        buf = Uint8List.sublistView(all, 0, n);
+        buf = bytes as Uint8List;
       } else {
         final file = File(decoded);
         final raf = await file.open();

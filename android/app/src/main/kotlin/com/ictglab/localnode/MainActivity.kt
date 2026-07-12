@@ -148,24 +148,48 @@ class MainActivity: FlutterActivity() {
                         result.error("READ_FAILED", "Failed to read file: ${e.message}", null)
                     }
                 }
-                "getFileSize" -> {
-                    // #244 review: sniff の前にサイズだけ問い合わせるため。
-                    // 巨大ファイルで readFile (= 全読み) に到達させない。
+                "readFileRange" -> {
+                    // #245: 先頭 N バイトだけ読む範囲読み。text-preview の sniff が
+                    // 全ファイル読み (readFile) を経由しないようにするため。
+                    // POSIX 側の RandomAccessFile.read(n) と対称。
                     val uriString = call.argument<String>("uri")
+                    val offset = (call.argument<Number>("offset") ?: 0).toLong()
+                    val length = (call.argument<Number>("length") ?: 0).toInt()
                     if (uriString == null) {
                         result.error("ARGUMENT_ERROR", "URI is required.", null)
                         return@setMethodCallHandler
                     }
+                    if (offset < 0 || length <= 0) {
+                        result.error("ARGUMENT_ERROR", "offset must be >= 0 and length > 0.", null)
+                        return@setMethodCallHandler
+                    }
+
                     try {
                         val fileUri = Uri.parse(uriString)
-                        val df = DocumentFile.fromSingleUri(context, fileUri)
-                        if (df == null || !df.exists()) {
-                            result.error("FILE_NOT_FOUND", "File not found.", null)
-                            return@setMethodCallHandler
-                        }
-                        result.success(df.length())
+                        context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+                            // offset まで読み飛ばす (skip は要求量より少なく進むことがある)
+                            var skipped = 0L
+                            while (skipped < offset) {
+                                val n = inputStream.skip(offset - skipped)
+                                if (n <= 0) break
+                                skipped += n
+                            }
+                            if (skipped < offset) {
+                                // offset がファイル末尾を超えている -> 空を返す
+                                result.success(ByteArray(0))
+                                return@use
+                            }
+                            val buf = ByteArray(length)
+                            var read = 0
+                            while (read < length) {
+                                val n = inputStream.read(buf, read, length - read)
+                                if (n < 0) break // EOF
+                                read += n
+                            }
+                            result.success(if (read == length) buf else buf.copyOf(read))
+                        } ?: result.error("READ_FAILED", "Failed to open input stream.", null)
                     } catch (e: Exception) {
-                        result.error("SIZE_FAILED", "Failed to get size: ${e.message}", null)
+                        result.error("READ_FAILED", "Failed to read range: ${e.message}", null)
                     }
                 }
                 "resolvePath" -> {
