@@ -10,6 +10,7 @@ import 'package:localnode/server_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 
 // サーバーの状態を表すenum
@@ -1704,8 +1705,63 @@ class _HomePageState extends ConsumerState<HomePage> {
                   },
                 ),
               ),
+
+            // #239: 検索 / タグフィルタ / ページングは Web UI 側に集約する。
+            // アプリ内で二重実装せず、ブラウザで開いてもらう導線を置く。
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                icon: const Icon(Icons.open_in_new, size: 18),
+                label: const Text('ブラウザで開く（検索・フィルタ）'),
+                onPressed: () => _openWebUi(context),
+                style: TextButton.styleFrom(foregroundColor: Colors.teal[700]),
+              ),
+            ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// #239: サーバ自身の Web UI をブラウザで開く。
+  /// HTTP のときは localhost を使う（セキュアコンテキスト扱いなので
+  /// Web UI 側の navigator.clipboard が動く。Host ガード(#258)も許可済み）。
+  /// HTTPS のときは証明書のホスト名と一致させるため qrUrl をそのまま使う。
+  Future<void> _openWebUi(BuildContext context) async {
+    final serverState = ref.read(serverNotifierProvider);
+    final notifier = ref.read(serverNotifierProvider.notifier);
+    final port = serverState.port;
+    final target = serverState.httpsMode
+        ? notifier.qrUrl
+        : (port != null ? 'http://localhost:$port' : null);
+
+    if (target == null) {
+      _showSnack(context, 'サーバーが起動していません。', isError: true);
+      return;
+    }
+    try {
+      final ok = await launchUrl(
+        Uri.parse(target),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok && context.mounted) {
+        _showSnack(context, 'ブラウザを開けませんでした: $target', isError: true);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        _showSnack(context, 'ブラウザを開けませんでした: $e', isError: true);
+      }
+    }
+  }
+
+  void _showSnack(BuildContext context, String message, {bool isError = false}) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red : null,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
