@@ -101,7 +101,7 @@ localnode --cli [options]
 | `--pin-length` | PIN length for random generation: 8..16 (default 8) |
 | `--pin-charset` | PIN character set for random generation: `digits` (default), `alnum`, or `alnum_symbols` |
 | `--dir`, `-d` | Shared directory path |
-| `--cache-dir` | Base directory for cache/temp data (thumbnails, deployed web assets, zip staging). Default: the system temp directory (`$TMPDIR`/`$TEMP`/`/tmp`). Falls back to the system temp with a warning if the path is not writable |
+| `--cache-dir` | Base directory for cache/temp data (thumbnails, deployed web assets, zip staging). Default: the system temp directory (`$TMPDIR`/`$TEMP`/`/tmp`). Falls back to the system temp with a warning if the path is not writable. **macOS (`localnode --cli`):** the app is sandboxed, so paths outside its container are denied and it falls back to the system temp — use the standalone `localnode-cli` (Windows/Linux) if you need an arbitrary location |
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |

@@ -28,6 +28,9 @@ class CliRunner {
       ..addOption('ip', help: 'IP address to advertise (skip auto-detection)')
       ..addOption('pin', help: 'Fixed PIN (random if not specified)')
       ..addOption('dir', abbr: 'd', help: 'Shared directory path')
+      ..addOption('cache-dir',
+          help: 'Base directory for cache/temp data (thumbnails, web assets, '
+              'zip staging). Default: the system temp directory')
       ..addOption('mode',
           abbr: 'm',
           help: 'Operation mode (normal/download-only)',
@@ -78,6 +81,7 @@ class CliRunner {
     final fixedPin = results['pin'] as String?;
     final dir = results['dir'] as String?;
     final specifiedIp = results['ip'] as String?;
+    final cacheDir = results['cache-dir'] as String?; // #287
     final noClipboard = results['no-clipboard'] as bool;
     final verbose = results['verbose'] as bool;
     final serverName = results['name'] as String;
@@ -129,6 +133,7 @@ class CliRunner {
         port: port,
         fixedPin: fixedPin,
         storagePath: dir,
+        cacheDir: cacheDir, // #287
         operationMode: operationMode,
         authMode: authMode,
         verboseLogging: verbose,

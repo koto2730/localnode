@@ -78,6 +78,8 @@ class ServerService {
   String? _displayPath; // 表示用のパス
   Directory? _webRootDir; // Webルートディレクトリのパス
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
+  // #287: CLI (`localnode --cli`) の --cache-dir。null なら OS の一時ディレクトリ。
+  String? _cacheDir;
   static final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
   String? _pin;
   // #261: セッショントークン -> 失効エポックミリ秒。TTL 超過で無効化する。
@@ -1457,7 +1459,8 @@ class ServerService {
 
     // #195: ZIP を一時ファイルへストリーミングして書き出し、レスポンスとして
     // 流す。これによりサーバ側でも巨大ファイル × 多数を扱える。
-    final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
+    // #287: CLI の --cache-dir 指定時はその配下に置く（GUI では null → systemTemp）。
+    final tempDir = await _cliCacheBaseDir().createTemp('localnode_zip_');
     final zipPath = p.join(tempDir.path, 'archive.zip');
     // ステージング用サブディレクトリ (Copilot #199 review):
     // ユーザのファイル名と zip 出力名/パス・パス区切り文字の衝突を避ける
@@ -1884,21 +1887,18 @@ class ServerService {
     // サムネイルキャッシュディレクトリの初期化
     // #264/#269/#271: 共有 /tmp では固定名だと symlink poisoning / 情報漏洩の恐れ。
     // PID + OS ランダムサフィックスで分離し 700 に制限、死んだ PID の残骸は掃除する。
-    final tempPath = Platform.environment['TMPDIR'] ??
-        Platform.environment['TEMP'] ??
-        '/tmp';
+    // #287: --cache-dir 指定時はその配下に置く。
+    final cacheBase = _cliCacheBaseDir();
     const thumbPrefix = 'localnode_thumbnails_';
-    _reapStaleWebDirs(Directory(tempPath), thumbPrefix);
+    _reapStaleWebDirs(cacheBase, thumbPrefix);
     _thumbnailCacheDir =
-        await Directory(tempPath).createTemp('$thumbPrefix${pid}_');
+        await cacheBase.createTemp('$thumbPrefix${pid}_');
     _chmodDir(_thumbnailCacheDir!);
   }
 
   /// CLI用のアセット展開（Flutterプラグインを使用しない）
   Future<void> _deployAssetsCli() async {
-    final tempPath = Platform.environment['TMPDIR'] ??
-        Platform.environment['TEMP'] ??
-        '/tmp';
+    final tempPath = _cliCacheBaseDir().path; // #287
     // #242: 同ホストで他 LocalNode と共存しても上書きしないよう PID 別
     const prefix = 'localnode_web_';
     _reapStaleWebDirs(Directory(tempPath), prefix);
@@ -1977,6 +1977,7 @@ class ServerService {
     required int port,
     String? fixedPin,
     String? storagePath,
+    String? cacheDir, // #287
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     bool verboseLogging = false,
@@ -1994,6 +1995,8 @@ class ServerService {
     _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
     _operationMode = operationMode;
     _authMode = authMode;
+    _cacheDir = cacheDir; // #287
+    await _validateCacheDir(); // #287
 
     // 認証モードに応じたPIN設定
     switch (authMode) {
@@ -2155,6 +2158,7 @@ class ServerService {
     _httpsEnabled = false;
     _allowedHosts = {};
     _maxUploadBytes = null;
+    _cacheDir = null; // #287
     _ipAddress = null;
     _port = null;
     _pin = null;
@@ -2224,6 +2228,34 @@ class ServerService {
       return r.exitCode == 0;
     } catch (_) {
       return true;
+    }
+  }
+
+  // #287: CLI の --cache-dir が指定されていればそこを、なければ OS の一時
+  // ディレクトリを基点にする。GUI 経路 (startServer) は _cacheDir を設定しない
+  // ので従来どおり systemTemp / getTemporaryDirectory のまま。
+  Directory _cliCacheBaseDir() =>
+      (_cacheDir != null && _cacheDir!.isNotEmpty)
+          ? Directory(_cacheDir!)
+          : Directory.systemTemp;
+
+  // #287: --cache-dir を検証。作成できなければ警告して OS 一時ディレクトリに
+  // フォールバックする（サーバは起動し続ける）。macOS はサンドボックスにより
+  // コンテナ外パスが拒否され得るが、その場合もここでフォールバックする。
+  Future<void> _validateCacheDir() async {
+    if (_cacheDir == null || _cacheDir!.isEmpty) return;
+    final dir = Directory(_cacheDir!);
+    try {
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final probe = await dir.createTemp('localnode_cli_probe_');
+      await probe.delete();
+    } catch (e) {
+      _log('Warning: --cache-dir "$_cacheDir" is not usable ($e); '
+          'falling back to the system temp directory.');
+      // フォールバックは verbose 以外でも見えるよう stderr にも出す
+      stderr.writeln('Warning: --cache-dir "$_cacheDir" is not usable ($e); '
+          'falling back to the system temp directory.');
+      _cacheDir = null;
     }
   }
 
