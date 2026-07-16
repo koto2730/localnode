@@ -111,6 +111,8 @@ class _LoadedConfig {
   String? dir;
   String? mode;
   String? name;
+  // #287
+  String? cacheDir;
   String? httpsCert;
   String? httpsKey;
   String? token;
@@ -190,6 +192,7 @@ _LoadedConfig _loadConfig(String path) {
     cfg.pinLength = _yamlInt(server, 'pin-length');
     cfg.pinCharset = _yamlString(server, 'pin-charset');
     cfg.maxUploadSize = _yamlString(server, 'max-upload-size');
+    cfg.cacheDir = _yamlString(server, 'cache-dir');     // #287
     cfg.stateFile = _yamlString(server, 'state-file');   // #237
     cfg.pinFile = _yamlString(server, 'pin-file');       // #208
     cfg.tokenFile = _yamlString(server, 'token-file');   // #208
@@ -355,6 +358,9 @@ Future<void> main(List<String> args) async {
     stderr.writeln('Error: Directory does not exist: $dir');
     exit(1);
   }
+
+  // #287: キャッシュ/一時データの基点（CLI arg > YAML）。存在検証は起動時に行う。
+  final cacheDir = results['cache-dir'] as String? ?? cfg?.cacheDir;
 
   final specifiedIp = results.wasParsed('ip')
       ? results['ip'] as String?
@@ -644,6 +650,7 @@ Future<void> main(List<String> args) async {
       ipAddress: ipAddress,
       port: port,
       storagePath: dir,
+      cacheDir: cacheDir,           // #287
       downloadOnly: downloadOnly,
       authMode: authMode,
       fixedPin: fixedPin,
@@ -815,6 +822,9 @@ ArgParser _buildParser() {
         allowed: ['digits', 'alnum', 'alnum_symbols'],
         defaultsTo: 'digits')
     ..addOption('dir', abbr: 'd', help: 'Shared directory path')
+    ..addOption('cache-dir',
+        help: 'Base directory for cache/temp data (thumbnails, web assets, '
+            'zip staging). Default: the system temp directory')
     ..addOption('mode',
         abbr: 'm',
         help: 'Operation mode',
@@ -1469,6 +1479,8 @@ class _CliServer {
   int _startedAt = 0;
 
   String? _storagePath;
+  // #287: キャッシュ/一時データの基点。null なら OS の一時ディレクトリ。
+  String? _cacheDir;
   Directory? _webRootDir;
   Directory? _thumbnailCacheDir;
   late final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
@@ -2031,6 +2043,7 @@ class _CliServer {
     required String ipAddress,
     required int port,
     String? storagePath,
+    String? cacheDir,             // #287
     bool downloadOnly = false,
     _AuthMode authMode = _AuthMode.randomPin,
     String? fixedPin,
@@ -2056,6 +2069,7 @@ class _CliServer {
     _pinLength = pinLength;       // #206
     _pinCharset = pinCharset;     // #206
     _maxDirectUploadBytes = maxDirectUploadBytes; // #262
+    _cacheDir = cacheDir;         // #287
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -2214,6 +2228,31 @@ class _CliServer {
 
   // --- 初期化 ---
 
+  // #287: キャッシュ/一時データの基点ディレクトリ。
+  // --cache-dir 指定時はそこを、なければ OS の一時ディレクトリを使う。
+  Directory _cacheBaseDir() =>
+      (_cacheDir != null && _cacheDir!.isNotEmpty)
+          ? Directory(_cacheDir!)
+          : Directory.systemTemp;
+
+  // #287: --cache-dir を検証。作成できなければ警告して OS 一時ディレクトリに
+  // フォールバックする（サーバは起動し続ける）。
+  Future<void> _validateCacheDir() async {
+    if (_cacheDir == null || _cacheDir!.isEmpty) return;
+    final dir = Directory(_cacheDir!);
+    try {
+      if (!await dir.exists()) await dir.create(recursive: true);
+      // 書き込み可否を実際に createTemp して確認（失敗すれば catch へ）
+      final probe = await dir.createTemp('localnode_cli_probe_');
+      await probe.delete();
+    } catch (e) {
+      stderr.writeln(
+          'Warning: --cache-dir "$_cacheDir" is not usable ($e); '
+          'falling back to the system temp directory.');
+      _cacheDir = null;
+    }
+  }
+
   Future<void> _init(String? storagePath) async {
     if (storagePath != null) {
       _storagePath = storagePath;
@@ -2224,20 +2263,21 @@ class _CliServer {
     final dir = Directory(_storagePath!);
     if (!await dir.exists()) await dir.create(recursive: true);
 
+    await _validateCacheDir(); // #287
+    final cacheBase = _cacheBaseDir();
+
     // #271/#264: PID + OS ランダムサフィックスでインスタンス分離かつ symlink poisoning を防ぐ
     const thumbPrefix = 'localnode_cli_thumbnails_';
-    _reapStaleDeployDirs(Directory.systemTemp, thumbPrefix);
+    _reapStaleDeployDirs(cacheBase, thumbPrefix);
     // #264: createTemp で OS がアトミックにディレクトリを生成 → パスが推測不能
     _thumbnailCacheDir =
-        await Directory.systemTemp.createTemp('${thumbPrefix}${pid}_');
+        await cacheBase.createTemp('${thumbPrefix}${pid}_');
     // #269: 他ユーザーから読めないようにパーミッションを制限
     _chmodDir(_thumbnailCacheDir!);
   }
 
   Future<void> _deployAssets() async {
-    final tmpBase = Platform.environment['TMPDIR'] ??
-        Platform.environment['TEMP'] ??
-        '/tmp';
+    final tmpBase = _cacheBaseDir().path; // #287
     // #242: 同一ホストでの複数 LocalNode 共存を許す。
     // 固定パスだと後発の起動が先発の serving content を上書きするため
     // PID を混ぜたユニーク dir に展開する。
@@ -3306,7 +3346,8 @@ class _CliServer {
     }
 
     // #195: ZIP を一時ファイルへストリーミング書き出ししてレスポンスとして流す
-    final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
+    // #287: --cache-dir 指定時はそこに置く（zip も大きくなり得るため）
+    final tempDir = await _cacheBaseDir().createTemp('localnode_zip_');
     final zipPath = p.join(tempDir.path, 'localnode_files.zip');
     try {
       final zipEncoder = ZipFileEncoder()..create(zipPath);
