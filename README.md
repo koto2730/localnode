@@ -153,6 +153,8 @@ localnode-cli --config /etc/localnode/config.yaml
 
 > **Note (`--post-action` / `--mention-action`):** The `script` value must be a path to an executable file only — passing arguments inline (e.g. `script=./notify.sh arg1`) is not supported. For `--post-action`, the uploaded file path is automatically passed as the first argument to the script.
 >
+> When several `--post-action` patterns match the same uploaded file (e.g. `*.png=./move.sh` and `*=./notify.sh`), the matching scripts run **sequentially in the order they were registered**, not in parallel. If an earlier script moves or deletes the file, later scripts receive the original (now-missing) path — order your actions accordingly.
+>
 > ```bash
 > # Valid: executable path only; the uploaded file path is passed automatically
 > localnode-cli --post-action "*.jpg=./process-image.sh"

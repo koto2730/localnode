@@ -2950,9 +2950,18 @@ class _CliServer {
 
   void _runPostActions(String filePath) {
     final filename = p.basename(filePath);
-    for (final action in _postActions) {
-      if (!_globMatch(action.pattern, filename)) continue;
-      () async {
+    // #181: マッチするアクションを登録順に「逐次」実行する。
+    // 以前は各アクションを await せず並列起動していたため、同一ファイルに
+    // 複数マッチ（例: `*.png=move.sh` と `*=notify.sh`）した場合に実行順が
+    // 不定になり、先行アクションがファイルを移動/削除すると後続が不定に
+    // 失敗していた。1 ファイルにつき 1 本の async チェーンにまとめ、
+    // アップロード応答はブロックしない（fire-and-forget のまま）。
+    final matched = _postActions
+        .where((a) => _globMatch(a.pattern, filename))
+        .toList();
+    if (matched.isEmpty) return;
+    () async {
+      for (final action in matched) {
         try {
           final cmd = _buildCommand(action.script, [filePath]);
           final result = await Process.run(
@@ -2971,8 +2980,8 @@ class _CliServer {
         } catch (e) {
           stderr.writeln('[post-action] Failed to run "${action.script}": $e');
         }
-      }();
-    }
+      }
+    }();
   }
 
   String _buildMentionList() {
