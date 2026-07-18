@@ -661,6 +661,8 @@ class ServerService {
         });
 
         if (newFileUri != null) {
+          // #214: SAF はサブフォルダ非対応なので relPath は空。
+          _maybePostUploadClipboard(request, sanitizedFilename, '');
           return Response.ok('File uploaded successfully: $sanitizedFilename');
         } else {
           return Response.internalServerError(body: 'Failed to create file via SAF.');
@@ -716,6 +718,8 @@ class ServerService {
         }
         await sink.close();
         _log('Upload success: ${p.basename(file.path)} bytes=$totalBytes');
+        // #214: x-clipboard-text / x-clipboard-link 指定時はクリップボードにも通知
+        _maybePostUploadClipboard(request, p.basename(file.path), relPath);
         return Response.ok('File uploaded successfully: ${p.basename(file.path)}');
       } catch (e, st) {
         await sink.close();
@@ -1685,6 +1689,56 @@ class ServerService {
         body: json.encode({'error': 'Invalid request body.'}),
         headers: {'Content-Type': 'application/json'},
       );
+    }
+  }
+
+  // クリップボードに1件追加して lastModified を更新する共通処理。
+  void _appendClipboard(String text, {String? tag, bool important = false}) {
+    final item = ClipboardItem(
+      id: _generateClipboardId(),
+      text: text,
+      tag: tag,
+      createdAt: DateTime.now(),
+      important: important,
+    );
+    _clipboardItems.insert(0, item);
+    while (_clipboardItems.length > _maxClipboardItems) {
+      final evicted = _evictClipboardItem();
+      _recordDeletion(evicted.id);
+    }
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  // #214: アップロードと同時にクリップボード通知を1件投稿する。
+  // x-clipboard-text（本文）/ x-clipboard-tag（タグ）は x-filename と同様に
+  // percent-encoded で受け取り decode する。x-clipboard-link: 1 のときは本文が
+  // 無くても保存済みファイルへの @file:<relpath> マーカーを自動生成する。
+  void _maybePostUploadClipboard(
+      Request request, String savedName, String relPath) {
+    if (!_clipboardEnabled) return;
+    final text = _decodeHeader(request.headers['x-clipboard-text'])?.trim();
+    final rawTag = _decodeHeader(request.headers['x-clipboard-tag'])?.trim();
+    final link = request.headers['x-clipboard-link']?.trim();
+    final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
+
+    String? msg;
+    if (text != null && text.isNotEmpty) {
+      msg = text;
+    } else if (link == '1') {
+      final rel = relPath.isEmpty ? savedName : '$relPath/$savedName';
+      msg = '@file:$rel';
+    }
+    if (msg == null || msg.isEmpty) return;
+    if (msg.length > _maxTextLength) msg = msg.substring(0, _maxTextLength);
+    _appendClipboard(msg, tag: tag);
+  }
+
+  String? _decodeHeader(String? raw) {
+    if (raw == null) return null;
+    try {
+      return Uri.decodeComponent(raw);
+    } catch (_) {
+      return raw; // percent-encode されていない値はそのまま扱う
     }
   }
 

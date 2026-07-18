@@ -2911,6 +2911,8 @@ class _CliServer {
       if (_postActions.isNotEmpty) {
         _runPostActions(file.path);
       }
+      // #214: x-clipboard-text / x-clipboard-link 指定時はクリップボードにも通知
+      _maybePostUploadClipboard(req, file, relPath);
       // #219: 親への転送 (自分が子のとき、かつ受信が federation 由来でない場合)
       _forwardFileToParents(file, req);
       return Response.ok('File uploaded: ${p.basename(file.path)}');
@@ -3028,12 +3030,17 @@ class _CliServer {
     return lines.join('\n');
   }
 
-  void _replyToClipboard(String text) {
+  void _replyToClipboard(String text) =>
+      _appendClipboard(text, tag: 'mention-result');
+
+  // クリップボードに1件追加して lastModified を更新する共通処理。
+  void _appendClipboard(String text, {String? tag, bool important = false}) {
     final item = _ClipboardItem(
       id: _generateId(),
       text: text,
-      tag: 'mention-result',
+      tag: tag,
       createdAt: DateTime.now(),
+      important: important,
     );
     _clipboardItems.insert(0, item);
     while (_clipboardItems.length > _maxClipboardItems) {
@@ -3041,6 +3048,39 @@ class _CliServer {
       _recordDeletion(evicted.id);
     }
     _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  // #214: アップロードと同時にクリップボード通知を1件投稿する。
+  // x-clipboard-text（本文）/ x-clipboard-tag（タグ）は x-filename と同様に
+  // percent-encoded で受け取り decode する。x-clipboard-link: 1 のときは本文が
+  // 無くても保存済みファイルへの @file:<relpath> マーカーを自動生成する。
+  void _maybePostUploadClipboard(Request req, File file, String relPath) {
+    if (!_clipboardEnabled) return;
+    final text = _decodeHeader(req.headers['x-clipboard-text'])?.trim();
+    final rawTag = _decodeHeader(req.headers['x-clipboard-tag'])?.trim();
+    final link = req.headers['x-clipboard-link']?.trim();
+    final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
+
+    String? msg;
+    if (text != null && text.isNotEmpty) {
+      msg = text;
+    } else if (link == '1') {
+      final saved = p.basename(file.path);
+      final rel = relPath.isEmpty ? saved : '$relPath/$saved';
+      msg = '@file:$rel';
+    }
+    if (msg == null || msg.isEmpty) return;
+    if (msg.length > _maxTextLength) msg = msg.substring(0, _maxTextLength);
+    _appendClipboard(msg, tag: tag);
+  }
+
+  String? _decodeHeader(String? raw) {
+    if (raw == null) return null;
+    try {
+      return Uri.decodeComponent(raw);
+    } catch (_) {
+      return raw; // percent-encode されていない値はそのまま扱う
+    }
   }
 
   void _runMentionAction(String alias, String script) {

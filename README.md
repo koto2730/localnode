@@ -165,6 +165,35 @@ localnode-cli --config /etc/localnode/config.yaml
 
 To stop the server: **Ctrl+C**.
 
+#### Upload with a clipboard notification (`POST /api/upload`)
+
+A single upload request can also post a clipboard message, so an automation (e.g. a camera/watcher script) delivers a file and notifies viewers in one call. After the file is saved, these optional request headers append one clipboard item:
+
+| Header | Description |
+|--------|-------------|
+| `x-clipboard-text` | Message body. Percent-encoded (like `x-filename`), so non-ASCII text is supported. |
+| `x-clipboard-tag` | Optional tag/label for the clipboard item (like the web UI's sender name). Percent-encoded. |
+| `x-clipboard-link` | If set to `1` and `x-clipboard-text` is absent, auto-composes the body as an `@file:<relpath>/<filename>` marker pointing at the just-saved file, so it renders as a thumbnail/chip. |
+
+`x-clipboard-text` takes precedence over `x-clipboard-link`. Nothing is posted when neither is present, or when clipboard sharing is disabled (`--no-clipboard`).
+
+```bash
+# Upload and notify in one request
+curl -H "Authorization: Bearer <token>" \
+     -H "x-filename: picture1.jpg" \
+     -H "x-clipboard-text: motion%20detected" \
+     -H "x-clipboard-tag: watcher-pi" \
+     --data-binary @picture1.jpg \
+     "http://host:8080/api/upload?path=triggers"
+
+# Auto-compose an @file: chip for the uploaded file
+curl -H "Authorization: Bearer <token>" \
+     -H "x-filename: picture1.jpg" \
+     -H "x-clipboard-link: 1" \
+     --data-binary @picture1.jpg \
+     "http://host:8080/api/upload?path=triggers"
+```
+
 #### State file (federation `device_id`)
 
 For federation (parent/child pairing introduced in v1.6.0), the CLI persists a stable per-server identity to a small JSON state file. The path follows the XDG Base Directory specification on POSIX so it sits alongside other tools that already follow XDG (and gets picked up by backup tools that target XDG dirs):
