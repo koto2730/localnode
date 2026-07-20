@@ -11,6 +11,7 @@ server:
   ip: 192.168.1.100              # 省略可（自動選択）
   name: home-server              # ブラウザタブに表示する名前
   dir: /srv/share                # 共有フォルダ
+  cache-dir: /var/cache/localnode # キャッシュ/一時データ置き場 (#287)。省略時は OS の一時ディレクトリ
   pin: "1234"                    # 固定 PIN（省略するとランダム生成）
   mode: normal                   # normal / download-only
   no-pin: false                  # PIN 認証を無効化（信頼ネットワーク用）

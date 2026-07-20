@@ -78,6 +78,8 @@ class ServerService {
   String? _displayPath; // 表示用のパス
   Directory? _webRootDir; // Webルートディレクトリのパス
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
+  // #287: CLI (`localnode --cli`) の --cache-dir。null なら OS の一時ディレクトリ。
+  String? _cacheDir;
   static final Uint8List _placeholderThumbBytes = _buildPlaceholderJpeg();
   String? _pin;
   // #261: セッショントークン -> 失効エポックミリ秒。TTL 超過で無効化する。
@@ -659,6 +661,8 @@ class ServerService {
         });
 
         if (newFileUri != null) {
+          // #214: SAF はサブフォルダ非対応なので relPath は空。
+          _maybePostUploadClipboard(request, sanitizedFilename, '');
           return Response.ok('File uploaded successfully: $sanitizedFilename');
         } else {
           return Response.internalServerError(body: 'Failed to create file via SAF.');
@@ -714,6 +718,8 @@ class ServerService {
         }
         await sink.close();
         _log('Upload success: ${p.basename(file.path)} bytes=$totalBytes');
+        // #214: x-clipboard-text / x-clipboard-link 指定時はクリップボードにも通知
+        _maybePostUploadClipboard(request, p.basename(file.path), relPath);
         return Response.ok('File uploaded successfully: ${p.basename(file.path)}');
       } catch (e, st) {
         await sink.close();
@@ -1106,30 +1112,19 @@ class ServerService {
   //       (#244 review)
   //       - 末尾でマルチバイト境界をまたいだだけの偽陰性は最大 3 バイト
   //         までトリムして再試行することで吸収する。
-  //       - SAF 経路は現状の readFile が「全ファイル読み」のため、
-  //         巨大ファイルに到達する前にサイズを問い合わせ、5MB を超える
-  //         なら sniff 自体スキップして not-text 扱いで返す
-  //         (preview の maxFullBytes と整合)。巨大バイナリで「TXT として
-  //         開く」誤クリックされても OOM やハングに至らないためのガード。
-  //         本物の範囲読み実装は別 issue (1.7.0+) に切り出す。
+  //       - #245: SAF 経路も範囲読み (readFileRange) で先頭 8KB だけ取得する。
+  //         以前は readFile が「全ファイル読み」だったため 5MB のサイズ上限で
+  //         ガードしていたが、範囲読みなら sniff はファイルサイズに依存しない。
+  //         (実プレビュー側の maxFullBytes 上限は従来どおり有効)
   Future<bool> _sniffTextLike(String decoded) async {
     try {
       const sniffBytes = 8 * 1024;
-      const maxFullBytes = 5 * 1024 * 1024;
       Uint8List buf;
       if (Platform.isAndroid && _safDirectoryUri != null) {
-        try {
-          final size = await _safPlatform
-              .invokeMethod<int>('getFileSize', {'uri': decoded});
-          if (size != null && size > maxFullBytes) return false;
-        } catch (_) {
-          // size 取得失敗時は readFile に委ねる (compatibility)
-        }
-        final bytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
+        final bytes = await _safPlatform.invokeMethod(
+            'readFileRange', {'uri': decoded, 'offset': 0, 'length': sniffBytes});
         if (bytes == null) return false;
-        final all = bytes as Uint8List;
-        final n = all.length < sniffBytes ? all.length : sniffBytes;
-        buf = Uint8List.sublistView(all, 0, n);
+        buf = bytes as Uint8List;
       } else {
         final file = File(decoded);
         final raf = await file.open();
@@ -1468,7 +1463,8 @@ class ServerService {
 
     // #195: ZIP を一時ファイルへストリーミングして書き出し、レスポンスとして
     // 流す。これによりサーバ側でも巨大ファイル × 多数を扱える。
-    final tempDir = await Directory.systemTemp.createTemp('localnode_zip_');
+    // #287: CLI の --cache-dir 指定時はその配下に置く（GUI では null → systemTemp）。
+    final tempDir = await _cliCacheBaseDir().createTemp('localnode_zip_');
     final zipPath = p.join(tempDir.path, 'archive.zip');
     // ステージング用サブディレクトリ (Copilot #199 review):
     // ユーザのファイル名と zip 出力名/パス・パス区切り文字の衝突を避ける
@@ -1696,6 +1692,56 @@ class ServerService {
     }
   }
 
+  // クリップボードに1件追加して lastModified を更新する共通処理。
+  void _appendClipboard(String text, {String? tag, bool important = false}) {
+    final item = ClipboardItem(
+      id: _generateClipboardId(),
+      text: text,
+      tag: tag,
+      createdAt: DateTime.now(),
+      important: important,
+    );
+    _clipboardItems.insert(0, item);
+    while (_clipboardItems.length > _maxClipboardItems) {
+      final evicted = _evictClipboardItem();
+      _recordDeletion(evicted.id);
+    }
+    _clipboardLastModified = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  // #214: アップロードと同時にクリップボード通知を1件投稿する。
+  // x-clipboard-text（本文）/ x-clipboard-tag（タグ）は x-filename と同様に
+  // percent-encoded で受け取り decode する。x-clipboard-link: 1 のときは本文が
+  // 無くても保存済みファイルへの @file:<relpath> マーカーを自動生成する。
+  void _maybePostUploadClipboard(
+      Request request, String savedName, String relPath) {
+    if (!_clipboardEnabled) return;
+    final text = _decodeHeader(request.headers['x-clipboard-text'])?.trim();
+    final rawTag = _decodeHeader(request.headers['x-clipboard-tag'])?.trim();
+    final link = request.headers['x-clipboard-link']?.trim();
+    final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
+
+    String? msg;
+    if (text != null && text.isNotEmpty) {
+      msg = text;
+    } else if (link == '1') {
+      final rel = relPath.isEmpty ? savedName : '$relPath/$savedName';
+      msg = '@file:$rel';
+    }
+    if (msg == null || msg.isEmpty) return;
+    if (msg.length > _maxTextLength) msg = msg.substring(0, _maxTextLength);
+    _appendClipboard(msg, tag: tag);
+  }
+
+  String? _decodeHeader(String? raw) {
+    if (raw == null) return null;
+    try {
+      return Uri.decodeComponent(raw);
+    } catch (_) {
+      return raw; // percent-encode されていない値はそのまま扱う
+    }
+  }
+
   /// DELETE /api/clipboard/<id> - 個別アイテム削除
   Response _deleteClipboardItemHandler(Request request, String id) {
     final index = _clipboardItems.indexWhere((item) => item.id == id);
@@ -1895,21 +1941,18 @@ class ServerService {
     // サムネイルキャッシュディレクトリの初期化
     // #264/#269/#271: 共有 /tmp では固定名だと symlink poisoning / 情報漏洩の恐れ。
     // PID + OS ランダムサフィックスで分離し 700 に制限、死んだ PID の残骸は掃除する。
-    final tempPath = Platform.environment['TMPDIR'] ??
-        Platform.environment['TEMP'] ??
-        '/tmp';
+    // #287: --cache-dir 指定時はその配下に置く。
+    final cacheBase = _cliCacheBaseDir();
     const thumbPrefix = 'localnode_thumbnails_';
-    _reapStaleWebDirs(Directory(tempPath), thumbPrefix);
+    _reapStaleWebDirs(cacheBase, thumbPrefix);
     _thumbnailCacheDir =
-        await Directory(tempPath).createTemp('$thumbPrefix${pid}_');
+        await cacheBase.createTemp('$thumbPrefix${pid}_');
     _chmodDir(_thumbnailCacheDir!);
   }
 
   /// CLI用のアセット展開（Flutterプラグインを使用しない）
   Future<void> _deployAssetsCli() async {
-    final tempPath = Platform.environment['TMPDIR'] ??
-        Platform.environment['TEMP'] ??
-        '/tmp';
+    final tempPath = _cliCacheBaseDir().path; // #287
     // #242: 同ホストで他 LocalNode と共存しても上書きしないよう PID 別
     const prefix = 'localnode_web_';
     _reapStaleWebDirs(Directory(tempPath), prefix);
@@ -1988,6 +2031,7 @@ class ServerService {
     required int port,
     String? fixedPin,
     String? storagePath,
+    String? cacheDir, // #287
     OperationMode operationMode = OperationMode.normal,
     AuthMode authMode = AuthMode.randomPin,
     bool verboseLogging = false,
@@ -2005,6 +2049,8 @@ class ServerService {
     _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
     _operationMode = operationMode;
     _authMode = authMode;
+    _cacheDir = cacheDir; // #287
+    await _validateCacheDir(); // #287
 
     // 認証モードに応じたPIN設定
     switch (authMode) {
@@ -2166,6 +2212,7 @@ class ServerService {
     _httpsEnabled = false;
     _allowedHosts = {};
     _maxUploadBytes = null;
+    _cacheDir = null; // #287
     _ipAddress = null;
     _port = null;
     _pin = null;
@@ -2235,6 +2282,34 @@ class ServerService {
       return r.exitCode == 0;
     } catch (_) {
       return true;
+    }
+  }
+
+  // #287: CLI の --cache-dir が指定されていればそこを、なければ OS の一時
+  // ディレクトリを基点にする。GUI 経路 (startServer) は _cacheDir を設定しない
+  // ので従来どおり systemTemp / getTemporaryDirectory のまま。
+  Directory _cliCacheBaseDir() =>
+      (_cacheDir != null && _cacheDir!.isNotEmpty)
+          ? Directory(_cacheDir!)
+          : Directory.systemTemp;
+
+  // #287: --cache-dir を検証。作成できなければ警告して OS 一時ディレクトリに
+  // フォールバックする（サーバは起動し続ける）。macOS はサンドボックスにより
+  // コンテナ外パスが拒否され得るが、その場合もここでフォールバックする。
+  Future<void> _validateCacheDir() async {
+    if (_cacheDir == null || _cacheDir!.isEmpty) return;
+    final dir = Directory(_cacheDir!);
+    try {
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final probe = await dir.createTemp('localnode_cli_probe_');
+      await probe.delete();
+    } catch (e) {
+      _log('Warning: --cache-dir "$_cacheDir" is not usable ($e); '
+          'falling back to the system temp directory.');
+      // フォールバックは verbose 以外でも見えるよう stderr にも出す
+      stderr.writeln('Warning: --cache-dir "$_cacheDir" is not usable ($e); '
+          'falling back to the system temp directory.');
+      _cacheDir = null;
     }
   }
 
