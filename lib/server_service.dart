@@ -1726,20 +1726,38 @@ class ServerService {
       msg = text;
     } else if (link == '1') {
       final rel = relPath.isEmpty ? savedName : '$relPath/$savedName';
-      msg = '@file:$rel';
+      // #214: マーカーは空白で切れる (`@file:(\S+)`) ので percent-encode する。
+      // 重複時のリネームが "name (1).ext" とスペースを含むため必須。
+      // '/' は区切りとして残すためセグメント単位でエンコードする。
+      final encoded = rel.split('/').map(Uri.encodeComponent).join('/');
+      msg = '@file:$encoded';
     }
     if (msg == null || msg.isEmpty) return;
     if (msg.length > _maxTextLength) msg = msg.substring(0, _maxTextLength);
     _appendClipboard(msg, tag: tag);
   }
 
+  // #214: HTTP ヘッダは仕様上 latin1 なので、値の受け取り方が2通りある。
+  //   (a) percent-encoded (推奨・x-filename と同じ) -> decodeComponent で復元
+  //   (b) 生の UTF-8 バイト列 -> latin1 として読まれ文字化けするので、
+  //       latin1 に戻してから UTF-8 として解釈し直す
+  // どちらでも正しく読めるように両方試す。
   String? _decodeHeader(String? raw) {
     if (raw == null) return null;
+    var s = raw;
     try {
-      return Uri.decodeComponent(raw);
+      s = Uri.decodeComponent(s);
     } catch (_) {
-      return raw; // percent-encode されていない値はそのまま扱う
+      // percent-encode されていない値はそのまま
     }
+    try {
+      // s が既に正しい多バイト文字なら latin1.encode が投げるので何もしない。
+      // latin1 で潰れた UTF-8 のときだけ復元される。
+      s = utf8.decode(latin1.encode(s));
+    } catch (_) {
+      // UTF-8 として不正 or もともと正しい文字列 -> そのまま
+    }
+    return s;
   }
 
   /// DELETE /api/clipboard/<id> - 個別アイテム削除

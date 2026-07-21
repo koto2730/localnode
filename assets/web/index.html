@@ -1961,7 +1961,11 @@
                         parts.push(escapeHtml(text.substring(lastIndex, m.index)));
                     }
                     const marker = m[1];
-                    const path = m[2];
+                    // #214: マーカーは空白で切れるため、スペースを含むパスは
+                    // percent-encode されて届く（サーバの自動生成もそうする）。
+                    // 検証の前にデコードする（%2e%2e で .. を潜り抜けさせない）。
+                    let path = m[2];
+                    try { path = decodeURIComponent(path); } catch (_) { /* 不正な%はそのまま */ }
                     const invalid = path.includes('..') ||
                         path.startsWith('/') ||
                         path.startsWith('\\') ||
