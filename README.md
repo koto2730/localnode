@@ -177,6 +177,10 @@ A single upload request can also post a clipboard message, so an automation (e.g
 
 `x-clipboard-text` takes precedence over `x-clipboard-link`. Nothing is posted when neither is present, or when clipboard sharing is disabled (`--no-clipboard`).
 
+> **Header encoding:** percent-encoding the text/tag is recommended (it is the only way HTTP headers can carry non-ASCII reliably). Raw UTF-8 bytes are also accepted and repaired server-side, so both forms display correctly.
+>
+> **Spaces in `@file:` / `@path:` markers:** a marker ends at the first whitespace, so a path containing spaces must be percent-encoded — e.g. `@file:my%20photo.jpg`. `x-clipboard-link` does this automatically (important because duplicate uploads are renamed to `name (1).ext`, which contains a space).
+
 ```bash
 # Upload and notify in one request
 curl -H "Authorization: Bearer <token>" \

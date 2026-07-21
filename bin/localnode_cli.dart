@@ -2950,19 +2950,25 @@ class _CliServer {
         .hasMatch(filename);
   }
 
+  // #181: post-action は「サーバ全体で1本のキュー」に直列化する。
+  // 元は各アクションを await せず並列起動していたため、同一ファイルに複数
+  // マッチすると実行順が不定になり、先行アクションがファイルを移動/削除
+  // すると後続が不定に失敗していた。ファイル内を逐次化しただけでは複数
+  // ファイルを同時アップロードしたときにファイル間で混ざる
+  // (move(A),move(B),move(C) -> notify(A),notify(C),notify(B)) ため、
+  // キュー全体を直列にして「A:move -> A:notify -> B:move -> ...」と
+  // 完全に予測可能な順序にする。post-action スクリプトは同時実行を想定して
+  // いないことが多いので、その点でも安全。
+  // アップロード応答はブロックしない（fire-and-forget のまま）。
+  Future<void> _postActionQueue = Future.value();
+
   void _runPostActions(String filePath) {
     final filename = p.basename(filePath);
-    // #181: マッチするアクションを登録順に「逐次」実行する。
-    // 以前は各アクションを await せず並列起動していたため、同一ファイルに
-    // 複数マッチ（例: `*.png=move.sh` と `*=notify.sh`）した場合に実行順が
-    // 不定になり、先行アクションがファイルを移動/削除すると後続が不定に
-    // 失敗していた。1 ファイルにつき 1 本の async チェーンにまとめ、
-    // アップロード応答はブロックしない（fire-and-forget のまま）。
     final matched = _postActions
         .where((a) => _globMatch(a.pattern, filename))
         .toList();
     if (matched.isEmpty) return;
-    () async {
+    _postActionQueue = _postActionQueue.then((_) async {
       for (final action in matched) {
         try {
           final cmd = _buildCommand(action.script, [filePath]);
@@ -2983,7 +2989,7 @@ class _CliServer {
           stderr.writeln('[post-action] Failed to run "${action.script}": $e');
         }
       }
-    }();
+    });
   }
 
   String _buildMentionList() {
@@ -3067,20 +3073,38 @@ class _CliServer {
     } else if (link == '1') {
       final saved = p.basename(file.path);
       final rel = relPath.isEmpty ? saved : '$relPath/$saved';
-      msg = '@file:$rel';
+      // #214: マーカーは空白で切れる (`@file:(\S+)`) ので percent-encode する。
+      // 重複時のリネームが "name (1).ext" とスペースを含むため必須。
+      // '/' は区切りとして残すためセグメント単位でエンコードする。
+      final encoded = rel.split('/').map(Uri.encodeComponent).join('/');
+      msg = '@file:$encoded';
     }
     if (msg == null || msg.isEmpty) return;
     if (msg.length > _maxTextLength) msg = msg.substring(0, _maxTextLength);
     _appendClipboard(msg, tag: tag);
   }
 
+  // #214: HTTP ヘッダは仕様上 latin1 なので、値の受け取り方が2通りある。
+  //   (a) percent-encoded (推奨・x-filename と同じ) -> decodeComponent で復元
+  //   (b) 生の UTF-8 バイト列 -> latin1 として読まれ文字化けするので、
+  //       latin1 に戻してから UTF-8 として解釈し直す
+  // どちらでも正しく読めるように両方試す。
   String? _decodeHeader(String? raw) {
     if (raw == null) return null;
+    var s = raw;
     try {
-      return Uri.decodeComponent(raw);
+      s = Uri.decodeComponent(s);
     } catch (_) {
-      return raw; // percent-encode されていない値はそのまま扱う
+      // percent-encode されていない値はそのまま
     }
+    try {
+      // s が既に正しい多バイト文字なら latin1.encode が投げるので何もしない。
+      // latin1 で潰れた UTF-8 のときだけ復元される。
+      s = utf8.decode(latin1.encode(s));
+    } catch (_) {
+      // UTF-8 として不正 or もともと正しい文字列 -> そのまま
+    }
+    return s;
   }
 
   void _runMentionAction(String alias, String script) {
