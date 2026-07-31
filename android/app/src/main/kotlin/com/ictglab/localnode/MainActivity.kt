@@ -16,6 +16,8 @@ class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.ictglab.localnode/saf_storage"
     private val FOLDER_CHANNEL = "com.ictglab.localnode/folder"
     private val REQUEST_CODE_OPEN_DOCUMENT_TREE = 42
+    // #291(L1): readFileRange の 1 回あたりの読み取り上限 (defense-in-depth)
+    private val MAX_READ_RANGE_BYTES = 1 * 1024 * 1024
     private var pendingResult: MethodChannel.Result? = null // Dart側への結果を保持するため
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -161,6 +163,12 @@ class MainActivity: FlutterActivity() {
                     }
                     if (offset < 0 || length <= 0) {
                         result.error("ARGUMENT_ERROR", "offset must be >= 0 and length > 0.", null)
+                        return@setMethodCallHandler
+                    }
+                    // #291(L1): 多層防御。呼び出し元は先頭 8KB しか要求しないが、
+                    // 将来この channel を別用途で使ったときの無制限確保を防ぐ上限。
+                    if (length > MAX_READ_RANGE_BYTES) {
+                        result.error("ARGUMENT_ERROR", "length exceeds the maximum of $MAX_READ_RANGE_BYTES bytes.", null)
                         return@setMethodCallHandler
                     }
 
