@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LocalNode CLI as a launchd service (macOS)
+
+  IMPORTANT: the Mac App Store build is sandboxed and cannot run reliably as a
+  daemon writing to arbitrary paths (see #287). For an always-on macOS service,
+  use a self-built / non-App-Store binary:
+      dart compile exe bin/localnode_cli.dart -o localnode-cli
+  or point ProgramArguments at the app bundle's binary with --cli.
+
+  Install as a system LaunchDaemon (runs at boot, all users):
+    1. sudo cp localnode-cli /usr/local/bin/
+    2. sudo mkdir -p /etc/localnode /usr/local/var/localnode /usr/local/var/log
+       put your config at /etc/localnode/config.yaml (see examples/config.example.yaml)
+    3. sudo cp com.ictglab.localnode.plist /Library/LaunchDaemons/
+       sudo chown root:wheel /Library/LaunchDaemons/com.ictglab.localnode.plist
+    4. sudo launchctl load -w /Library/LaunchDaemons/com.ictglab.localnode.plist
+
+  Per-user LaunchAgent instead: put it in ~/Library/LaunchAgents/ and use
+  `launchctl load -w` without sudo (runs only while that user is logged in).
+
+  Logs:  tail -f /usr/local/var/log/localnode.log
+  Stop:  sudo launchctl unload -w /Library/LaunchDaemons/com.ictglab.localnode.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ictglab.localnode</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/localnode-cli</string>
+        <string>--config</string>
+        <string>/etc/localnode/config.yaml</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Restart back-off if it keeps failing -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/localnode.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/localnode.log</string>
+
+    <!-- Optional: run as a dedicated non-root user for a LaunchDaemon -->
+    <!--
+    <key>UserName</key>
+    <string>localnode</string>
+    -->
+</dict>
+</plist>

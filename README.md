@@ -212,7 +212,22 @@ The file currently contains a single `device_id` UUID generated on first start. 
 localnode-cli --config /mnt/usb/localnode.yaml --state-file /mnt/usb/state.json
 ```
 
-> The state file path is currently a CLI flag only — it is not yet exposed as a YAML config key.
+> The state file path can also be set via `server.state-file` in the YAML config (the CLI arg overrides it).
+
+#### Running as a service (systemd / launchd)
+
+To run the CLI as a background service that starts on boot and restarts on failure, use the templates under [`examples/`](examples/):
+
+- **Linux (systemd):** [`examples/systemd/localnode.service`](examples/systemd/localnode.service) — a unit that runs `localnode-cli --config /etc/localnode/config.yaml` as a dedicated non-root user with filesystem hardening. The header comments list the exact install steps, or use the transparent helper:
+  ```bash
+  sudo examples/systemd/install-localnode.sh /path/to/localnode-cli
+  # then edit /etc/localnode/config.yaml and:
+  sudo systemctl enable --now localnode
+  journalctl -u localnode -f
+  ```
+- **macOS (launchd):** [`examples/launchd/com.ictglab.localnode.plist`](examples/launchd/com.ictglab.localnode.plist) — a LaunchDaemon/LaunchAgent template. Use a self-built / non-App-Store `localnode-cli` binary: the Mac App Store build is sandboxed and cannot run reliably as a daemon writing to arbitrary paths.
+
+Both point at `/etc/localnode/config.yaml` — see [`examples/config.example.yaml`](examples/config.example.yaml) for the full annotated config. Post-action / mention-action scripts run as the service user, so keep them minimal and trusted.
 
 ## Federation (v1.6.0+)
 
