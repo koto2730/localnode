@@ -125,6 +125,8 @@ class _LoadedConfig {
   String? pinCharset;
   // #262
   String? maxUploadSize;
+  // #290
+  int? postActionTimeout;
   // #237
   String? stateFile;
   // #208
@@ -192,6 +194,7 @@ _LoadedConfig _loadConfig(String path) {
     cfg.pinLength = _yamlInt(server, 'pin-length');
     cfg.pinCharset = _yamlString(server, 'pin-charset');
     cfg.maxUploadSize = _yamlString(server, 'max-upload-size');
+    cfg.postActionTimeout = _yamlInt(server, 'post-action-timeout'); // #290
     cfg.cacheDir = _yamlString(server, 'cache-dir');     // #287
     cfg.stateFile = _yamlString(server, 'state-file');   // #237
     cfg.pinFile = _yamlString(server, 'pin-file');       // #208
@@ -424,6 +427,11 @@ Future<void> main(List<String> args) async {
       ? results['max-upload-size'] as String?
       : (cfg?.maxUploadSize ?? results['max-upload-size'] as String?);
   final int? maxDirectUploadBytes = _parseSizeBytes(maxUploadSizeStr);
+  // #290: post-action タイムアウト秒（CLI > YAML > デフォルト300）。0 で無制限。
+  final postActionTimeoutSeconds = int.tryParse(
+          results['post-action-timeout'] as String? ?? '') ??
+      cfg?.postActionTimeout ??
+      300;
 
   // #208: CLI > YAML config
   final String? pinFile = results.wasParsed('pin-file')
@@ -664,6 +672,7 @@ Future<void> main(List<String> args) async {
       postActions: postActions,
       mentionActions: mentionActions,
       maxDirectUploadBytes: maxDirectUploadBytes, // #262
+      postActionTimeoutSeconds: postActionTimeoutSeconds, // #290
       extraAllowedHosts: extraAllowedHosts,       // #275
     );
   } catch (e) {
@@ -847,6 +856,10 @@ ArgParser _buildParser() {
             'Use only on trusted networks. If running as a systemd service, set User= to a '
             'low-privilege account.',
         valueHelp: 'pattern=script')
+    ..addOption('post-action-timeout',
+        help: 'Timeout in seconds for each post-action script; the process is '
+            'killed if it exceeds this. 0 disables the timeout. (default: 300)',
+        valueHelp: 'SECONDS')
     ..addMultiOption('mention-action',
         help:
             'Register a clipboard mention command: <alias>=<script>. '
@@ -2058,6 +2071,7 @@ class _CliServer {
     Map<String, ({String script, String? description})> mentionActions = const {},
     int? maxDirectUploadBytes,    // #262
     List<String> extraAllowedHosts = const [],   // #275
+    int postActionTimeoutSeconds = 300,          // #290 (0 = 無制限)
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -2070,6 +2084,10 @@ class _CliServer {
     _pinCharset = pinCharset;     // #206
     _maxDirectUploadBytes = maxDirectUploadBytes; // #262
     _cacheDir = cacheDir;         // #287
+    // #290: post-action のタイムアウト。0 以下は無制限（従来動作）。
+    _postActionTimeout = postActionTimeoutSeconds > 0
+        ? Duration(seconds: postActionTimeoutSeconds)
+        : null;
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -2961,6 +2979,44 @@ class _CliServer {
   // いないことが多いので、その点でも安全。
   // アップロード応答はブロックしない（fire-and-forget のまま）。
   Future<void> _postActionQueue = Future.value();
+  // #290: 1本ハングするとキュー全体が止まるので、各アクションにタイムアウトを
+  // 設ける。null なら無制限（従来動作）。
+  Duration? _postActionTimeout = const Duration(seconds: 300);
+
+  // #290: スクリプトをタイムアウト付きで実行。時間超過時はプロセスを kill する。
+  // 注意: 出力ストリームは await せず listen で消費する。runInShell 経由だと
+  // タイムアウトで殺したシェルの子プロセスが stdout パイプを握ったまま残ることが
+  // あり、drain/join を await するとそこで固まってキュー全体が止まるため。
+  // プロセス終了とタイムアウトを Completer で競わせ、どちらか早い方で返す。
+  // （スクリプトがさらに子プロセスを detach した場合、その孫までは確実には
+  //   刈り取れない。ここで保証するのは「キューを二度と詰まらせない」こと。）
+  Future<({int exitCode, bool timedOut, String stderr})> _runScript(
+      String exe, List<String> args, Duration? timeout) async {
+    final proc = await Process.start(exe, args, runInShell: !Platform.isWindows);
+    final errBuf = StringBuffer();
+    proc.stdout.listen((_) {}, onError: (_) {});
+    proc.stderr.transform(utf8.decoder).listen(errBuf.write, onError: (_) {});
+
+    if (timeout == null) {
+      final code = await proc.exitCode;
+      return (exitCode: code, timedOut: false, stderr: errBuf.toString());
+    }
+    final completer =
+        Completer<({int exitCode, bool timedOut, String stderr})>();
+    final timer = Timer(timeout, () {
+      if (completer.isCompleted) return;
+      proc.kill(ProcessSignal.sigkill);
+      completer
+          .complete((exitCode: -1, timedOut: true, stderr: errBuf.toString()));
+    });
+    unawaited(proc.exitCode.then((code) {
+      if (completer.isCompleted) return;
+      timer.cancel();
+      completer.complete(
+          (exitCode: code, timedOut: false, stderr: errBuf.toString()));
+    }));
+    return completer.future;
+  }
 
   void _runPostActions(String filePath) {
     final filename = p.basename(filePath);
@@ -2972,16 +3028,14 @@ class _CliServer {
       for (final action in matched) {
         try {
           final cmd = _buildCommand(action.script, [filePath]);
-          final result = await Process.run(
-            cmd.$1, cmd.$2,
-            runInShell: !Platform.isWindows,
-          );
-          if (result.exitCode != 0) {
+          final r = await _runScript(cmd.$1, cmd.$2, _postActionTimeout);
+          if (r.timedOut) {
+            stderr.writeln('[post-action] "${action.script}" timed out after '
+                '${_postActionTimeout!.inSeconds}s (killed) for $filename');
+          } else if (r.exitCode != 0) {
             stderr.writeln(
-                '[post-action] "${action.script}" exited ${result.exitCode}');
-            if ((result.stderr as String).isNotEmpty) {
-              stderr.writeln(result.stderr);
-            }
+                '[post-action] "${action.script}" exited ${r.exitCode}');
+            if (r.stderr.isNotEmpty) stderr.writeln(r.stderr);
           } else {
             _log('[post-action] "${action.script}" completed for $filename');
           }

@@ -16,6 +16,7 @@ server:
   mode: normal                   # normal / download-only
   no-pin: false                  # PIN 認証を無効化（信頼ネットワーク用）
   no-clipboard: false            # クリップボード共有を無効化
+  post-action-timeout: 300       # 各 post_action の実行タイムアウト秒 (#290)。0 で無制限
   verbose: false                 # 詳細ログを有効化
   https-cert: /etc/letsencrypt/live/example.com/fullchain.pem
   https-key: /etc/letsencrypt/live/example.com/privkey.pem

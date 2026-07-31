@@ -106,6 +106,7 @@ localnode --cli [options]
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |
 | `--post-action` | Script to execute on matching uploads: `pattern=script` (repeatable, glob pattern) |
+| `--post-action-timeout` | Timeout in seconds for each post-action script; the process is killed if it exceeds this. `0` disables the timeout. Default: `300`. Prevents one hung script from blocking all later post-actions |
 | `--mention-action` | Register clipboard mention command: `alias=script` (repeatable) |
 | `--token` | Fixed Bearer token for upload and clipboard POST (random if not specified) |
 | `--no-token` | Disable token-based authentication for upload and clipboard POST |
