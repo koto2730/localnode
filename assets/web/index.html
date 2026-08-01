@@ -964,6 +964,34 @@
                 <button type="submit">接続</button>
             </form>
             <div id="pinStatus" class="status"></div>
+            <!-- #267: passkey (WebAuthn) ログイン。HTTPS+ホスト名 or localhost でのみ動作。 -->
+            <div id="passkeyArea" style="display:none; margin-top:1rem; border-top:1px solid #eee; padding-top:0.75rem;">
+                <button type="button" id="passkeyLoginBtn" style="width:100%;">🔑 パスキーでログイン</button>
+                <div style="text-align:center; margin-top:0.5rem;">
+                    <a href="#" id="passkeyEnrollLink" style="font-size:0.8rem; color:#00796b;">パスキーを登録（初回セットアップ）</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- #267: パスキー登録（enroll）補助モーダル -->
+    <div id="enroll-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:300; justify-content:center; align-items:center;">
+        <div style="background:#fff; padding:1.5rem; border-radius:8px; max-width:560px; width:92%; max-height:88vh; overflow:auto;">
+            <h2 style="margin-top:0;">パスキーを登録</h2>
+            <p style="font-size:0.9rem; color:#555;">この端末でパスキーを作成し、下に表示される内容をサーバの credentials ファイルに貼り付けてください（authorized_keys 方式）。</p>
+            <label style="font-size:0.9rem;">アカウント名<br>
+                <input type="text" id="enrollName" placeholder="例: shiba" maxlength="40" style="width:100%; padding:0.4rem; margin-top:0.2rem;">
+            </label>
+            <div style="margin-top:0.75rem;">
+                <button type="button" id="enrollCreateBtn">この端末でパスキーを作成</button>
+                <button type="button" id="enrollCloseBtn" style="margin-left:0.5rem;">閉じる</button>
+            </div>
+            <div id="enrollStatus" class="status" style="margin-top:0.5rem;"></div>
+            <div id="enrollResult" style="display:none; margin-top:0.75rem;">
+                <p style="font-size:0.85rem; margin-bottom:0.3rem;">↓ この YAML を credentials ファイルの <code>accounts:</code> リストに追記して、サーバを再起動:</p>
+                <textarea id="enrollYaml" readonly rows="6" style="width:100%; font-family:monospace; font-size:0.8rem;"></textarea>
+                <button type="button" id="enrollCopyBtn" style="margin-top:0.4rem;">YAML をコピー</button>
+            </div>
         </div>
     </div>
 
@@ -1146,6 +1174,13 @@
 
             // サーバー情報（モード等）
             let serverInfo = {};
+            // #267: /api/info を取り直して serverInfo を更新（ログイン後にアカウント名を反映）
+            const refreshServerInfo = async () => {
+                try {
+                    const r = await fetch('/api/info');
+                    if (r.ok) serverInfo = await r.json();
+                } catch (_) {}
+            };
             // 現在表示中のフォルダパス（ルートは空文字）
             let currentPath = '';
 
@@ -1246,6 +1281,12 @@
                 mainContent.style.display = 'none';
                 pinModal.style.display = 'flex';
                 pinInput.focus();
+                // #267: passkey が使えるサーバ かつ WebAuthn 対応ブラウザでのみ表示。
+                // WebAuthn はセキュアコンテキスト（HTTPS or localhost）が必須。
+                const canPasskey = serverInfo.passkeyEnabled &&
+                    window.PublicKeyCredential && window.isSecureContext;
+                document.getElementById('passkeyArea').style.display =
+                    canPasskey ? 'block' : 'none';
             };
 
             const showMainContent = () => {
@@ -1419,6 +1460,124 @@
                     pinStatus.style.color = 'red';
                     pinInput.value = '';
                 }
+            });
+
+            // #267: passkey (WebAuthn) ログイン / 登録 ================================
+            // base64url <-> bytes ヘルパ
+            const b64urlToBytes = (s) => {
+                s = s.replace(/-/g, '+').replace(/_/g, '/');
+                while (s.length % 4) s += '=';
+                const bin = atob(s);
+                const arr = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                return arr;
+            };
+            const bytesToB64url = (buf) => {
+                const arr = new Uint8Array(buf);
+                let bin = '';
+                for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+                return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+            };
+            const bytesToB64 = (buf) => {
+                const arr = new Uint8Array(buf);
+                let bin = '';
+                for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+                return btoa(bin);
+            };
+
+            const passkeyLogin = async () => {
+                pinStatus.style.color = '#333';
+                pinStatus.textContent = 'パスキーで認証中...';
+                try {
+                    const chRes = await fetch('/api/webauthn/challenge', { method: 'POST' });
+                    if (!chRes.ok) throw new Error('パスキーログインは利用できません。');
+                    const { challenge } = await chRes.json();
+                    const assertion = await navigator.credentials.get({
+                        publicKey: {
+                            challenge: b64urlToBytes(challenge),
+                            userVerification: 'preferred',
+                            timeout: 60000,
+                        }
+                    });
+                    if (!assertion) throw new Error('パスキーがキャンセルされました。');
+                    const r = assertion.response;
+                    const verifyRes = await fetch('/api/webauthn/verify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            credentialId: bytesToB64url(assertion.rawId),
+                            authenticatorData: bytesToB64url(r.authenticatorData),
+                            clientDataJSON: bytesToB64url(r.clientDataJSON),
+                            signature: bytesToB64url(r.signature),
+                        })
+                    });
+                    if (!verifyRes.ok) {
+                        const e = await verifyRes.json().catch(() => ({}));
+                        throw new Error(e.error || 'パスキー認証に失敗しました。');
+                    }
+                    // 認証済み。serverInfo を取り直してアカウント名を反映してから表示。
+                    await refreshServerInfo();
+                    showMainContent();
+                } catch (error) {
+                    pinStatus.style.color = 'red';
+                    pinStatus.textContent = error.message || 'パスキー認証に失敗しました。';
+                }
+            };
+            document.getElementById('passkeyLoginBtn').addEventListener('click', passkeyLogin);
+
+            // --- enroll（登録補助）---
+            const enrollModal = document.getElementById('enroll-modal');
+            document.getElementById('passkeyEnrollLink').addEventListener('click', (e) => {
+                e.preventDefault();
+                document.getElementById('enrollStatus').textContent = '';
+                document.getElementById('enrollResult').style.display = 'none';
+                enrollModal.style.display = 'flex';
+            });
+            document.getElementById('enrollCloseBtn').addEventListener('click', () => {
+                enrollModal.style.display = 'none';
+            });
+            document.getElementById('enrollCreateBtn').addEventListener('click', async () => {
+                const st = document.getElementById('enrollStatus');
+                const name = (document.getElementById('enrollName').value || '').trim();
+                if (!name) { st.style.color = 'red'; st.textContent = 'アカウント名を入力してください。'; return; }
+                st.style.color = '#333'; st.textContent = 'パスキーを作成中...';
+                try {
+                    const rnd = new Uint8Array(32); crypto.getRandomValues(rnd);
+                    const uid = new Uint8Array(16); crypto.getRandomValues(uid);
+                    const cred = await navigator.credentials.create({
+                        publicKey: {
+                            challenge: rnd,
+                            rp: { name: serverInfo.serverName || 'LocalNode' },
+                            user: { id: uid, name: name, displayName: name },
+                            pubKeyCredParams: [{ type: 'public-key', alg: -7 }], // ES256
+                            authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+                            timeout: 60000,
+                        }
+                    });
+                    const resp = cred.response;
+                    if (resp.getPublicKeyAlgorithm && resp.getPublicKeyAlgorithm() !== -7) {
+                        throw new Error('この認証器は ES256 非対応です（サーバは ES256 のみ対応）。');
+                    }
+                    const spki = resp.getPublicKey(); // SubjectPublicKeyInfo (DER)
+                    if (!spki) throw new Error('公開鍵を取得できませんでした（ブラウザ非対応）。');
+                    const credId = bytesToB64url(cred.rawId);
+                    const pubB64 = bytesToB64(spki);
+                    const yaml =
+                        '  - name: ' + name + '\n' +
+                        '    credential_id: ' + credId + '\n' +
+                        '    public_key: ' + pubB64 + '\n';
+                    document.getElementById('enrollYaml').value = yaml;
+                    document.getElementById('enrollResult').style.display = 'block';
+                    st.style.color = 'green'; st.textContent = 'パスキーを作成しました。下の YAML を保存してください。';
+                } catch (error) {
+                    st.style.color = 'red';
+                    st.textContent = error.message || 'パスキーの作成に失敗しました。';
+                }
+            });
+            document.getElementById('enrollCopyBtn').addEventListener('click', () => {
+                const ta = document.getElementById('enrollYaml');
+                ta.select();
+                try { navigator.clipboard.writeText(ta.value); } catch (_) { document.execCommand('copy'); }
             });
 
             const getFilePreview = (file) => {

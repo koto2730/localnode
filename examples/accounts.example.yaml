@@ -1,0 +1,22 @@
+# LocalNode passkey accounts file (#267) — the "authorized_keys" for WebAuthn.
+#
+# Point the server at this file with:
+#   localnode-cli --accounts-file /etc/localnode/accounts.yaml
+# or `server.accounts-file` in config.yaml.
+#
+# Requirements:
+#   - Passkey login only works over HTTPS + a hostname (or http://localhost),
+#     NOT over a bare LAN IP. Keep the PIN for plain-IP LAN access.
+#   - Only ES256 (ECDSA P-256) passkeys are supported.
+#
+# To add an account: open the Web UI over the HTTPS hostname, click
+# "パスキーを登録", enter a name, create the passkey, then paste the YAML
+# snippet it shows here and restart the server. To revoke someone, delete
+# their entry and restart.
+
+accounts:
+  - name: shiba
+    # base64url of the credential id (shown by the register page)
+    credential_id: REPLACE_WITH_CREDENTIAL_ID
+    # base64 of the public key in SubjectPublicKeyInfo/DER form (shown by the page)
+    public_key: REPLACE_WITH_PUBLIC_KEY_SPKI

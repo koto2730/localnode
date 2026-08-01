@@ -103,6 +103,16 @@ class _LoadedPostAction {
   _LoadedPostAction(this.pattern, this.script);
 }
 
+// #267: passkey (WebAuthn) アカウント。credentials ファイルの 1 エントリ。
+// SSH の authorized_keys 相当。label=アカウント名, credentialId=base64url(rawId),
+// publicKeySpki=登録時に取得した公開鍵 (SPKI DER)。
+class _PasskeyAccount {
+  final String name;
+  final String credentialId; // base64url (パディング無し) の rawId
+  final Uint8List publicKeySpki; // SubjectPublicKeyInfo (DER)
+  _PasskeyAccount(this.name, this.credentialId, this.publicKeySpki);
+}
+
 class _LoadedConfig {
   // server section
   int? port;
@@ -127,6 +137,8 @@ class _LoadedConfig {
   String? maxUploadSize;
   // #290
   int? postActionTimeout;
+  // #267
+  String? accountsFile;
   // #237
   String? stateFile;
   // #208
@@ -195,6 +207,7 @@ _LoadedConfig _loadConfig(String path) {
     cfg.pinCharset = _yamlString(server, 'pin-charset');
     cfg.maxUploadSize = _yamlString(server, 'max-upload-size');
     cfg.postActionTimeout = _yamlInt(server, 'post-action-timeout'); // #290
+    cfg.accountsFile = _yamlString(server, 'accounts-file');         // #267
     cfg.cacheDir = _yamlString(server, 'cache-dir');     // #287
     cfg.stateFile = _yamlString(server, 'state-file');   // #237
     cfg.pinFile = _yamlString(server, 'pin-file');       // #208
@@ -432,6 +445,8 @@ Future<void> main(List<String> args) async {
           results['post-action-timeout'] as String? ?? '') ??
       cfg?.postActionTimeout ??
       300;
+  // #267: passkey アカウントファイル（CLI > YAML）
+  final accountsFile = results['accounts-file'] as String? ?? cfg?.accountsFile;
 
   // #208: CLI > YAML config
   final String? pinFile = results.wasParsed('pin-file')
@@ -673,6 +688,7 @@ Future<void> main(List<String> args) async {
       mentionActions: mentionActions,
       maxDirectUploadBytes: maxDirectUploadBytes, // #262
       postActionTimeoutSeconds: postActionTimeoutSeconds, // #290
+      accountsFile: accountsFile, // #267
       extraAllowedHosts: extraAllowedHosts,       // #275
     );
   } catch (e) {
@@ -860,6 +876,11 @@ ArgParser _buildParser() {
         help: 'Timeout in seconds for each post-action script; the process is '
             'killed if it exceeds this. 0 disables the timeout. (default: 300)',
         valueHelp: 'SECONDS')
+    ..addOption('accounts-file',
+        help: 'Path to a YAML passkey accounts file for WebAuthn login (#267). '
+            'Enables per-user passkey login alongside the PIN. Requires HTTPS + '
+            'a hostname (or localhost); does not work over a bare LAN IP.',
+        valueHelp: 'PATH')
     ..addMultiOption('mention-action',
         help:
             'Register a clipboard mention command: <alias>=<script>. '
@@ -1534,6 +1555,14 @@ class _CliServer {
   final Map<String, int> _sessions = {};
   static const Duration _sessionTtl = Duration(hours: 24);
   static const int _maxNoPinSessions = 1000;
+  // #267: セッション → アカウント名（passkey ログイン時のみ。PIN/no-pin は未設定=guest）
+  final Map<String, String> _sessionAccounts = {};
+  // #267: passkey アカウント（credentials ファイルから読み込む）
+  List<_PasskeyAccount> _accounts = [];
+  String? _accountsFile;
+  // #267: 発行済み WebAuthn チャレンジ（base64url） → 失効エポック ms。リプレイ防止に消費する。
+  final Map<String, int> _webauthnChallenges = {};
+  static const Duration _webauthnChallengeTtl = Duration(minutes: 2);
   // #258: DNS rebinding 対策 — 許可する Host 値のセット
   Set<String> _allowedHosts = {};
   // #6: HTTPS 起動時は Secure 属性を付与
@@ -1564,6 +1593,8 @@ class _CliServer {
         _deviceId = deviceId ?? '' {
     _router = Router()
       ..post('/api/auth', _authHandler)
+      ..post('/api/webauthn/challenge', _webauthnChallengeHandler)  // #267
+      ..post('/api/webauthn/verify', _webauthnVerifyHandler)        // #267
       ..get('/api/health', _healthHandler)
       ..get('/api/info', _infoHandler)
       ..get('/api/check-auth', _checkAuthHandler)
@@ -2072,6 +2103,7 @@ class _CliServer {
     int? maxDirectUploadBytes,    // #262
     List<String> extraAllowedHosts = const [],   // #275
     int postActionTimeoutSeconds = 300,          // #290 (0 = 無制限)
+    String? accountsFile,                         // #267
   }) async {
     _authMode = authMode;
     _downloadOnly = downloadOnly;
@@ -2088,6 +2120,9 @@ class _CliServer {
     _postActionTimeout = postActionTimeoutSeconds > 0
         ? Duration(seconds: postActionTimeoutSeconds)
         : null;
+    // #267: passkey アカウント読み込み（指定時のみ）
+    _accountsFile = accountsFile;
+    if (accountsFile != null) _loadAccounts(accountsFile);
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
     switch (authMode) {
@@ -2373,6 +2408,7 @@ class _CliServer {
     if (expiry == null) return false;
     if (DateTime.now().millisecondsSinceEpoch > expiry) {
       _sessions.remove(token);
+      _sessionAccounts.remove(token); // #267
       return false;
     }
     return true;
@@ -2380,7 +2416,93 @@ class _CliServer {
 
   void _pruneExpiredSessions() {
     final now = DateTime.now().millisecondsSinceEpoch;
-    _sessions.removeWhere((_, expiry) => expiry < now);
+    _sessions.removeWhere((token, expiry) {
+      final expired = expiry < now;
+      if (expired) _sessionAccounts.remove(token); // #267
+      return expired;
+    });
+  }
+
+  // #267: セッションを1件発行する。account を渡すと passkey ログイン扱い。
+  String _createSession({String? account}) {
+    final token = _generateToken();
+    _pruneExpiredSessions();
+    if (_authMode == _AuthMode.noPin && _sessions.length >= _maxNoPinSessions) {
+      final oldest =
+          _sessions.entries.reduce((a, b) => a.value < b.value ? a : b);
+      _sessions.remove(oldest.key);
+      _sessionAccounts.remove(oldest.key);
+    }
+    _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
+    if (account != null) _sessionAccounts[token] = account;
+    return token;
+  }
+
+  String _sessionCookie(String token) =>
+      'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict'
+      '${_httpsEnabled ? '; Secure' : ''}';
+
+  // #267: リクエストのセッション Cookie からアカウント名を取り出す（無ければ null=guest）。
+  String? _sessionAccountOf(Request req) {
+    final cookie = req.headers['cookie'] ?? '';
+    for (final c in cookie.split(';')) {
+      final t = c.trim();
+      if (t.startsWith('localnode_session=')) {
+        final token = t.substring(t.indexOf('=') + 1);
+        if (_isValidSession(token)) return _sessionAccounts[token];
+      }
+    }
+    return null;
+  }
+
+  // #267: passkey アカウントを YAML ファイルから読み込む（authorized_keys 相当）。
+  // 形式:  accounts:
+  //          - name: shiba
+  //            credential_id: <base64url>
+  //            public_key: <base64 SPKI DER>
+  // 読めなくても passkey が無効になるだけでサーバは起動を続ける。
+  void _loadAccounts(String path) {
+    final file = File(path);
+    if (!file.existsSync()) {
+      stderr.writeln(
+          'Warning: accounts file not found: $path (passkey login disabled)');
+      return;
+    }
+    try {
+      final doc = loadYaml(file.readAsStringSync());
+      final list = (doc is YamlMap) ? doc['accounts'] : null;
+      if (list is! YamlList) {
+        stderr.writeln('Error: accounts file must contain an "accounts:" list.');
+        return;
+      }
+      final acc = <_PasskeyAccount>[];
+      final seen = <String>{};
+      for (final e in list) {
+        if (e is! YamlMap) continue;
+        final name = e['name']?.toString();
+        final cid = e['credential_id']?.toString();
+        final pk = e['public_key']?.toString();
+        if (name == null || cid == null || pk == null) {
+          stderr.writeln('Warning: skipping incomplete account entry.');
+          continue;
+        }
+        if (!seen.add(cid)) {
+          stderr.writeln('Warning: duplicate credential_id for "$name", skipping.');
+          continue;
+        }
+        try {
+          acc.add(_PasskeyAccount(name, cid, base64.decode(pk)));
+        } catch (_) {
+          stderr.writeln('Warning: account "$name" has an invalid public_key.');
+        }
+      }
+      _accounts = acc;
+      if (_accounts.isNotEmpty) {
+        _log('[passkey] loaded ${_accounts.length} account(s) from $path');
+      }
+    } catch (e) {
+      stderr.writeln('Error reading accounts file: $e');
+    }
   }
 
   // #265: セッション Cookie または Bearer トークンが有効なリクエストか判定
@@ -2628,6 +2750,8 @@ class _CliServer {
           if (!path.startsWith('api/') ||
               path == 'api/info' ||
               path == 'api/auth' ||
+              path == 'api/webauthn/challenge' || // #267
+              path == 'api/webauthn/verify' ||    // #267
               path == 'api/health') {
             return inner(req);
           }
@@ -2691,16 +2815,10 @@ class _CliServer {
 
   Future<Response> _authHandler(Request req) async {
     if (_authMode == _AuthMode.noPin) {
-      final token = _generateToken();
-      _pruneExpiredSessions();
-      if (_sessions.length >= _maxNoPinSessions) {
-        final oldest = _sessions.entries.reduce((a, b) => a.value < b.value ? a : b);
-        _sessions.remove(oldest.key);
-      }
-      _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
+      final token = _createSession();
       return Response.ok(json.encode({'status': 'success'}), headers: {
         'Content-Type': 'application/json',
-        'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict${_httpsEnabled ? '; Secure' : ''}',
+        'Set-Cookie': _sessionCookie(token),
       });
     }
 
@@ -2720,11 +2838,10 @@ class _CliServer {
       if (_pin != null && _constantTimeEquals(params['pin'] as String? ?? '', _pin!)) {
         _failedAttempts.remove(clientIp);
         _lockoutUntil.remove(clientIp);
-        final token = _generateToken();
-        _sessions[token] = DateTime.now().add(_sessionTtl).millisecondsSinceEpoch;
+        final token = _createSession();
         return Response.ok(json.encode({'status': 'success'}), headers: {
           'Content-Type': 'application/json',
-          'Set-Cookie': 'localnode_session=$token; Path=/; HttpOnly; SameSite=Strict${_httpsEnabled ? '; Secure' : ''}',
+          'Set-Cookie': _sessionCookie(token),
         });
       } else {
         final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
@@ -2746,6 +2863,200 @@ class _CliServer {
         body: json.encode({'error': 'Invalid request body.'}),
         headers: {'Content-Type': 'application/json'},
       );
+    }
+  }
+
+  // === #267: passkey (WebAuthn) 認証 =========================================
+
+  // base64url（パディング有無どちらでも）→ bytes
+  Uint8List _b64urlDecode(String s) {
+    var t = s.replaceAll('-', '+').replaceAll('_', '/');
+    while (t.length % 4 != 0) {
+      t += '=';
+    }
+    return base64.decode(t);
+  }
+
+  String _b64urlNoPad(List<int> bytes) =>
+      base64Url.encode(bytes).replaceAll('=', '');
+
+  void _pruneWebauthnChallenges() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _webauthnChallenges.removeWhere((_, exp) => exp < now);
+  }
+
+  // リクエストの Host からポートを除いたホスト名（= WebAuthn の rpId 候補）。
+  String? _rpIdForRequest(Request req) {
+    final host = req.headers['host'];
+    if (host == null) return null;
+    return host.replaceFirst(RegExp(r':\d+$'), '');
+  }
+
+  // clientData.origin が自サーバのものか（ホストが許可集合にある）を確認。
+  bool _isAllowedWebauthnOrigin(String origin) {
+    try {
+      final u = Uri.parse(origin);
+      if (u.host.isEmpty) return false;
+      return _allowedHosts.contains(u.host);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _bytesEqual(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    var r = 0;
+    for (var i = 0; i < a.length; i++) {
+      r |= a[i] ^ b[i];
+    }
+    return r == 0;
+  }
+
+  // POST /api/webauthn/challenge : ログイン用のチャレンジ(nonce)を発行する。
+  Response _webauthnChallengeHandler(Request req) {
+    if (_accounts.isEmpty) {
+      return Response.notFound(
+        json.encode({'error': 'Passkey login is not configured.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    _pruneWebauthnChallenges();
+    final r = Random.secure();
+    final challenge =
+        _b64urlNoPad(List<int>.generate(32, (_) => r.nextInt(256)));
+    _webauthnChallenges[challenge] =
+        DateTime.now().add(_webauthnChallengeTtl).millisecondsSinceEpoch;
+    return Response.ok(
+      json.encode({
+        'challenge': challenge,
+        'rpId': _rpIdForRequest(req),
+        'timeout': 60000,
+      }),
+      headers: {'Content-Type': 'application/json'},
+    );
+  }
+
+  // POST /api/webauthn/verify : WebAuthn assertion を検証してセッションを発行する。
+  Future<Response> _webauthnVerifyHandler(Request req) async {
+    if (_accounts.isEmpty) {
+      return Response.forbidden(
+        json.encode({'error': 'Passkey login is not configured.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    Response fail(int status, String msg) => Response(status,
+        body: json.encode({'error': msg}),
+        headers: {'Content-Type': 'application/json'});
+
+    final clientIp = _getClientIp(req);
+    final lockout = _lockoutUntil[clientIp];
+    if (lockout != null && DateTime.now().isBefore(lockout)) {
+      final rem = lockout.difference(DateTime.now()).inSeconds;
+      return fail(403, 'Locked out. Try again in $rem seconds.');
+    }
+
+    Map<String, dynamic> body;
+    try {
+      body = json.decode(await req.readAsString()) as Map<String, dynamic>;
+    } catch (_) {
+      return fail(400, 'Invalid request body.');
+    }
+    final credentialId = body['credentialId'] as String?;
+    final authDataB64 = body['authenticatorData'] as String?;
+    final clientDataB64 = body['clientDataJSON'] as String?;
+    final signatureB64 = body['signature'] as String?;
+    if (credentialId == null ||
+        authDataB64 == null ||
+        clientDataB64 == null ||
+        signatureB64 == null) {
+      return fail(400, 'Missing assertion fields.');
+    }
+
+    final account =
+        _accounts.firstWhereOrNullExt((a) => a.credentialId == credentialId);
+    if (account == null) return fail(401, 'Unknown credential.');
+
+    void recordFailure() {
+      final attempts = (_failedAttempts[clientIp] ?? 0) + 1;
+      _failedAttempts[clientIp] = attempts;
+      if (attempts >= _maxFailedAttempts) {
+        _lockoutUntil[clientIp] = DateTime.now().add(_lockoutDuration);
+        _failedAttempts.remove(clientIp);
+      }
+    }
+
+    try {
+      final authData = _b64urlDecode(authDataB64);
+      final clientData = _b64urlDecode(clientDataB64);
+      final signature = _b64urlDecode(signatureB64);
+
+      // 1) clientDataJSON の検証
+      final cd = json.decode(utf8.decode(clientData)) as Map<String, dynamic>;
+      if (cd['type'] != 'webauthn.get') {
+        recordFailure();
+        return fail(401, 'Bad clientData type.');
+      }
+      final challenge = cd['challenge'] as String?;
+      _pruneWebauthnChallenges();
+      // チャレンジは1回限り（消費してリプレイを防ぐ）
+      if (challenge == null || _webauthnChallenges.remove(challenge) == null) {
+        recordFailure();
+        return fail(401, 'Invalid or expired challenge.');
+      }
+      final origin = cd['origin'] as String?;
+      if (origin == null || !_isAllowedWebauthnOrigin(origin)) {
+        recordFailure();
+        return fail(401, 'Bad origin.');
+      }
+
+      // 2) authenticatorData の検証（rpIdHash / user-present フラグ）
+      if (authData.length < 37) {
+        recordFailure();
+        return fail(401, 'Bad authenticator data.');
+      }
+      final rpId = Uri.parse(origin).host;
+      final expectedRpHash =
+          CryptoUtils.getHashPlain(Uint8List.fromList(utf8.encode(rpId)));
+      if (!_bytesEqual(authData.sublist(0, 32), expectedRpHash)) {
+        recordFailure();
+        return fail(401, 'rpId mismatch.');
+      }
+      final flags = authData[32];
+      if ((flags & 0x01) == 0) {
+        recordFailure();
+        return fail(401, 'User presence flag not set.');
+      }
+
+      // 3) 署名検証: sig は (authData || SHA256(clientDataJSON)) に対する ES256
+      final clientDataHash =
+          CryptoUtils.getHashPlain(Uint8List.fromList(clientData));
+      final signedData =
+          Uint8List.fromList([...authData, ...clientDataHash]);
+      final pubKey = CryptoUtils.ecPublicKeyFromDerBytes(account.publicKeySpki);
+      final sig =
+          CryptoUtils.ecSignatureFromDerBytes(Uint8List.fromList(signature));
+      final ok = CryptoUtils.ecVerify(pubKey, signedData, sig,
+          algorithm: 'SHA-256/ECDSA');
+      if (!ok) {
+        recordFailure();
+        return fail(401, 'Signature verification failed.');
+      }
+
+      // 成功: アカウント付きセッションを発行
+      _failedAttempts.remove(clientIp);
+      _lockoutUntil.remove(clientIp);
+      final token = _createSession(account: account.name);
+      _log('[passkey] login ok: ${account.name} from $clientIp');
+      return Response.ok(
+        json.encode({'status': 'success', 'account': account.name}),
+        headers: {
+          'Content-Type': 'application/json',
+          'Set-Cookie': _sessionCookie(token),
+        },
+      );
+    } catch (e) {
+      recordFailure();
+      return fail(401, 'Assertion verification error.');
     }
   }
 
@@ -2789,6 +3100,10 @@ class _CliServer {
                 : 'randomPin',
         'requiresAuth': _authMode != _AuthMode.noPin,
         'clipboardEnabled': _clipboardEnabled,
+        // #267: passkey ログインが使えるか（accounts が1件以上）。Web UI がボタン表示に使う。
+        'passkeyEnabled': _accounts.isNotEmpty,
+        // #267: ログイン中のアカウント名（passkey セッションのみ。未ログイン/guest は null）
+        if (authed) 'account': _sessionAccountOf(req),
         // #265: deviceId は認証済みリクエストにのみ返す
         // federation heartbeat は Bearer トークン付きで /api/info を叩くため引き続き取得可能
         if (authed) 'deviceId': _deviceId,
@@ -3653,7 +3968,11 @@ class _CliServer {
           json.decode(await req.readAsString()) as Map<String, dynamic>;
       var text = (params['text'] as String?)?.trim();
       final rawTag = (params['tag'] as String?)?.trim();
-      final tag = (rawTag != null && rawTag.isNotEmpty) ? rawTag : null;
+      // #267: タグ未指定なら passkey ログイン中のアカウント名を既定タグにする
+      //       （誰が投稿したか分かる＝クリップボードが軽量な複数人チャットになる）。
+      final tag = (rawTag != null && rawTag.isNotEmpty)
+          ? rawTag
+          : _sessionAccountOf(req);
 
       if (text == null || text.isEmpty) {
         return Response.badRequest(

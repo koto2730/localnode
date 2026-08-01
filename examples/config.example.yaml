@@ -33,6 +33,12 @@ server:
   pin-charset: digits            # ランダム PIN の文字種: digits / alnum / alnum_symbols（既定: digits）
   no-pin: false                  # true で PIN 認証を無効化（信頼ネットワーク専用。アップロードトークンも無効になる）
 
+  # --- 認証: passkey (WebAuthn) アカウント (#267) ---
+  # 指定すると PIN と併存で「passkey ログイン」が有効になる（各自の passkey で
+  # ログイン・投稿の属性付与・個別失効）。HTTPS + ホスト名 or localhost が必須で、
+  # 素の LAN IP では動かない。詳細は examples/accounts.example.yaml。
+  accounts-file: /etc/localnode/accounts.yaml   # 省略で passkey ログイン無効
+
   # --- 認証: アップロードトークン (Bearer) ---
   # curl 等からのアップロード / クリップボード POST 用の固定トークン。省略でランダム生成。
   token: change-me-upload-token  # 固定 Bearer トークン（省略でランダム）
