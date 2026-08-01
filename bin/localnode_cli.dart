@@ -1563,6 +1563,7 @@ class _CliServer {
   // #267: 発行済み WebAuthn チャレンジ（base64url） → 失効エポック ms。リプレイ防止に消費する。
   final Map<String, int> _webauthnChallenges = {};
   static const Duration _webauthnChallengeTtl = Duration(minutes: 2);
+  static const int _maxWebauthnChallenges = 4096;
   // #258: DNS rebinding 対策 — 許可する Host 値のセット
   Set<String> _allowedHosts = {};
   // #6: HTTPS 起動時は Secure 属性を付与
@@ -2921,6 +2922,13 @@ class _CliServer {
       );
     }
     _pruneWebauthnChallenges();
+    // 未認証エンドポイントなので、TTL 内スパムでのメモリ肥大を上限で抑える
+    // （超過時は最古を1件退避）。
+    if (_webauthnChallenges.length >= _maxWebauthnChallenges) {
+      final oldest =
+          _webauthnChallenges.entries.reduce((a, b) => a.value < b.value ? a : b);
+      _webauthnChallenges.remove(oldest.key);
+    }
     final r = Random.secure();
     final challenge =
         _b64urlNoPad(List<int>.generate(32, (_) => r.nextInt(256)));
