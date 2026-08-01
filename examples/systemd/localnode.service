@@ -1,0 +1,57 @@
+# LocalNode CLI as a systemd service (Linux)
+#
+# Install:
+#   1. Copy the standalone binary:   sudo cp localnode-cli /usr/local/bin/
+#   2. Create a low-privilege user:  sudo useradd --system --home /var/lib/localnode --shell /usr/sbin/nologin localnode
+#   3. Create dirs and set owner (the service user must be able to write the
+#      shared dir and its runtime/state/cache dirs):
+#        sudo mkdir -p /etc/localnode /var/lib/localnode /var/cache/localnode /srv/share /run/localnode
+#        sudo chown -R localnode:localnode /var/lib/localnode /var/cache/localnode /run/localnode /srv/share
+#   4. Put your config at /etc/localnode/config.yaml (see examples/config.example.yaml)
+#      and make it readable by the service user without being world-readable:
+#        sudo chown root:localnode /etc/localnode/config.yaml && sudo chmod 0640 /etc/localnode/config.yaml
+#   5. Copy this file:               sudo cp localnode.service /etc/systemd/system/
+#   6. Enable + start:               sudo systemctl daemon-reload && sudo systemctl enable --now localnode
+#
+# Logs:   journalctl -u localnode -f
+# Stop:   sudo systemctl stop localnode        Disable: sudo systemctl disable localnode
+
+[Unit]
+Description=LocalNode file server (CLI)
+Documentation=https://github.com/koto2730/localnode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/localnode-cli --config /etc/localnode/config.yaml
+Restart=on-failure
+RestartSec=5
+
+# Run as a dedicated non-root user (create it as above).
+User=localnode
+Group=localnode
+
+# Where the process is allowed to write. Adjust to match your config:
+#   - shared dir (server.dir)
+#   - cache dir  (server.cache-dir)
+#   - state file (server.state-file)
+#   - pin-file / token-file (if used)
+RuntimeDirectory=localnode
+StateDirectory=localnode
+CacheDirectory=localnode
+ReadWritePaths=/srv/share
+
+# Hardening (loosen only if something legitimately needs more access).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# Note: post-action / mention-action scripts run as this same user. Keep them
+# minimal and trusted; the hardening above also applies to them.
+
+[Install]
+WantedBy=multi-user.target

@@ -106,6 +106,8 @@ localnode --cli [options]
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |
 | `--post-action` | Script to execute on matching uploads: `pattern=script` (repeatable, glob pattern) |
+| `--post-action-timeout` | Timeout in seconds for each post-action script; the process is killed if it exceeds this. `0` disables the timeout. Default: `300`. Prevents one hung script from blocking all later post-actions |
+| `--accounts-file` | Path to a YAML passkey accounts file (WebAuthn login). Enables per-user passkey login alongside the PIN. Requires HTTPS + a hostname (or `localhost`) — see [Passkey login](#passkey-login-webauthn) |
 | `--mention-action` | Register clipboard mention command: `alias=script` (repeatable) |
 | `--token` | Fixed Bearer token for upload and clipboard POST (random if not specified) |
 | `--no-token` | Disable token-based authentication for upload and clipboard POST |
@@ -211,7 +213,52 @@ The file currently contains a single `device_id` UUID generated on first start. 
 localnode-cli --config /mnt/usb/localnode.yaml --state-file /mnt/usb/state.json
 ```
 
-> The state file path is currently a CLI flag only — it is not yet exposed as a YAML config key.
+> The state file path can also be set via `server.state-file` in the YAML config (the CLI arg overrides it).
+
+#### Running as a service (systemd / launchd)
+
+To run the CLI as a background service that starts on boot and restarts on failure, use the templates under [`examples/`](examples/):
+
+- **Linux (systemd):** [`examples/systemd/localnode.service`](examples/systemd/localnode.service) — a unit that runs `localnode-cli --config /etc/localnode/config.yaml` as a dedicated non-root user with filesystem hardening. The header comments list the exact install steps, or use the transparent helper:
+  ```bash
+  sudo examples/systemd/install-localnode.sh /path/to/localnode-cli
+  # then edit /etc/localnode/config.yaml and:
+  sudo systemctl enable --now localnode
+  journalctl -u localnode -f
+  ```
+- **macOS (launchd):** [`examples/launchd/com.ictglab.localnode.plist`](examples/launchd/com.ictglab.localnode.plist) — a LaunchDaemon/LaunchAgent template. Use a self-built / non-App-Store `localnode-cli` binary: the Mac App Store build is sandboxed and cannot run reliably as a daemon writing to arbitrary paths.
+
+Both point at `/etc/localnode/config.yaml` — see [`examples/config.example.yaml`](examples/config.example.yaml) for the full annotated config. Post-action / mention-action scripts run as the service user, so keep them minimal and trusted.
+
+## Passkey login (WebAuthn)
+
+Passkey login lets multiple people sign in with their own passkey instead of sharing one PIN — the SSH `authorized_keys` model applied to passkeys. It coexists with the PIN (the PIN stays available; a PIN session is an anonymous "guest").
+
+**Requirement:** WebAuthn only works over a **secure context with a hostname** — an HTTPS origin (e.g. a Tailscale Funnel / cert hostname) or `http://localhost`. It does **not** work over a bare LAN IP (`http://192.168.x`). So passkey login targets public/HTTPS-hostname access; keep the PIN for plain-IP LAN use.
+
+**Setup**
+
+1. Start the server with an accounts file (created empty or non-existent is fine — you bootstrap the first account from the browser):
+   ```bash
+   localnode-cli --https-cert cert.pem --https-key key.pem \
+                 --accounts-file /etc/localnode/accounts.yaml
+   ```
+   (or `server.accounts-file` in the YAML config)
+2. Open the Web UI over the HTTPS hostname (or `https://localhost`), click **パスキーを登録 (register)** on the PIN screen, enter an account name, and create the passkey on your device.
+3. The page shows a YAML snippet — paste it under `accounts:` in the accounts file and restart the server. See [`examples/accounts.example.yaml`](examples/accounts.example.yaml).
+4. From then on, **🔑 パスキーでログイン** logs that account in.
+
+Each account is one entry:
+```yaml
+accounts:
+  - name: shiba
+    credential_id: <base64url>   # shown by the register page
+    public_key: <base64 SPKI>    # shown by the register page
+```
+
+**Attribution:** clipboard posts from a passkey session are auto-tagged with the account name (unless a tag is given), so the shared clipboard reads like a lightweight multi-person chat. Remove one line from the accounts file to revoke one person.
+
+> Only ES256 (ECDSA P-256) passkeys are supported. Enrollment and login must be served from the same hostname.
 
 ## Federation (v1.6.0+)
 

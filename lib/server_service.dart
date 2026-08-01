@@ -773,7 +773,7 @@ class ServerService {
       // AndroidでSAF URIが設定されている場合
       if (Platform.isAndroid && _safDirectoryUri != null) {
         // F1: SAF ツリー外のファイルへのアクセスを拒否
-        if (!decoded.startsWith(_safDirectoryUri!)) {
+        if (!_isWithinSafTree(decoded)) {
           return Response.forbidden('Access denied');
         }
         final fileUri = decoded;
@@ -1009,7 +1009,7 @@ class ServerService {
 
       if (Platform.isAndroid && _safDirectoryUri != null) {
         // F1: SAF ツリー外のファイルへのアクセスを拒否
-        if (!decoded.startsWith(_safDirectoryUri!)) {
+        if (!_isWithinSafTree(decoded)) {
           return Response.forbidden('Access denied');
         }
         imageBytes = await _safPlatform.invokeMethod('readFile', {'uri': decoded});
@@ -1177,7 +1177,7 @@ class ServerService {
 
       // パストラバーサル検証 (Copilot #199 review)
       if (Platform.isAndroid && _safDirectoryUri != null) {
-        if (!decoded.startsWith(_safDirectoryUri!)) {
+        if (!_isWithinSafTree(decoded)) {
           return Response.forbidden('Access denied');
         }
       } else {
@@ -1337,7 +1337,7 @@ class ServerService {
       // AndroidでSAF URIが設定されている場合
       if (Platform.isAndroid && _safDirectoryUri != null) {
         // F1: SAF ツリー外のファイルへのアクセスを拒否
-        if (!decoded.startsWith(_safDirectoryUri!)) {
+        if (!_isWithinSafTree(decoded)) {
           return Response.forbidden('Access denied');
         }
         final fileUri = decoded;
@@ -1406,7 +1406,7 @@ class ServerService {
       for (final raw in ids) {
         try {
           final fileUri = utf8.decode(base64Url.decode(raw as String));
-          if (!fileUri.startsWith(_safDirectoryUri!)) {
+          if (!_isWithinSafTree(fileUri)) {
             skipped.add(raw);
             continue;
           }
@@ -1742,6 +1742,17 @@ class ServerService {
   //   (b) 生の UTF-8 バイト列 -> latin1 として読まれ文字化けするので、
   //       latin1 に戻してから UTF-8 として解釈し直す
   // どちらでも正しく読めるように両方試す。
+  // #291(L2): SAF ツリー URI の配下かを境界付きで判定する。
+  // 単純な startsWith だと tree=".../Shared" のとき ".../SharedEvil" も通って
+  // しまうため、完全一致か直後が '/' で続く場合のみ許可する。
+  // （SAF の document URI は <treeUri>/document/... の形なので子は必ず '/' が続く。
+  //   実際のアクセスは Android のパーミッションでも守られるが、多層防御として。）
+  bool _isWithinSafTree(String uri) {
+    final tree = _safDirectoryUri;
+    if (tree == null) return false;
+    return uri == tree || uri.startsWith('$tree/');
+  }
+
   String? _decodeHeader(String? raw) {
     if (raw == null) return null;
     var s = raw;
