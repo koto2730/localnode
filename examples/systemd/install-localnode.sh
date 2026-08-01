@@ -35,12 +35,16 @@ fi
 
 echo "== 3. create directories =="
 run mkdir -p /etc/localnode /var/lib/localnode /var/cache/localnode /srv/share /run/localnode
-run chown -R "$USER_NAME:$USER_NAME" /var/lib/localnode /var/cache/localnode /run/localnode
+# The service runs as $USER_NAME and must be able to write the shared dir and
+# its runtime/state/cache dirs.
+run chown -R "$USER_NAME:$USER_NAME" /var/lib/localnode /var/cache/localnode /run/localnode /srv/share
 
 echo "== 4. config =="
 if [[ ! -f /etc/localnode/config.yaml ]]; then
   if [[ -f "$SVC_DIR/../config.example.yaml" ]]; then
     run install -m 0640 "$SVC_DIR/../config.example.yaml" /etc/localnode/config.yaml
+    # Readable by the service user (group), not world-readable (may hold secrets).
+    run chown "root:$USER_NAME" /etc/localnode/config.yaml
     echo "  >> edit /etc/localnode/config.yaml before starting the service"
   else
     echo "  !! config.example.yaml not found; create /etc/localnode/config.yaml yourself"

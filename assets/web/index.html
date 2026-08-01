@@ -1281,12 +1281,16 @@
                 mainContent.style.display = 'none';
                 pinModal.style.display = 'flex';
                 pinInput.focus();
-                // #267: passkey が使えるサーバ かつ WebAuthn 対応ブラウザでのみ表示。
-                // WebAuthn はセキュアコンテキスト（HTTPS or localhost）が必須。
-                const canPasskey = serverInfo.passkeyEnabled &&
-                    window.PublicKeyCredential && window.isSecureContext;
+                // #267: WebAuthn 対応ブラウザ かつ セキュアコンテキスト（HTTPS or
+                // localhost）で、accounts ファイルが設定されているサーバなら表示。
+                // 登録(enroll)はアカウント0件でも必要（初回ブートストラップ）なので
+                // passkeyConfigured で出す。ログインボタンは登録済み時のみ。
+                const webauthnOk = window.PublicKeyCredential && window.isSecureContext;
+                const showArea = webauthnOk && serverInfo.passkeyConfigured;
                 document.getElementById('passkeyArea').style.display =
-                    canPasskey ? 'block' : 'none';
+                    showArea ? 'block' : 'none';
+                document.getElementById('passkeyLoginBtn').style.display =
+                    (showArea && serverInfo.passkeyEnabled) ? 'block' : 'none';
             };
 
             const showMainContent = () => {
@@ -1562,8 +1566,10 @@
                     if (!spki) throw new Error('公開鍵を取得できませんでした（ブラウザ非対応）。');
                     const credId = bytesToB64url(cred.rawId);
                     const pubB64 = bytesToB64(spki);
+                    // 名前に : や # や空白が入っても壊れないよう YAML ダブルクオート文字列で出す
+                    const nameYaml = '"' + name.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
                     const yaml =
-                        '  - name: ' + name + '\n' +
+                        '  - name: ' + nameYaml + '\n' +
                         '    credential_id: ' + credId + '\n' +
                         '    public_key: ' + pubB64 + '\n';
                     document.getElementById('enrollYaml').value = yaml;

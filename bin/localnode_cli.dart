@@ -3108,8 +3108,11 @@ class _CliServer {
                 : 'randomPin',
         'requiresAuth': _authMode != _AuthMode.noPin,
         'clipboardEnabled': _clipboardEnabled,
-        // #267: passkey ログインが使えるか（accounts が1件以上）。Web UI がボタン表示に使う。
+        // #267: passkey ログインが使えるか（accounts が1件以上）。ログインボタン表示に使う。
         'passkeyEnabled': _accounts.isNotEmpty,
+        // #267: accounts ファイルが指定されているか（0件でも true）。enroll 導線の表示に使う。
+        // これが無いと「空ファイルから初回パスキーを登録」するブートストラップができない。
+        'passkeyConfigured': _accountsFile != null,
         // #267: ログイン中のアカウント名（passkey セッションのみ。未ログイン/guest は null）
         if (authed) 'account': _sessionAccountOf(req),
         // #265: deviceId は認証済みリクエストにのみ返す
