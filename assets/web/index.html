@@ -1300,6 +1300,12 @@
                 document.title = name;
                 document.querySelector('#main-content h1').textContent = name;
                 fetchFiles();
+                // #267: passkey アカウントでログインしているときは、送信元タグの
+                // 既定をアカウント名にする（誰の投稿か分かる＝チャット化）。
+                // 未ログイン/guest はデバイスの OS 名の既定のまま。
+                if (serverInfo.account) {
+                    clipboardTagInput.value = serverInfo.account;
+                }
                 if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
                 applyModeRestrictions();
                 if (serverInfo.version) {
