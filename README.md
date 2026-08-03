@@ -219,9 +219,12 @@ localnode-cli --config /mnt/usb/localnode.yaml --state-file /mnt/usb/state.json
 
 To run the CLI as a background service that starts on boot and restarts on failure, use the templates under [`examples/`](examples/):
 
-- **Linux (systemd):** [`examples/systemd/localnode.service`](examples/systemd/localnode.service) — a unit that runs `localnode-cli --config /etc/localnode/config.yaml` as a dedicated non-root user with filesystem hardening. The header comments list the exact install steps, or use the transparent helper:
+> **Note:** `localnode-cli` reads its Web UI assets (`data/flutter_assets/…`) from disk next to the executable. Install the **whole extracted release directory** (e.g. to `/opt/localnode`) and run the binary from inside it — not just the single binary, or the server falls back to a minimal HTML page.
+
+- **Linux (systemd):** [`examples/systemd/localnode.service`](examples/systemd/localnode.service) — a unit that runs `/opt/localnode/localnode-cli --config /etc/localnode/config.yaml` as a dedicated non-root user with filesystem hardening. The header comments list the exact install steps, or use the transparent helper:
   ```bash
-  sudo examples/systemd/install-localnode.sh /path/to/localnode-cli
+  tar xzf localnode-linux-x64-v*.tar.gz -C /tmp/localnode-dist
+  sudo examples/systemd/install-localnode.sh /tmp/localnode-dist
   # then edit /etc/localnode/config.yaml and:
   sudo systemctl enable --now localnode
   journalctl -u localnode -f

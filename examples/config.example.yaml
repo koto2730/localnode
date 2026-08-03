@@ -22,6 +22,12 @@ server:
   port: 8080                     # 待受ポート（既定: 8080）
   ip: 192.168.1.100              # 広告する IP。省略すると自動選択（複数 NIC 時に固定したいなら指定）
   name: home-server              # ブラウザのタブ/タイトルに出すサーバー名（既定: LocalNode）
+  # 書き込み先パス（dir / cache-dir / state-file / pin-file / token-file）について:
+  #   同梱の systemd ユニットで動かす場合、ProtectSystem=strict で `/` は基本
+  #   読み取り専用。書き込み先は systemd 管理dir（/var/lib/localnode,
+  #   /var/cache/localnode, /run/localnode）に入れると ReadWritePaths 無しで動く。
+  #   下の /srv/share のように“管理dirの外”を使うなら、ユニットに
+  #   `ReadWritePaths=/srv/share` を足して chown が必要（examples/systemd/ 参照）。
   dir: /srv/share                # 共有フォルダ。省略するとカレントディレクトリ
   cache-dir: /var/cache/localnode # キャッシュ/一時データ(サムネイル等)の置き場 (#287)。省略時は OS の一時ディレクトリ
   mode: normal                   # normal / download-only（既定: normal）
