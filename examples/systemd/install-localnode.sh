@@ -44,22 +44,36 @@ else
   echo "  user '$USER_NAME' already exists, skipping"
 fi
 
-echo "== 3. create directories =="
-run mkdir -p /etc/localnode /var/lib/localnode /var/cache/localnode /srv/share /run/localnode
-# The service runs as $USER_NAME and must be able to write the shared dir and
-# its runtime/state/cache dirs.
-run chown -R "$USER_NAME:$USER_NAME" /var/lib/localnode /var/cache/localnode /run/localnode /srv/share
+echo "== 3. create config directory =="
+# /var/lib, /var/cache, /run/localnode are created and owned automatically by
+# the unit's StateDirectory=/CacheDirectory=/RuntimeDirectory= at start, so we
+# only need the config dir here.
+run mkdir -p /etc/localnode
 
 echo "== 4. config =="
+# Write a MINIMAL working default whose writable paths all live under the
+# systemd-managed dirs, so it starts with the shipped unit as-is (no
+# ReadWritePaths / manual chown needed). config.example.yaml is the full
+# annotated reference — do NOT install it verbatim (it enables HTTPS /
+# federation pointing at paths/hosts that won't exist and would fail to start).
 if [[ ! -f /etc/localnode/config.yaml ]]; then
-  if [[ -f "$SVC_DIR/../config.example.yaml" ]]; then
-    run install -m 0640 "$SVC_DIR/../config.example.yaml" /etc/localnode/config.yaml
-    # Readable by the service user (group), not world-readable (may hold secrets).
-    run chown "root:$USER_NAME" /etc/localnode/config.yaml
-    echo "  >> edit /etc/localnode/config.yaml before starting the service"
-  else
-    echo "  !! config.example.yaml not found; create /etc/localnode/config.yaml yourself"
-  fi
+  cat > /etc/localnode/config.yaml <<'YAML'
+# LocalNode service config — minimal defaults for the systemd unit.
+# All writable paths are under the systemd-managed dirs, so this works with the
+# shipped unit as-is. See /opt/localnode or the repo examples/config.example.yaml
+# for every available option (HTTPS, passkey accounts, federation, etc.).
+server:
+  port: 8080
+  dir: /var/lib/localnode/share          # shared folder (inside StateDirectory)
+  cache-dir: /var/cache/localnode
+  state-file: /var/lib/localnode/state.json
+  # pin: omitted -> a random PIN is generated and printed to the journal at start
+  #   (find it with: journalctl -u localnode | grep -i pin)
+YAML
+  # Readable by the service user (group), not world-readable (may hold secrets).
+  run chown "root:$USER_NAME" /etc/localnode/config.yaml
+  run chmod 0640 /etc/localnode/config.yaml
+  echo "  wrote a minimal /etc/localnode/config.yaml (edit to taste)"
 else
   echo "  /etc/localnode/config.yaml already exists, leaving it"
 fi
@@ -69,6 +83,11 @@ run install -m 0644 "$SVC_DIR/localnode.service" /etc/systemd/system/localnode.s
 run systemctl daemon-reload
 
 echo
-echo "Done. Review /etc/localnode/config.yaml, then:"
+echo "Done. The default config works out of the box. Start it with:"
 echo "  sudo systemctl enable --now localnode"
-echo "  journalctl -u localnode -f"
+echo "  journalctl -u localnode -f      # note the PIN printed on start"
+echo
+echo "To serve files from a path OUTSIDE the managed dirs (e.g. /srv/share or an"
+echo "external disk), set server.dir to it in /etc/localnode/config.yaml AND add"
+echo "  ReadWritePaths=<that path>   to the unit (systemctl edit --full localnode),"
+echo "then: sudo mkdir -p <path> && sudo chown -R $USER_NAME:$USER_NAME <path>"

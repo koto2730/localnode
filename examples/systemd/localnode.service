@@ -7,6 +7,8 @@
 # run the binary from inside it. Otherwise the server falls back to a minimal
 # HTML page ("Web assets not found").
 #
+# The install-localnode.sh helper does all of the below; these are the manual steps.
+#
 # Install:
 #   1. Extract the release archive and install the whole directory:
 #        tar xzf localnode-linux-x64-v*.tar.gz -C /tmp/localnode-dist
@@ -14,13 +16,14 @@
 #        sudo cp -a /tmp/localnode-dist/. /opt/localnode/     # localnode-cli + data/ + lib/
 #      (the service user only needs to READ /opt/localnode; keep it root-owned)
 #   2. Create a low-privilege user:  sudo useradd --system --home /var/lib/localnode --shell /usr/sbin/nologin localnode
-#   3. Create dirs and set owner (the service user must be able to write the
-#      shared dir and its runtime/state/cache dirs):
-#        sudo mkdir -p /etc/localnode /var/lib/localnode /var/cache/localnode /srv/share /run/localnode
-#        sudo chown -R localnode:localnode /var/lib/localnode /var/cache/localnode /run/localnode /srv/share
-#   4. Put your config at /etc/localnode/config.yaml (see examples/config.example.yaml)
-#      and make it readable by the service user without being world-readable:
+#   3. Create the config dir:        sudo mkdir -p /etc/localnode
+#      (/var/lib, /var/cache, /run/localnode are created + owned automatically by
+#       the StateDirectory=/CacheDirectory=/RuntimeDirectory= lines below.)
+#   4. Put your config at /etc/localnode/config.yaml, readable by the service user:
 #        sudo chown root:localnode /etc/localnode/config.yaml && sudo chmod 0640 /etc/localnode/config.yaml
+#      Keep server.dir / cache-dir / state-file / pin-file / token-file INSIDE the
+#      managed dirs (/var/lib/localnode, /var/cache/localnode, /run/localnode) and
+#      this unit works as-is. (See the "Writable paths" note below.)
 #   5. Copy this file:               sudo cp localnode.service /etc/systemd/system/
 #   6. Enable + start:               sudo systemctl daemon-reload && sudo systemctl enable --now localnode
 #
@@ -45,15 +48,22 @@ RestartSec=5
 User=localnode
 Group=localnode
 
-# Where the process is allowed to write. Adjust to match your config:
-#   - shared dir (server.dir)
-#   - cache dir  (server.cache-dir)
-#   - state file (server.state-file)
-#   - pin-file / token-file (if used)
+# Writable paths.
+# ProtectSystem=strict makes the filesystem read-only EXCEPT these. The three
+# *Directory= lines create AND own (as the service user) /run/localnode,
+# /var/lib/localnode and /var/cache/localnode. So if your config.yaml keeps its
+# writable paths inside those (the shipped default does):
+#     dir: /var/lib/localnode/share   cache-dir: /var/cache/localnode
+#     state-file: /var/lib/localnode/state.json   pin-file/token-file: /run/localnode/...
+# the unit works as-is and no ReadWritePaths / chown is needed.
+#
+# To serve files from a path OUTSIDE those (e.g. /srv/share or an external disk),
+# set that same path as `server.dir` in config.yaml, uncomment the matching
+# ReadWritePaths below, and `chown -R localnode:localnode` it once.
 RuntimeDirectory=localnode
 StateDirectory=localnode
 CacheDirectory=localnode
-ReadWritePaths=/srv/share
+#ReadWritePaths=/srv/share
 
 # Hardening (loosen only if something legitimately needs more access).
 NoNewPrivileges=true
