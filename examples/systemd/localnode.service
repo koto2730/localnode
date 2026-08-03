@@ -1,7 +1,18 @@
 # LocalNode CLI as a systemd service (Linux)
 #
+# IMPORTANT: `localnode-cli` is NOT a single self-contained file for serving the
+# Web UI — it reads assets/web/index.html from disk, next to the executable
+# (the release archive ships them at data/flutter_assets/assets/web/...). So do
+# NOT copy just the binary; install the WHOLE extracted release directory and
+# run the binary from inside it. Otherwise the server falls back to a minimal
+# HTML page ("Web assets not found").
+#
 # Install:
-#   1. Copy the standalone binary:   sudo cp localnode-cli /usr/local/bin/
+#   1. Extract the release archive and install the whole directory:
+#        tar xzf localnode-linux-x64-v*.tar.gz -C /tmp/localnode-dist
+#        sudo mkdir -p /opt/localnode
+#        sudo cp -a /tmp/localnode-dist/. /opt/localnode/     # localnode-cli + data/ + lib/
+#      (the service user only needs to READ /opt/localnode; keep it root-owned)
 #   2. Create a low-privilege user:  sudo useradd --system --home /var/lib/localnode --shell /usr/sbin/nologin localnode
 #   3. Create dirs and set owner (the service user must be able to write the
 #      shared dir and its runtime/state/cache dirs):
@@ -24,7 +35,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/localnode-cli --config /etc/localnode/config.yaml
+# Run the binary from inside the extracted release dir so it finds its web
+# assets (data/flutter_assets/…) next to itself.
+ExecStart=/opt/localnode/localnode-cli --config /etc/localnode/config.yaml
 Restart=on-failure
 RestartSec=5
 

@@ -8,9 +8,14 @@
       dart compile exe bin/localnode_cli.dart -o localnode-cli
   or point ProgramArguments at the app bundle's binary with --cli.
 
+  NOTE: `localnode-cli` reads its web assets (data/flutter_assets/…) from disk
+  next to the executable, so install the WHOLE extracted release directory, not
+  just the binary, and run the binary from inside it. (On a self-built binary,
+  keep it beside the project's assets/ or the built bundle's data/ folder.)
+
   Install as a system LaunchDaemon (runs at boot, all users):
-    1. sudo cp localnode-cli /usr/local/bin/
-    2. sudo mkdir -p /etc/localnode /usr/local/var/localnode /usr/local/var/log
+    1. sudo mkdir -p /opt/localnode && sudo cp -a /path/to/extracted-release/. /opt/localnode/
+    2. sudo mkdir -p /etc/localnode /usr/local/var/log
        put your config at /etc/localnode/config.yaml (see examples/config.example.yaml)
     3. sudo cp com.ictglab.localnode.plist /Library/LaunchDaemons/
        sudo chown root:wheel /Library/LaunchDaemons/com.ictglab.localnode.plist
@@ -30,7 +35,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/localnode-cli</string>
+        <string>/opt/localnode/localnode-cli</string>
         <string>--config</string>
         <string>/etc/localnode/config.yaml</string>
     </array>

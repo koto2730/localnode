@@ -2,15 +2,21 @@
 # Transparent installer for the LocalNode systemd service (Linux).
 # It only runs the same steps documented in localnode.service — read it first.
 #
-# Usage:
-#   sudo ./install-localnode.sh /path/to/localnode-cli
+# `localnode-cli` needs its web assets (data/flutter_assets/…) next to it, so
+# this installs the WHOLE extracted release directory to /opt/localnode, not
+# just the binary.
 #
-# Re-running is safe: existing user/dirs/config are left as-is.
+# Usage:
+#   tar xzf localnode-linux-x64-v*.tar.gz -C /tmp/localnode-dist
+#   sudo ./install-localnode.sh /tmp/localnode-dist
+#
+# Re-running is safe: existing user/dirs/config are left as-is; /opt/localnode
+# is refreshed from the given directory.
 set -euo pipefail
 
-BIN_SRC="${1:-}"
-if [[ -z "$BIN_SRC" || ! -x "$BIN_SRC" ]]; then
-  echo "usage: sudo $0 /path/to/localnode-cli" >&2
+DIST_SRC="${1:-}"
+if [[ -z "$DIST_SRC" || ! -d "$DIST_SRC" || ! -x "$DIST_SRC/localnode-cli" ]]; then
+  echo "usage: sudo $0 /path/to/extracted-release-dir  (must contain localnode-cli + data/)" >&2
   exit 1
 fi
 if [[ $EUID -ne 0 ]]; then
@@ -20,11 +26,16 @@ fi
 
 SVC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USER_NAME=localnode
+INSTALL_DIR=/opt/localnode
 
 run() { echo "+ $*"; "$@"; }
 
-echo "== 1. install binary =="
-run install -m 0755 "$BIN_SRC" /usr/local/bin/localnode-cli
+echo "== 1. install the release bundle to $INSTALL_DIR =="
+run mkdir -p "$INSTALL_DIR"
+# Copy the whole directory (binary + data/flutter_assets + libs). root-owned,
+# read-only for the service user is fine — the CLI only reads its assets.
+run cp -a "$DIST_SRC/." "$INSTALL_DIR/"
+run chmod 0755 "$INSTALL_DIR/localnode-cli"
 
 echo "== 2. create service user (if missing) =="
 if ! id -u "$USER_NAME" >/dev/null 2>&1; then
