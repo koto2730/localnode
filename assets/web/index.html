@@ -34,6 +34,17 @@
             cursor: pointer;
         }
         #fed-status .fed-peer:hover { opacity: 0.8; }
+        /* #298: peer の URL を開くリンク（チップの pause クリックとは別操作） */
+        #fed-status .fed-open {
+            display: inline-block;
+            margin-left: -0.1rem;
+            margin-right: 0.35rem;
+            font-size: 0.8rem;
+            text-decoration: none;
+            color: #00796b;
+            cursor: pointer;
+        }
+        #fed-status .fed-open:hover { text-decoration: underline; }
         #fed-status .fed-connected { background: #c8e6c9; color: #1b5e20; }
         #fed-status .fed-offline { background: #ffcdd2; color: #b71c1c; }
         #fed-status .fed-paused { background: #fff3cd; color: #856404; }
@@ -772,52 +783,6 @@
             #lightbox-next { left: 4.75rem; right: auto; }
         }
 
-        /* 比較ビュー */
-        #video-player-overlay {
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: rgba(0,0,0,0.9);
-            display: none;
-            justify-content: center;
-            align-items: center;
-            flex-direction: column;
-            z-index: 200;
-        }
-        #video-player-overlay.open { display: flex; }
-        #video-player {
-            max-width: 95%;
-            max-height: 80%;
-            background: black;
-        }
-        #video-player-close {
-            position: fixed;
-            top: 1rem;
-            right: 1rem;
-            background: rgba(255,255,255,0.2);
-            border: none;
-            color: white;
-            font-size: 1.5rem;
-            padding: 0.3rem 0.7rem;
-            cursor: pointer;
-            border-radius: 4px;
-        }
-        #video-player-meta {
-            color: white;
-            font-size: 0.85rem;
-            margin-top: 0.75rem;
-            opacity: 0.85;
-        }
-        #video-player-download {
-            margin-top: 0.5rem;
-            background: rgba(255,255,255,0.2);
-            border: none;
-            color: white;
-            font-size: 0.9rem;
-            padding: 0.3rem 0.8rem;
-            cursor: pointer;
-            border-radius: 4px;
-        }
         .viewer-item video {
             width: 100%;
             height: 100%;
@@ -1099,19 +1064,13 @@
         <button class="lightbox-nav" id="lightbox-prev">‹</button>
         <div id="lightbox-img-wrap">
             <img id="lightbox-img" src="" alt="">
+            <!-- #297: 動画も同じビューアで順送りする -->
+            <video id="lightbox-video" controls playsinline style="display:none; max-width:90vw; max-height:75vh;"></video>
         </div>
         <button class="lightbox-nav" id="lightbox-next">›</button>
         <div id="lightbox-meta"></div>
         <button id="lightbox-save">⬇ 保存</button>
         <div id="lightbox-zoom-hint">スクロールでズーム • 矢印キーで移動</div>
-    </div>
-
-    <!-- #189: 動画プレイヤー -->
-    <div id="video-player-overlay">
-        <button id="video-player-close">✕</button>
-        <video id="video-player" controls></video>
-        <div id="video-player-meta"></div>
-        <button id="video-player-download">⬇ 保存</button>
     </div>
 
     <!-- #193: テキストプレビュー -->
@@ -1190,7 +1149,7 @@
             let isViewerMode = false;
             let allItems = [];
             let compareImages = [];
-            let lightboxImageList = [];
+            let lightboxMediaList = [];
             let lightboxIndex = 0;
             let lightboxScale = 1;
 
@@ -1352,7 +1311,12 @@
                         }
                         if (p.lastError) titleParts.push(p.lastError);
                         const title = titleParts.join(' • ');
-                        return `<span class="${cls}" title="${escapeHtml(title)}" data-peer-name="${escapeHtml(p.name)}" data-paused="${p.pauseUntilMs && p.pauseUntilMs > now ? '1' : '0'}">${escapeHtml(label)}</span>`;
+                        const chip = `<span class="${cls}" title="${escapeHtml(title)}" data-peer-name="${escapeHtml(p.name)}" data-paused="${p.pauseUntilMs && p.pauseUntilMs > now ? '1' : '0'}">${escapeHtml(label)}</span>`;
+                        // #298: peer の URL を新規タブで開くリンク（pause クリックとは別）
+                        const openLink = (typeof p.url === 'string' && p.url)
+                            ? `<a class="fed-open" href="${escapeHtml(p.url)}" target="_blank" rel="noopener" title="開く: ${escapeHtml(p.url)}">↗</a>`
+                            : '';
+                        return chip + openLink;
                     }).join('');
                     fedStatusEl.innerHTML = `Federation: ${chips}`;
                     fedStatusEl.style.display = 'block';
@@ -2437,7 +2401,7 @@
                 const fileList = document.getElementById('file-list');
                 const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
                 // #270/#216: lightbox も list view で機能するよう画像リストを更新
-                lightboxImageList = items.filter(i => i.type !== 'directory' && isImageFile(i.name));
+                lightboxMediaList = items.filter(i => i.type !== 'directory' && (isImageFile(i.name) || isVideoFile(i.name)));
 
                 if (items.length === 0) {
                     fileList.innerHTML = '<table><tbody><tr><td colspan="3" style="text-align:center;">ファイルはありません。</td></tr></tbody></table>';
@@ -2522,11 +2486,10 @@
                         row.style.cursor = 'pointer';
                         row.addEventListener('click', (e) => {
                             if (e.target.tagName === 'BUTTON') return;
-                            if (isImageFile(item.name)) {
-                                const imgIdx = lightboxImageList.findIndex(i => i.id === item.id);
-                                if (imgIdx >= 0) openLightbox(imgIdx);
-                            } else if (isVideoFile(item.name)) {
-                                openVideoPlayer(item.id, item.name);
+                            // #297: 画像・動画は同じビューアで順送り（ファイル順のインデックスで開く）
+                            if (isImageFile(item.name) || isVideoFile(item.name)) {
+                                const idx = lightboxMediaList.findIndex(i => i.id === item.id);
+                                if (idx >= 0) openLightbox(idx);
                             } else {
                                 openTextPreview(item.id, item.name);
                             }
@@ -2537,7 +2500,7 @@
             };
 
             const renderGridView = (items) => {
-                lightboxImageList = items.filter(i => i.type !== 'directory' && isImageFile(i.name));
+                lightboxMediaList = items.filter(i => i.type !== 'directory' && (isImageFile(i.name) || isVideoFile(i.name)));
                 const isDownloadOnly = serverInfo.operationMode === 'downloadOnly';
                 const fileList = document.getElementById('file-list');
 
@@ -2588,7 +2551,7 @@
                         const target = currentPath ? `${currentPath}/${item.name}` : item.name;
                         viewerItem.addEventListener('click', () => navigateTo(target));
                     } else if (isImageFile(item.name)) {
-                        const imgIdx = lightboxImageList.findIndex(i => i.id === item.id);
+                        const imgIdx = lightboxMediaList.findIndex(i => i.id === item.id);
                         const sel = compareImages.some(c => c.id === item.id);
                         viewerItem.className = `viewer-item${sel ? ' selected' : ''}`;
                         const img = document.createElement('img');
@@ -2603,7 +2566,8 @@
                         cmpBtn.addEventListener('click', () => toggleCompare(item.id, item.name));
                         viewerItem.append(img, nameDiv, cmpBtn);
                     } else if (isVideoFile(item.name)) {
-                        // #189: ファーストフレームをサムネ表示、クリックでプレイヤー
+                        // #189: ファーストフレームをサムネ表示。#297: クリックでビューア（順送り）
+                        const vidIdx = lightboxMediaList.findIndex(i => i.id === item.id);
                         viewerItem.className = 'viewer-item';
                         const video = document.createElement('video');
                         video.src = `/api/download/${item.id}`;
@@ -2613,7 +2577,7 @@
                         video.addEventListener('loadedmetadata', () => {
                             try { video.currentTime = 0.1; } catch (_) {}
                         });
-                        video.addEventListener('click', () => openVideoPlayer(item.id, item.name));
+                        video.addEventListener('click', () => openLightbox(vidIdx));
                         viewerItem.append(video, nameDiv);
                     } else {
                         viewerItem.className = 'viewer-item';
@@ -2656,10 +2620,19 @@
             // === ライトボックス ===
             const lightboxEl = document.getElementById('lightbox');
             const lightboxImg = document.getElementById('lightbox-img');
+            const lightboxVideo = document.getElementById('lightbox-video');
             const lightboxMeta = document.getElementById('lightbox-meta');
 
+            // #297: 動画再生を止めて要素を空にする
+            const stopLightboxVideo = () => {
+                lightboxVideo.pause();
+                lightboxVideo.removeAttribute('src');
+                lightboxVideo.load();
+                lightboxVideo.style.display = 'none';
+            };
+
             window.openLightbox = (idx) => {
-                if (lightboxImageList.length === 0) return;
+                if (lightboxMediaList.length === 0) return;
                 lightboxIndex = idx;
                 lightboxScale = 1;
                 lightboxImg.style.transform = 'scale(1)';
@@ -2669,59 +2642,42 @@
             };
 
             const updateLightbox = () => {
-                const item = lightboxImageList[lightboxIndex];
+                const item = lightboxMediaList[lightboxIndex];
                 if (!item) return;
-                lightboxImg.src = `/api/download/${item.id}`;
-                lightboxImg.alt = item.name;
                 const sizeMB = item.size ? ` • ${(item.size / (1024 * 1024)).toFixed(2)} MB` : '';
-                lightboxMeta.textContent = `${item.name}${sizeMB} (${lightboxIndex + 1} / ${lightboxImageList.length})`;
+                lightboxMeta.textContent = `${item.name}${sizeMB} (${lightboxIndex + 1} / ${lightboxMediaList.length})`;
+                if (isVideoFile(item.name)) {
+                    // 動画: img を隠して video を表示
+                    lightboxImg.style.display = 'none';
+                    lightboxImg.src = '';
+                    lightboxVideo.style.display = 'block';
+                    lightboxVideo.src = `/api/download/${item.id}`;
+                    lightboxVideo.play().catch(() => {});
+                } else {
+                    // 画像: video を止めて img を表示
+                    stopLightboxVideo();
+                    lightboxImg.style.display = 'block';
+                    lightboxImg.src = `/api/download/${item.id}`;
+                    lightboxImg.alt = item.name;
+                }
             };
 
             const closeLightbox = () => {
                 lightboxEl.classList.remove('open');
                 document.body.style.overflow = '';
                 lightboxImg.src = '';
+                stopLightboxVideo();
             };
 
             document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
             lightboxEl.addEventListener('click', (e) => { if (e.target === lightboxEl) closeLightbox(); });
             document.getElementById('lightbox-save').addEventListener('click', (e) => {
-                const item = lightboxImageList[lightboxIndex];
+                const item = lightboxMediaList[lightboxIndex];
                 if (item) downloadFile(item.id, item.name, e.currentTarget);
             });
 
-            // #189: 動画プレイヤー
-            let videoPlayerState = { id: null, name: null };
-            const videoPlayerOverlay = document.getElementById('video-player-overlay');
-            const videoPlayerEl = document.getElementById('video-player');
-            const videoPlayerMeta = document.getElementById('video-player-meta');
-
-            window.openVideoPlayer = (id, name) => {
-                videoPlayerState = { id, name };
-                videoPlayerEl.src = `/api/download/${id}`;
-                videoPlayerMeta.textContent = name;
-                videoPlayerOverlay.classList.add('open');
-                document.body.style.overflow = 'hidden';
-                videoPlayerEl.play().catch(() => {});
-            };
-
-            const closeVideoPlayer = () => {
-                videoPlayerEl.pause();
-                videoPlayerEl.removeAttribute('src');
-                videoPlayerEl.load();
-                videoPlayerOverlay.classList.remove('open');
-                document.body.style.overflow = '';
-            };
-
-            document.getElementById('video-player-close').addEventListener('click', closeVideoPlayer);
-            videoPlayerOverlay.addEventListener('click', (e) => {
-                if (e.target === videoPlayerOverlay) closeVideoPlayer();
-            });
-            document.getElementById('video-player-download').addEventListener('click', (e) => {
-                if (videoPlayerState.id && videoPlayerState.name) {
-                    downloadFile(videoPlayerState.id, videoPlayerState.name, e.currentTarget);
-                }
-            });
+            // #297: 動画は画像と統合したライトボックス（メディアビューア）で扱う。
+            //        旧・独立動画プレイヤーは廃止。
 
             // #193: テキストプレビュー
             let textPreviewState = { id: null, name: null };
@@ -2790,14 +2746,14 @@
             });
 
             document.getElementById('lightbox-prev').addEventListener('click', () => {
-                lightboxIndex = (lightboxIndex - 1 + lightboxImageList.length) % lightboxImageList.length;
+                lightboxIndex = (lightboxIndex - 1 + lightboxMediaList.length) % lightboxMediaList.length;
                 lightboxScale = 1;
                 lightboxImg.style.transform = 'scale(1)';
                 updateLightbox();
             });
 
             document.getElementById('lightbox-next').addEventListener('click', () => {
-                lightboxIndex = (lightboxIndex + 1) % lightboxImageList.length;
+                lightboxIndex = (lightboxIndex + 1) % lightboxMediaList.length;
                 lightboxScale = 1;
                 lightboxImg.style.transform = 'scale(1)';
                 updateLightbox();
@@ -2816,8 +2772,6 @@
                     else if (e.key === 'Escape') closeLightbox();
                 } else if (textPreviewOverlay.classList.contains('open')) {
                     if (e.key === 'Escape') closeTextPreview();
-                } else if (videoPlayerOverlay.classList.contains('open')) {
-                    if (e.key === 'Escape') closeVideoPlayer();
                 }
             });
 
