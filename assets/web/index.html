@@ -1239,7 +1239,6 @@
                 pinInput.setAttribute('maxlength', String(length + 4));
                 mainContent.style.display = 'none';
                 pinModal.style.display = 'flex';
-                pinInput.focus();
                 // #267: WebAuthn 対応ブラウザ かつ セキュアコンテキスト（HTTPS or
                 // localhost）で、accounts ファイルが設定されているサーバなら表示。
                 // 登録(enroll)はアカウント0件でも必要（初回ブートストラップ）なので
@@ -1250,6 +1249,24 @@
                     showArea ? 'block' : 'none';
                 document.getElementById('passkeyLoginBtn').style.display =
                     (showArea && serverInfo.passkeyEnabled) ? 'block' : 'none';
+                // #299: passkey必須モードでは PIN フォームを隠し、パスキーログインを前面に。
+                const h2 = pinModal.querySelector('h2');
+                const intro = pinModal.querySelector('.pin-box > p');
+                if (serverInfo.passkeyRequired) {
+                    pinForm.style.display = 'none';
+                    if (h2) h2.textContent = 'パスキー認証';
+                    if (intro) intro.textContent = 'サーバーに接続するにはパスキーでログインしてください。';
+                    // HTTPS/セキュアコンテキストでないと WebAuthn 自体が使えない
+                    if (!webauthnOk) {
+                        pinStatus.style.color = 'red';
+                        pinStatus.textContent = 'パスキー認証にはHTTPS（またはlocalhost）でのアクセスが必要です。';
+                    }
+                } else {
+                    pinForm.style.display = '';
+                    if (h2) h2.textContent = 'PIN認証';
+                    if (intro) intro.textContent = 'サーバーに接続するにはPINコードを入力してください。';
+                    pinInput.focus();
+                }
             };
 
             const showMainContent = () => {
