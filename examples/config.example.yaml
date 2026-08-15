@@ -37,7 +37,9 @@ server:
   pin: "12345678"                # 固定 PIN（省略でランダム）
   pin-length: 8                  # ランダム PIN 生成時の桁数 8..16（既定: 8）
   pin-charset: digits            # ランダム PIN の文字種: digits / alnum / alnum_symbols（既定: digits）
-  no-pin: false                  # true で PIN 認証を無効化（信頼ネットワーク専用。アップロードトークンも無効になる）
+  no-pin: false                  # true で PIN 認証を無効化。単独では「無認証で全開放」（信頼ネットワーク専用）。
+                                 # #299: accounts-file と併用すると「passkey必須（PIN無効・認証は必要）」モードになり、
+                                 #       passkey ログインだけが入口になる（この場合アップロードトークンは維持）。
 
   # --- 認証: passkey (WebAuthn) アカウント (#267) ---
   # 指定すると PIN と併存で「passkey ログイン」が有効になる（各自の passkey で
