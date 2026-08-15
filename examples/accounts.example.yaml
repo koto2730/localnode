@@ -15,7 +15,7 @@
 # their entry and restart.
 
 accounts:
-  - name: shiba
+  - name: REPLACE_WITH_ACCOUNT_NAME
     # base64url of the credential id (shown by the register page)
     credential_id: REPLACE_WITH_CREDENTIAL_ID
     # base64 of the public key in SubjectPublicKeyInfo/DER form (shown by the page)

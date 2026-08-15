@@ -261,6 +261,15 @@ accounts:
 
 **Attribution:** clipboard posts from a passkey session are auto-tagged with the account name (unless a tag is given), so the shared clipboard reads like a lightweight multi-person chat. Remove one line from the accounts file to revoke one person.
 
+**Passkey-required mode (no PIN):** by default the PIN still works alongside passkeys. To drop the PIN entirely and require a passkey — recommended for public / Funnel exposure, where the 4–8 digit PIN is too weak — start with **both** `--no-pin` and `--accounts-file`:
+
+```bash
+localnode-cli --https-cert cert.pem --https-key key.pem \
+              --no-pin --accounts-file /etc/localnode/accounts.yaml
+```
+
+In this mode the server is **not** open — a passkey login is required (`--no-pin` alone, without an accounts file, is still fully open as before). The upload Bearer token stays enabled (for curl/federation). The accounts file must already contain at least one account, or the server refuses to start (otherwise nobody could log in) — bootstrap by enrolling your first passkey in a normal PIN mode, then restart with `--no-pin`.
+
 > Only ES256 (ECDSA P-256) passkeys are supported. Enrollment and login must be served from the same hostname.
 
 ## Federation (v1.6.0+)

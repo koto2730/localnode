@@ -26,7 +26,7 @@ import 'package:shelf_static/shelf_static.dart';
 import 'package:yaml/yaml.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.10.0';
+const String _appVersion = '1.11.0';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
@@ -533,11 +533,16 @@ Future<void> main(List<String> args) async {
   }
   final bool httpsMode = httpsCertPath != null && httpsKeyPath != null;
 
-  final authMode = noPin
-      ? _AuthMode.noPin
-      : fixedPin != null
-          ? _AuthMode.fixedPin
-          : _AuthMode.randomPin;
+  // #299: no-pin + accounts-file なら「passkey必須（PIN無効・認証は必要）」モード。
+  // no-pin 単独は従来どおり「無認証」。
+  final passkeyRequired = noPin && accountsFile != null;
+  final authMode = passkeyRequired
+      ? _AuthMode.passkeyRequired
+      : noPin
+          ? _AuthMode.noPin
+          : fixedPin != null
+              ? _AuthMode.fixedPin
+              : _AuthMode.randomPin;
 
   // #218 / §1.11: 端末識別 UUID。federation 参加時の固定 ID として使う。
   // #237: CLI > YAML config > デフォルト
@@ -634,11 +639,13 @@ Future<void> main(List<String> args) async {
   stdout.writeln('LocalNode CLI Server v$_appVersion');
   stdout.writeln('=' * 40);
 
-  // #173: アップロードトークンの決定（download-only / no-pin モードでは不要）
-  // no-pin では認証がないためトークンを発行しても意味がなく、逆に誤った安心感を与える
-  final String? uploadToken = (!noToken && !downloadOnly && !noPin)
-      ? (fixedToken ?? _generateUploadToken())
-      : null;
+  // #173: アップロードトークンの決定（download-only / 無認証 no-pin モードでは不要）
+  // no-pin では認証がないためトークンを発行しても意味がなく、逆に誤った安心感を与える。
+  // #299: passkey必須モードは「認証あり」なので、federation/curl 用にトークンを維持する。
+  final String? uploadToken =
+      (!noToken && !downloadOnly && (!noPin || passkeyRequired))
+          ? (fixedToken ?? _generateUploadToken())
+          : null;
 
   // #227: clipboard 設定を config から読む (config.clipboard.max_items / max_text_length)
   final clipboardCfg = cfg?.clipboardRaw;
@@ -1387,7 +1394,9 @@ void _setWindowsConsoleRawMode() {
 // 認証モード
 // =============================================================================
 
-enum _AuthMode { randomPin, fixedPin, noPin }
+// #299: passkeyRequired = PIN 無効だが認証は必要（passkey ログインだけが入口）。
+// no-pin + accounts-file を指定したときに選ばれる。
+enum _AuthMode { randomPin, fixedPin, noPin, passkeyRequired }
 
 // =============================================================================
 // クリップボードアイテム
@@ -2126,12 +2135,24 @@ class _CliServer {
     if (accountsFile != null) _loadAccounts(accountsFile);
     _startedAt = DateTime.now().millisecondsSinceEpoch;
 
+    // #299: passkey必須モードで登録アカウントが0件だと誰もログインできず締め出しに
+    // なる（かつ無認証にもならない）。起動を止めて明示する。初回は通常の PIN モード
+    // でパスキーを登録してから、このモードに切り替える運用にする。
+    if (authMode == _AuthMode.passkeyRequired && _accounts.isEmpty) {
+      throw StateError(
+          'passkey-required mode (no-pin + accounts-file) has no accounts in '
+          '"$accountsFile" — nobody could log in. Register at least one passkey '
+          'first (start in a normal PIN mode, enroll from the browser), then '
+          'restart with --no-pin.');
+    }
+
     switch (authMode) {
       case _AuthMode.randomPin:
         _pin = _generatePin();
       case _AuthMode.fixedPin:
         _pin = fixedPin ?? _generatePin();
       case _AuthMode.noPin:
+      case _AuthMode.passkeyRequired:
         _pin = null;
     }
 
@@ -3105,8 +3126,12 @@ class _CliServer {
             ? 'fixedPin'
             : _authMode == _AuthMode.noPin
                 ? 'noPin'
-                : 'randomPin',
+                : _authMode == _AuthMode.passkeyRequired
+                    ? 'passkeyRequired' // #299
+                    : 'randomPin',
         'requiresAuth': _authMode != _AuthMode.noPin,
+        // #299: PIN 無効・passkey 必須。Web UI が PIN フォームを隠す判断に使う。
+        'passkeyRequired': _authMode == _AuthMode.passkeyRequired,
         'clipboardEnabled': _clipboardEnabled,
         // #267: passkey ログインが使えるか（accounts が1件以上）。ログインボタン表示に使う。
         'passkeyEnabled': _accounts.isNotEmpty,
