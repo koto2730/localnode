@@ -3260,9 +3260,15 @@ class _CliServer {
     final targetDirPath = p.normalize(p.join(canonicalRoot, relPath));
     final dir = Directory(targetDirPath);
     if (!await dir.exists()) {
-      // federation の children/<childname>/ は初回アップロード時に自動作成する。
-      // パストラバーサルチェック済みなので作成は安全。
-      await dir.create(recursive: true);
+      // federation の children/<childname>/ のみ初回アップロード時に自動作成する。
+      // (パストラバーサルチェック済みなので作成は安全。)
+      // ブラウザ/curl からの直接アップロードは既存フォルダ宛のみ許可し、
+      // 誤ったフォルダ名で新規フォルダを勝手に作らせない (#301)。
+      if (fedOrigin != null && fedOrigin.isNotEmpty) {
+        await dir.create(recursive: true);
+      } else {
+        return Response.notFound('Target folder does not exist.');
+      }
     }
     final canonicalTarget = await dir.resolveSymbolicLinks();
     if (canonicalTarget != canonicalRoot &&
