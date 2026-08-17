@@ -57,6 +57,14 @@ server:
   https-cert: /etc/letsencrypt/live/example.com/fullchain.pem
   https-key: /etc/letsencrypt/live/example.com/privkey.pem
 
+  # cert の SAN ホスト名は既定では DNS 解決した結果が上の ip (LAN IP) と一致する
+  # 必要がある（Tailscale の *.ts.net や社内DNSでの split-horizon 運用を想定）。
+  # acme.sh 等で取れる公開ドメイン証明書は、LAN IP を公開DNSに載せない運用が
+  # 正しいため DNS 照合が原理的に成立しない。その場合は advertise-host で
+  # DNS 照合をスキップし、cert SAN のホスト名をそのまま信頼させる（ip の
+  # 明示指定が必須になる）。
+  # advertise-host: example.com
+
   # --- DNS rebinding 対策で追加許可するホスト名 (#275) ---
   # 既定では localhost / 127.0.0.1 / 広告 IP / 各 IPv4 NIC / 証明書のホスト名を許可。
   # リバースプロキシ等でそれ以外のホスト名でアクセスさせる場合だけ列挙する（リスト）。
