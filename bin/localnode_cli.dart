@@ -117,6 +117,7 @@ class _LoadedConfig {
   // server section
   int? port;
   String? ip;
+  String? advertiseHost;
   String? pin;
   String? dir;
   String? mode;
@@ -192,6 +193,7 @@ _LoadedConfig _loadConfig(String path) {
   if (server is YamlMap) {
     cfg.port = _yamlInt(server, 'port');
     cfg.ip = _yamlString(server, 'ip');
+    cfg.advertiseHost = _yamlString(server, 'advertise-host');
     cfg.pin = _yamlString(server, 'pin');
     cfg.dir = _yamlString(server, 'dir');
     cfg.mode = _yamlString(server, 'mode');
@@ -381,6 +383,9 @@ Future<void> main(List<String> args) async {
   final specifiedIp = results.wasParsed('ip')
       ? results['ip'] as String?
       : (cfg?.ip ?? results['ip'] as String?);
+  final specifiedAdvertiseHost = results.wasParsed('advertise-host')
+      ? results['advertise-host'] as String?
+      : (cfg?.advertiseHost ?? results['advertise-host'] as String?);
   final noClipboard = results.wasParsed('no-clipboard')
       ? results['no-clipboard'] as bool
       : (cfg?.noClipboard ?? results['no-clipboard'] as bool);
@@ -533,6 +538,16 @@ Future<void> main(List<String> args) async {
   }
   final bool httpsMode = httpsCertPath != null && httpsKeyPath != null;
 
+  if (specifiedAdvertiseHost != null && !httpsMode) {
+    stderr.writeln('Error: --advertise-host requires --https-cert and --https-key.');
+    exit(1);
+  }
+  if (specifiedAdvertiseHost != null && specifiedIp == null) {
+    stderr.writeln('Error: --advertise-host requires --ip to also be specified explicitly '
+        '(the bind IP cannot be auto-detected once DNS verification is skipped).');
+    exit(1);
+  }
+
   // #299: no-pin + accounts-file なら「passkey必須（PIN無効・認証は必要）」モード。
   // no-pin 単独は従来どおり「無認証」。
   final passkeyRequired = noPin && accountsFile != null;
@@ -618,7 +633,9 @@ Future<void> main(List<String> args) async {
   String advertisedHost; // QR/URL に使うホスト名またはIP
   if (httpsMode) {
     final sanResult = await _resolveHttpsHost(
-        certPath: httpsCertPath!, specifiedIp: specifiedIp);
+        certPath: httpsCertPath!,
+        specifiedIp: specifiedIp,
+        specifiedAdvertiseHost: specifiedAdvertiseHost);
     ipAddress = sanResult.bindIp;
     advertisedHost = sanResult.advertisedHost;
   } else {
@@ -845,6 +862,12 @@ ArgParser _buildParser() {
     ..addOption('port',
         abbr: 'p', help: 'Server port number', defaultsTo: '8080')
     ..addOption('ip', help: 'IP address to bind (skip auto-detection)')
+    ..addOption('advertise-host',
+        help: 'Hostname to show in the QR/URL, taken as-is from the '
+            'certificate SAN without DNS verification. Use this when the '
+            'cert is a public-domain cert (e.g. via acme.sh) whose DNS '
+            'does not resolve to the LAN IP by design. Requires --ip to '
+            'also be set explicitly.')
     ..addOption('pin', help: 'Fixed PIN (random if not specified)')
     // #206
     ..addOption('pin-length',
@@ -1127,9 +1150,15 @@ class _HttpsHostResult {
 /// - SANのホスト名をデバイスIPに解決して候補を絞り込む
 /// - 候補が1つなら自動決定、複数なら対話選択
 /// - 一致しない場合はエラー終了 (#169)
+/// - specifiedAdvertiseHost が指定されていれば DNS 照合を完全にスキップし、
+///   「cert SAN に含まれるホスト名」+「--ip で明示されたバインドIP」の組を
+///   そのまま信頼する (#308: acme.sh 等で取得した公開ドメイン証明書は、
+///   LAN IP を公開DNSに載せない運用が正しいため、DNS解決による自動照合が
+///   原理的に成立しない)
 Future<_HttpsHostResult> _resolveHttpsHost({
   required String certPath,
   String? specifiedIp,
+  String? specifiedAdvertiseHost,
 }) async {
   // SAN を解析
   List<String> sans = [];
@@ -1146,6 +1175,40 @@ Future<_HttpsHostResult> _resolveHttpsHost({
     }
   } catch (e) {
     stderr.writeln('Warning: Failed to parse certificate SANs: $e');
+  }
+
+  if (specifiedAdvertiseHost != null) {
+    if (specifiedIp == null) {
+      stderr.writeln('Error: --advertise-host requires --ip to also be specified explicitly.');
+      exit(1);
+    }
+    if (sans.isEmpty) {
+      stderr.writeln('Error: No SANs found in certificate. Cannot determine HTTPS hostname.');
+      exit(1);
+    }
+    if (!sans.contains(specifiedAdvertiseHost)) {
+      stderr.writeln('Error: --advertise-host "$specifiedAdvertiseHost" is not a SAN of the '
+          'certificate.');
+      stderr.writeln('  Certificate SANs: ${sans.join(', ')}');
+      exit(1);
+    }
+    final deviceIps = <String>{};
+    try {
+      for (final iface in await NetworkInterface.list()) {
+        for (final addr in iface.addresses) {
+          deviceIps.add(addr.address);
+        }
+      }
+    } catch (_) {}
+    if (!deviceIps.contains(specifiedIp)) {
+      stderr.writeln('Error: --ip "$specifiedIp" is not an address of any local network '
+          'interface.');
+      stderr.writeln('  Device IPs: ${deviceIps.join(', ')}');
+      exit(1);
+    }
+    stdout.writeln('HTTPS: Using "$specifiedAdvertiseHost" (DNS verification skipped, '
+        'bound to $specifiedIp via --advertise-host/--ip)');
+    return _HttpsHostResult(bindIp: specifiedIp, advertisedHost: specifiedAdvertiseHost);
   }
 
   if (sans.isEmpty) {

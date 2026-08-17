@@ -105,6 +105,7 @@ localnode --cli [options]
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |
+| `--advertise-host` | Hostname to show in the QR/URL, taken as-is from the certificate SAN, skipping DNS verification. For public-domain certs (e.g. via acme.sh) whose DNS does not resolve to the LAN IP by design. Requires `--ip` to also be set |
 | `--post-action` | Script to execute on matching uploads: `pattern=script` (repeatable, glob pattern) |
 | `--post-action-timeout` | Timeout in seconds for each post-action script; the process is killed if it exceeds this. `0` disables the timeout. Default: `300`. Prevents one hung script from blocking all later post-actions |
 | `--accounts-file` | Path to a YAML passkey accounts file (WebAuthn login). Enables per-user passkey login alongside the PIN. Requires HTTPS + a hostname (or `localhost`) — see [Passkey login](#passkey-login-webauthn) |
@@ -136,6 +137,12 @@ localnode-cli --mode download-only --no-pin
 
 # Enable HTTPS with a Tailscale certificate
 localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem
+
+# Enable HTTPS with a public-domain certificate (e.g. from acme.sh) whose DNS
+# does not point at the LAN IP (as it shouldn't) — skip DNS verification and
+# advertise the cert's hostname explicitly
+localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem \
+  --advertise-host my-device.example.com --ip 192.168.1.100
 
 # Run scripts based on uploaded file type
 localnode-cli --post-action "*.png=./move-pic.sh" --post-action "*.zip=./unzip.sh"
