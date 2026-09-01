@@ -52,6 +52,15 @@ server:
   token: change-me-upload-token  # 固定 Bearer トークン（省略でランダム）
   no-token: false                # true でトークン認証を無効化
 
+  # --- Web UI テーマ (#304, 任意) ---
+  # 管理者が用意した CSS / JS で Web UI の見た目を上書きする。指定したファイルは
+  # 起動時に web ルートへ配置され、同一オリジンで /theme.css /theme.js として
+  # 配信される。theme.css は既定スタイルの後に読み込むので色・フォントから
+  # レイアウトまで上書きでき、theme.js は管理者だけが指定するパスなので JS も可。
+  # 省略すると空ファイルが配信され、従来どおりの見た目のまま（no-op）。
+  theme-css: /etc/localnode/theme.css   # 省略でテーマ無し
+  theme-js: /etc/localnode/theme.js     # 省略で JS 注入無し
+
   # --- HTTPS (任意) ---
   # cert と key は両方指定するか、両方省略するか。片方だけはエラー。
   https-cert: /etc/letsencrypt/live/example.com/fullchain.pem
