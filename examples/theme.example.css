@@ -12,8 +12,9 @@
  *     stubborn cases add higher specificity or `!important`.
  *   - It applies everywhere, including the PIN / passkey login screen.
  *   - Omitting --theme-css serves an empty file, so the UI looks default.
- *   - CSS only: you can override colors, fonts and layout. For behavior use
- *     theme.js (see theme.example.js).
+ *   - CSS only: you can override colors, fonts and layout. (Theme JS is
+ *     intentionally not supported — a CSS theme cannot run code, which keeps
+ *     shared themes safe to install.)
  *
  * The selectors below are the real ones used by the UI as of v1.12.0. Delete
  * what you don't need — everything here is optional.

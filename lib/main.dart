@@ -39,7 +39,6 @@ class ServerState {
     this.resolvedHttpsIp,
     this.maxUploadMB,
     this.themeCssPath,
-    this.themeJsPath,
   });
 
   final ServerStatus status;
@@ -62,9 +61,8 @@ class ServerState {
   final String? resolvedHttpsIp;
   // #285: 直接アップロードの上限 (MB)。null / 0 = 無制限。
   final int? maxUploadMB;
-  // #304: 管理者テーマ（Web UI の見た目を上書きする CSS / JS のパス）
+  // #304: 管理者テーマ（Web UI の見た目を上書きする CSS のパス）
   final String? themeCssPath;
-  final String? themeJsPath;
 
   bool get httpsMode =>
       httpsCertPath != null &&
@@ -92,10 +90,8 @@ class ServerState {
     String? resolvedHttpsIp,
     int? maxUploadMB,
     String? themeCssPath,
-    String? themeJsPath,
     bool clearMaxUploadMB = false,
     bool clearThemeCssPath = false,
-    bool clearThemeJsPath = false,
     bool clearPin = false,
     bool clearErrorMessage = false,
     bool clearFixedPin = false,
@@ -134,8 +130,6 @@ class ServerState {
           clearMaxUploadMB ? null : (maxUploadMB ?? this.maxUploadMB),
       themeCssPath:
           clearThemeCssPath ? null : (themeCssPath ?? this.themeCssPath),
-      themeJsPath:
-          clearThemeJsPath ? null : (themeJsPath ?? this.themeJsPath),
     );
   }
 }
@@ -233,9 +227,8 @@ class ServerNotifier extends Notifier<ServerState> {
         savedHttpsEnabled ? prefs.getString('https_key_path') : null;
     final savedHttpsHostname =
         savedHttpsEnabled ? prefs.getString('https_hostname') : null;
-    // #304: 管理者テーマ
+    // #304: 管理者テーマ CSS
     final savedThemeCssPath = prefs.getString('theme_css_path');
-    final savedThemeJsPath = prefs.getString('theme_js_path');
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -259,7 +252,6 @@ class ServerNotifier extends Notifier<ServerState> {
       httpsKeyPath: savedHttpsKeyPath,
       httpsHostname: savedHttpsHostname,
       themeCssPath: savedThemeCssPath,
-      themeJsPath: savedThemeJsPath,
     );
 
     // 起動後にSAN候補を復元し、保存済みホスト名と照合 (#55)
@@ -343,18 +335,6 @@ class ServerNotifier extends Notifier<ServerState> {
     }
   }
 
-  /// #304: 管理者テーマ JS のパスを設定/クリアして永続化
-  Future<void> setThemeJsPath(String? path) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (path == null || path.isEmpty) {
-      await prefs.remove('theme_js_path');
-      state = state.copyWith(clearThemeJsPath: true);
-    } else {
-      await prefs.setString('theme_js_path', path);
-      state = state.copyWith(themeJsPath: path);
-    }
-  }
-
   /// 認証モードを変更して永続化
   Future<void> setAuthMode(AuthMode mode) async {
     final prefs = await SharedPreferences.getInstance();
@@ -433,7 +413,6 @@ class ServerNotifier extends Notifier<ServerState> {
             ? state.maxUploadMB! * 1024 * 1024
             : null,
         themeCssPath: state.themeCssPath, // #304
-        themeJsPath: state.themeJsPath, // #304
       );
 
       state = state.copyWith(
@@ -1288,7 +1267,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         const Text(
-          '管理者が用意した CSS / JS で Web UI の見た目を上書きします。'
+          '管理者が用意した CSS で Web UI の見た目を上書きします。'
           '未設定なら既定の見た目のままです。',
           style: TextStyle(fontSize: 12, color: Colors.grey),
         ),
@@ -1298,13 +1277,6 @@ class _HomePageState extends ConsumerState<HomePage> {
           path: serverState.themeCssPath,
           extensions: const ['css'],
           onPick: notifier.setThemeCssPath,
-        ),
-        const SizedBox(height: 8),
-        _buildThemeFileRow(
-          label: 'JS',
-          path: serverState.themeJsPath,
-          extensions: const ['js'],
-          onPick: notifier.setThemeJsPath,
         ),
 
         // 認証モード選択

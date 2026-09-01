@@ -110,7 +110,6 @@ localnode --cli [options]
 | `--post-action-timeout` | Timeout in seconds for each post-action script; the process is killed if it exceeds this. `0` disables the timeout. Default: `300`. Prevents one hung script from blocking all later post-actions |
 | `--accounts-file` | Path to a YAML passkey accounts file (WebAuthn login). Enables per-user passkey login alongside the PIN. Requires HTTPS + a hostname (or `localhost`) — see [Passkey login](#passkey-login-webauthn) |
 | `--theme-css` | Path to a CSS file that customizes the Web UI appearance (colors / fonts / layout). Served same-origin as `/theme.css`, loaded after the built-in styles. Omit for the default look |
-| `--theme-js` | Path to a JS file loaded into the Web UI (admin-only hook, served same-origin as `/theme.js`). Omit to inject nothing |
 | `--mention-action` | Register clipboard mention command: `alias=script` (repeatable) |
 | `--token` | Fixed Bearer token for upload and clipboard POST (random if not specified) |
 | `--no-token` | Disable token-based authentication for upload and clipboard POST |
