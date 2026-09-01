@@ -1284,6 +1284,8 @@
                 }
                 if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
                 applyModeRestrictions();
+                // #304: クリップボードタブ表示可否が確定した後で前回タブを復元
+                restoreActiveTab();
                 if (serverInfo.version) {
                     document.getElementById('version-badge').textContent = `v${serverInfo.version}`;
                 }
@@ -1404,28 +1406,41 @@
                 }
             };
 
-            // タブ切り替え処理
+            // タブ切り替え処理 (#304: 選択タブを localStorage に記憶し次回復元)
             const tabBtns = document.querySelectorAll('.tab-btn');
             const tabContents = document.querySelectorAll('.tab-content');
+            const ACTIVE_TAB_KEY = 'localnode.activeTab';
+
+            const activateTab = (targetTab, { persist = true } = {}) => {
+                const btn = document.querySelector(`.tab-btn[data-tab="${targetTab}"]`);
+                const content = document.getElementById(`tab-${targetTab}`);
+                if (!btn || !content) return;
+                tabBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                tabContents.forEach(c => c.classList.remove('active'));
+                content.classList.add('active');
+                // #204: クリップボードタブに切り替えた時点でドットを消す
+                if (targetTab === 'clipboard') clearTabUnread();
+                if (persist) {
+                    try { localStorage.setItem(ACTIVE_TAB_KEY, targetTab); } catch (_) {}
+                }
+            };
 
             tabBtns.forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const targetTab = btn.dataset.tab;
-
-                    // すべてのタブボタンからactiveを削除
-                    tabBtns.forEach(b => b.classList.remove('active'));
-                    // クリックされたボタンにactiveを追加
-                    btn.classList.add('active');
-
-                    // すべてのタブコンテンツを非表示
-                    tabContents.forEach(content => content.classList.remove('active'));
-                    // 対象のタブコンテンツを表示
-                    document.getElementById(`tab-${targetTab}`).classList.add('active');
-
-                    // #204: クリップボードタブに切り替えた時点でドットを消す
-                    if (targetTab === 'clipboard') clearTabUnread();
-                });
+                btn.addEventListener('click', () => activateTab(btn.dataset.tab));
             });
+
+            // #304: 前回開いていたタブを初期表示に復元。
+            // 非表示(--no-clipboard 等)や存在しないタブは無視して既定(files)のまま。
+            const restoreActiveTab = () => {
+                let saved = null;
+                try { saved = localStorage.getItem(ACTIVE_TAB_KEY); } catch (_) {}
+                if (!saved) return;
+                const btn = document.querySelector(`.tab-btn[data-tab="${saved}"]`);
+                if (btn && btn.style.display !== 'none') {
+                    activateTab(saved, { persist: false });
+                }
+            };
 
             // PIN認証処理
             pinForm.addEventListener('submit', async (event) => {
