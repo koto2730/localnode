@@ -2131,12 +2131,9 @@ class ServerService {
         final secCtx = SecurityContext()
           ..useCertificateChain(httpsCertPath!)
           ..usePrivateKey(httpsKeyPath!);
-        _server = await shelf_io.serve(
-          handler, InternetAddress.anyIPv4, port,
-          securityContext: secCtx,
-        );
+        _server = await _serveDualStack(handler, port, securityContext: secCtx);
       } else {
-        _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+        _server = await _serveDualStack(handler, port);
       }
     } catch (e) {
       print('Error starting server: $e');
@@ -2216,13 +2213,10 @@ class ServerService {
         final secCtx = SecurityContext()
           ..useCertificateChain(httpsCertPath!)
           ..usePrivateKey(httpsKeyPath!);
-        _server = await shelf_io.serve(
-          handler, InternetAddress.anyIPv4, port,
-          securityContext: secCtx,
-        );
+        _server = await _serveDualStack(handler, port, securityContext: secCtx);
         _log('Serving at https://$_ipAddress:${_server!.port}');
       } else {
-        _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+        _server = await _serveDualStack(handler, port);
         _log('Serving at http://$_ipAddress:${_server!.port}');
       }
     } catch (e) {
@@ -2446,8 +2440,10 @@ class ServerService {
                 body: 'Missing Host header',
                 headers: {'Content-Type': 'text/plain'});
           }
-          final hostWithoutPort = host.replaceFirst(RegExp(r':\d+$'), '');
-          if (!_allowedHosts.contains(hostWithoutPort)) {
+          // #277: IPv4/ホスト名は ":port" を除去、IPv6 リテラルは "[::1]:port" の
+          // ブラケット/ゾーンID を除去してから照合。
+          final hostKey = _hostHeaderKey(host);
+          if (!_allowedHosts.contains(hostKey)) {
             return Response(421,
                 body: 'Misdirected Request',
                 headers: {'Content-Type': 'text/plain'});
@@ -2456,23 +2452,65 @@ class ServerService {
         };
       };
 
-  // #258: 起動時に許可 Host 集合を構築（localhost + 広告 IP + 全 IPv4 NIC）。
+  // #258/#277: 起動時に許可 Host 集合を構築（localhost + 広告 IP + 全 NIC の
+  // IPv4/IPv6）。値は小文字・ブラケット無し・ゾーンID無しで格納し、ガード側も
+  // 同じ形に正規化して照合する。
   Future<void> _buildAllowedHosts(String ipAddress) async {
-    _allowedHosts = {'localhost', '127.0.0.1', ipAddress};
+    _allowedHosts = {
+      'localhost',
+      '127.0.0.1',
+      '::1',
+      _normalizeHostValue(ipAddress),
+    };
     // HTTPS 証明書のホスト名でアクセスする場合も許可（#275）。
     if (_httpsHostname != null && _httpsHostname!.isNotEmpty) {
-      _allowedHosts.add(_httpsHostname!);
+      _allowedHosts.add(_normalizeHostValue(_httpsHostname!));
     }
     try {
       final ifaces = await NetworkInterface.list(includeLoopback: true);
       for (final iface in ifaces) {
         for (final addr in iface.addresses) {
-          if (addr.type == InternetAddressType.IPv4) {
-            _allowedHosts.add(addr.address);
-          }
+          // #277: IPv4 に加え IPv6 アドレスも許可
+          _allowedHosts.add(_normalizeHostValue(addr.address));
         }
       }
     } catch (_) {}
+  }
+
+  // #277: 格納・比較用に Host 値を正規化（小文字化＋IPv6 ゾーンID除去）。
+  static String _normalizeHostValue(String h) {
+    final zi = h.indexOf('%');
+    if (zi >= 0) h = h.substring(0, zi);
+    return h.toLowerCase();
+  }
+
+  // #277: Host ヘッダを allowedHosts 照合用のキーに正規化する。
+  //  - "host:port" / "1.2.3.4:port" → ポート除去
+  //  - "[::1]:port" / "[fe80::1%eth0]" → ブラケット除去＋ゾーンID除去
+  //  - 全体を小文字化
+  static String _hostHeaderKey(String host) {
+    var h = host;
+    if (h.startsWith('[')) {
+      final end = h.indexOf(']');
+      h = end > 0 ? h.substring(1, end) : h.substring(1);
+    } else {
+      h = h.replaceFirst(RegExp(r':\d+$'), '');
+    }
+    return _normalizeHostValue(h);
+  }
+
+  // #277: IPv6 対応。anyIPv6 は Dart 既定の v6Only=false でデュアルスタック
+  // （v4-mapped で IPv4 も受ける）。IPv6 が無効な環境では anyIPv4 にフォールバック。
+  Future<HttpServer> _serveDualStack(Handler handler, int port,
+      {SecurityContext? securityContext}) async {
+    try {
+      return await shelf_io.serve(handler, InternetAddress.anyIPv6, port,
+          securityContext: securityContext);
+    } on SocketException catch (e) {
+      _log('IPv6 bind unavailable ($e); falling back to IPv4-only');
+      return await shelf_io.serve(handler, InternetAddress.anyIPv4, port,
+          securityContext: securityContext);
+    }
   }
 
   // SAF ディレクトリを選択するメソッド

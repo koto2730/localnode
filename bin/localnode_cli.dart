@@ -2222,21 +2222,26 @@ class _CliServer {
     await _init(storagePath);
     await _deployAssets();
 
-    // #258: DNS rebinding — 許可する Host 値を事前収集（IPv4 のみ。IPv6 バインド未対応）
-    _allowedHosts = {'localhost', '127.0.0.1', ipAddress};
+    // #258/#277: DNS rebinding — 許可する Host 値を事前収集。IPv4/IPv6 両対応。
+    // 値は小文字・ブラケット無し・ゾーンID無しで格納し、ガード側も同じ形に正規化して照合。
+    _allowedHosts = {
+      'localhost',
+      '127.0.0.1',
+      '::1',
+      _normalizeHostValue(ipAddress),
+    };
     try {
       final ifaces = await NetworkInterface.list(includeLoopback: true);
       for (final iface in ifaces) {
         for (final addr in iface.addresses) {
-          if (addr.type == InternetAddressType.IPv4) {
-            _allowedHosts.add(addr.address);
-          }
+          // #277: IPv4 に加え IPv6 アドレスも許可（ゾーンID等は正規化で除去）
+          _allowedHosts.add(_normalizeHostValue(addr.address));
         }
       }
     } catch (_) {}
     // #275: cert SAN から選ばれた広告ホスト名や設定で明示された名前を許可。
     // federation（両端 HTTPS）や Tailscale の DNS 名アクセスが 421 にならないようにする。
-    _allowedHosts.addAll(extraAllowedHosts);
+    _allowedHosts.addAll(extraAllowedHosts.map(_normalizeHostValue));
 
     final staticHandler =
         createStaticHandler(_webRootDir!.path, defaultDocument: 'index.html');
@@ -2258,14 +2263,11 @@ class _CliServer {
       final secCtx = SecurityContext()
         ..useCertificateChain(httpsCertPath)
         ..usePrivateKey(httpsKeyPath);
-      _server = await shelf_io.serve(
-        handler, InternetAddress.anyIPv4, port,
-        securityContext: secCtx,
-      );
+      _server = await _serveDualStack(handler, port, securityContext: secCtx);
       _log('Serving at https://$ipAddress:$port');
     } else {
       _httpsEnabled = false;
-      _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+      _server = await _serveDualStack(handler, port);
       _log('Serving at http://$ipAddress:$port');
     }
   }
@@ -2816,9 +2818,10 @@ class _CliServer {
               headers: {'Content-Type': 'text/plain'},
             );
           }
-          // Host ヘッダはポート付き ("192.168.1.1:8080") の場合があるのでポートを除去
-          final hostWithoutPort = host.replaceFirst(RegExp(r':\d+$'), '');
-          if (!_allowedHosts.contains(hostWithoutPort)) {
+          // Host ヘッダを比較キーに正規化。IPv4/ホスト名は ":port" 除去、
+          // IPv6 リテラルは "[::1]:port" のブラケット/ゾーンIDを除去（#277）。
+          final hostKey = _hostHeaderKey(host);
+          if (!_allowedHosts.contains(hostKey)) {
             return Response(
               421,
               body: 'Misdirected Request',
@@ -2974,7 +2977,43 @@ class _CliServer {
   String? _rpIdForRequest(Request req) {
     final host = req.headers['host'];
     if (host == null) return null;
-    return host.replaceFirst(RegExp(r':\d+$'), '');
+    return _hostHeaderKey(host);
+  }
+
+  // #277: 格納・比較用に Host 値を正規化（小文字化＋IPv6 ゾーンID除去）。
+  static String _normalizeHostValue(String h) {
+    final zi = h.indexOf('%');
+    if (zi >= 0) h = h.substring(0, zi);
+    return h.toLowerCase();
+  }
+
+  // #277: Host ヘッダを allowedHosts 照合用のキーに正規化する。
+  //  - "host:port" / "1.2.3.4:port" → ポート除去
+  //  - "[::1]:port" / "[fe80::1%eth0]" → ブラケット除去＋ゾーンID除去
+  //  - 全体を小文字化
+  static String _hostHeaderKey(String host) {
+    var h = host;
+    if (h.startsWith('[')) {
+      final end = h.indexOf(']');
+      h = end > 0 ? h.substring(1, end) : h.substring(1);
+    } else {
+      h = h.replaceFirst(RegExp(r':\d+$'), '');
+    }
+    return _normalizeHostValue(h);
+  }
+
+  // #277: IPv6 対応。anyIPv6 は Dart 既定の v6Only=false でデュアルスタック
+  // （v4-mapped で IPv4 も受ける）。IPv6 が無効な環境では anyIPv4 にフォールバック。
+  Future<HttpServer> _serveDualStack(Handler handler, int port,
+      {SecurityContext? securityContext}) async {
+    try {
+      return await shelf_io.serve(handler, InternetAddress.anyIPv6, port,
+          securityContext: securityContext);
+    } on SocketException catch (e) {
+      _log('IPv6 bind unavailable ($e); falling back to IPv4-only');
+      return await shelf_io.serve(handler, InternetAddress.anyIPv4, port,
+          securityContext: securityContext);
+    }
   }
 
   // clientData.origin が自サーバのものか（ホストが許可集合にある）を確認。
@@ -2982,7 +3021,7 @@ class _CliServer {
     try {
       final u = Uri.parse(origin);
       if (u.host.isEmpty) return false;
-      return _allowedHosts.contains(u.host);
+      return _allowedHosts.contains(_normalizeHostValue(u.host));
     } catch (_) {
       return false;
     }
