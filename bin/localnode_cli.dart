@@ -140,6 +140,9 @@ class _LoadedConfig {
   int? postActionTimeout;
   // #267
   String? accountsFile;
+  // #304: 管理者テーマ（Web UI の見た目を CSS/JS で上書き）
+  String? themeCss;
+  String? themeJs;
   // #237
   String? stateFile;
   // #208
@@ -210,6 +213,8 @@ _LoadedConfig _loadConfig(String path) {
     cfg.maxUploadSize = _yamlString(server, 'max-upload-size');
     cfg.postActionTimeout = _yamlInt(server, 'post-action-timeout'); // #290
     cfg.accountsFile = _yamlString(server, 'accounts-file');         // #267
+    cfg.themeCss = _yamlString(server, 'theme-css');     // #304
+    cfg.themeJs = _yamlString(server, 'theme-js');       // #304
     cfg.cacheDir = _yamlString(server, 'cache-dir');     // #287
     cfg.stateFile = _yamlString(server, 'state-file');   // #237
     cfg.pinFile = _yamlString(server, 'pin-file');       // #208
@@ -460,6 +465,22 @@ Future<void> main(List<String> args) async {
   final String? tokenFile = results.wasParsed('token-file')
       ? results['token-file'] as String?
       : cfg?.tokenFile;
+
+  // #304: 管理者テーマ（CLI > config）。指定されたファイルは起動時に存在必須。
+  final String? themeCssPath = results.wasParsed('theme-css')
+      ? results['theme-css'] as String?
+      : cfg?.themeCss;
+  final String? themeJsPath = results.wasParsed('theme-js')
+      ? results['theme-js'] as String?
+      : cfg?.themeJs;
+  if (themeCssPath != null && !File(themeCssPath).existsSync()) {
+    stderr.writeln('Error: theme-css file does not exist: $themeCssPath');
+    exit(1);
+  }
+  if (themeJsPath != null && !File(themeJsPath).existsSync()) {
+    stderr.writeln('Error: theme-js file does not exist: $themeJsPath');
+    exit(1);
+  }
 
   // post_actions: CLI > config (どちらかが存在すればその全体を使う)
   final List<String> postActionRaw;
@@ -714,6 +735,8 @@ Future<void> main(List<String> args) async {
       postActionTimeoutSeconds: postActionTimeoutSeconds, // #290
       accountsFile: accountsFile, // #267
       extraAllowedHosts: extraAllowedHosts,       // #275
+      themeCssPath: themeCssPath, // #304
+      themeJsPath: themeJsPath,   // #304
     );
   } catch (e) {
     stderr.writeln('Error: Failed to start server: $e');
@@ -894,6 +917,15 @@ ArgParser _buildParser() {
         abbr: 'n', help: 'Server name shown in browser tab title', defaultsTo: 'LocalNode')
     ..addOption('https-cert', help: 'Path to TLS certificate file (cert.pem)')
     ..addOption('https-key', help: 'Path to TLS private key file (key.pem)')
+    ..addOption('theme-css',
+        help: 'Path to a CSS file that customizes the Web UI appearance '
+            '(colors/fonts/layout). Served same-origin as /theme.css and '
+            'loaded after the built-in styles. Omit for the default look.',
+        valueHelp: 'FILE')
+    ..addOption('theme-js',
+        help: 'Path to a JS file loaded into the Web UI (admin-only hook, '
+            'served same-origin as /theme.js). Omit to inject nothing.',
+        valueHelp: 'FILE')
     ..addMultiOption('post-action',
         help:
             'Script to run after matching uploads: <pattern>=<script> (repeatable). '
@@ -1632,6 +1664,9 @@ class _CliServer {
   // #267: passkey アカウント（credentials ファイルから読み込む）
   List<_PasskeyAccount> _accounts = [];
   String? _accountsFile;
+  // #304: 管理者テーマのソースパス（未指定なら空ファイルを配信＝従来の見た目）
+  String? _themeCssPath;
+  String? _themeJsPath;
   // #267: 発行済み WebAuthn チャレンジ（base64url） → 失効エポック ms。リプレイ防止に消費する。
   final Map<String, int> _webauthnChallenges = {};
   static const Duration _webauthnChallengeTtl = Duration(minutes: 2);
@@ -2177,7 +2212,11 @@ class _CliServer {
     List<String> extraAllowedHosts = const [],   // #275
     int postActionTimeoutSeconds = 300,          // #290 (0 = 無制限)
     String? accountsFile,                         // #267
+    String? themeCssPath,                         // #304
+    String? themeJsPath,                          // #304
   }) async {
+    _themeCssPath = themeCssPath;
+    _themeJsPath = themeJsPath;
     _authMode = authMode;
     _downloadOnly = downloadOnly;
     _uploadToken = uploadToken;
@@ -2459,6 +2498,22 @@ class _CliServer {
     } else {
       await dest.writeAsString(_minimalHtml());
       stderr.writeln('Warning: Web assets not found. Using minimal HTML.');
+    }
+
+    // #304: 管理者テーマを web ルートに配置。index.html は常に theme.css /
+    // theme.js を参照するので、未指定時も空ファイルを置いて 404 を避ける
+    // （空＝no-op で従来の見た目のまま）。
+    await _deployThemeFile('theme.css', _themeCssPath);
+    await _deployThemeFile('theme.js', _themeJsPath);
+  }
+
+  // #304: 指定があればその内容を、無ければ空を web ルートに書き出す。
+  Future<void> _deployThemeFile(String name, String? srcPath) async {
+    final dest = File(p.join(_webRootDir!.path, name));
+    if (srcPath != null && File(srcPath).existsSync()) {
+      await File(srcPath).copy(dest.path);
+    } else {
+      await dest.writeAsString('');
     }
   }
 

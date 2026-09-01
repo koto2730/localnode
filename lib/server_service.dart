@@ -77,6 +77,9 @@ class ServerService {
   String? _fallbackStoragePath; // SAFが使えない場合のストレージパス
   String? _displayPath; // 表示用のパス
   Directory? _webRootDir; // Webルートディレクトリのパス
+  // #304: 管理者テーマのソースパス（未指定なら空ファイルを配信＝従来の見た目）
+  String? _themeCssPath;
+  String? _themeJsPath;
   Directory? _thumbnailCacheDir; // サムネイルキャッシュディレクトリ
   // #287: CLI (`localnode --cli`) の --cache-dir。null なら OS の一時ディレクトリ。
   String? _cacheDir;
@@ -350,10 +353,35 @@ class ServerService {
       final byteData = await rootBundle.load(assetPath);
       final destinationFile = File(p.join(_webRootDir!.path, 'index.html'));
       await destinationFile.writeAsBytes(byteData.buffer.asUint8List());
+      await _deployThemeFiles(); // #304
     } catch (e) {
       print('ERROR: Failed to deploy web assets: $e');
       rethrow;
     }
+  }
+
+  // #304: 管理者テーマ（theme.css / theme.js）を web ルートに配置。指定があれば
+  // その内容を、無ければ空ファイルを書き出す（空＝no-op で従来の見た目のまま）。
+  // index.html は常に theme.css / theme.js を参照するので 404 を避ける意味もある。
+  Future<void> _deployThemeFiles() async {
+    Future<void> deployOne(String name, String? srcPath) async {
+      final dest = File(p.join(_webRootDir!.path, name));
+      try {
+        if (srcPath != null && await File(srcPath).exists()) {
+          await File(srcPath).copy(dest.path);
+        } else {
+          await dest.writeAsString('');
+        }
+      } catch (_) {
+        // テーマ配置に失敗しても UI 本体は動かす（空で継続）
+        try {
+          await dest.writeAsString('');
+        } catch (_) {}
+      }
+    }
+
+    await deployOne('theme.css', _themeCssPath);
+    await deployOne('theme.js', _themeJsPath);
   }
 
   // === Handlers ===
@@ -2030,6 +2058,7 @@ class ServerService {
       await destinationFile.writeAsString(_getMinimalHtml());
       print('Warning: Web assets not found. Using minimal HTML.');
     }
+    await _deployThemeFiles(); // #304
   }
 
   String _getMinimalHtml() {
@@ -2068,11 +2097,15 @@ class ServerService {
     String serverName = 'LocalNode',
     String? httpsCertPath,
     String? httpsKeyPath,
+    String? themeCssPath, // #304
+    String? themeJsPath, // #304
   }) async {
     if (_server != null) return;
 
     await _validateHttpsPaths(httpsCertPath, httpsKeyPath);
 
+    _themeCssPath = themeCssPath; // #304
+    _themeJsPath = themeJsPath; // #304
     _verboseLogging = verboseLogging;
     _clipboardEnabled = clipboardEnabled;
     _serverName = serverName.isNotEmpty ? serverName : 'LocalNode';
@@ -2153,11 +2186,15 @@ class ServerService {
     String? httpsKeyPath,
     String? httpsHostname,
     int? maxUploadBytes,
+    String? themeCssPath, // #304
+    String? themeJsPath, // #304
   }) async {
     if (_server != null) return;
 
     await _validateHttpsPaths(httpsCertPath, httpsKeyPath);
 
+    _themeCssPath = themeCssPath; // #304
+    _themeJsPath = themeJsPath; // #304
     _operationMode = operationMode;
     _authMode = authMode;
     _maxUploadBytes = maxUploadBytes; // #285

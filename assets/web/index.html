@@ -473,6 +473,22 @@
         .btn-copy:hover {
             background-color: #00695c;
         }
+        /* #304: インラインSVGアイコン。currentColor でボタン文字色に追従し、
+           テーマ(theme.css)でも上書きしやすい。外部CDN不使用でオフライン動作。 */
+        .icon {
+            width: 1.05em;
+            height: 1.05em;
+            vertical-align: -0.15em;
+            flex-shrink: 0;
+        }
+        /* アイコン+ラベル、またはアイコンのみのボタンの中身を整列 */
+        .btn-ico {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.4em;
+        }
+        button svg.icon { pointer-events: none; }
         .btn-delete-clip {
             background-color: #ef5350;
             color: white;
@@ -916,6 +932,10 @@
             text-align: center;
         }
     </style>
+    <!-- #304: 管理者テーマ。theme.css は上の既定スタイルの後に読み込むので
+         色・フォントからレイアウトまで上書きできる。サーバは未指定時に空ファイルを
+         返すため、テーマ無しなら従来の見た目のまま（no-op）。 -->
+    <link rel="stylesheet" href="theme.css">
 </head>
 <body>
 
@@ -990,14 +1010,14 @@
                     <form id="uploadForm">
                         <input type="file" id="fileInput" multiple required>
                         <br>
-                        <button type="submit">アップロード</button>
+                        <button type="submit" class="btn-ico"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><span>アップロード</span></button>
                     </form>
                     <div id="uploadStatus" class="status"></div>
                 </div>
 
                 <div class="all-actions-container">
-                    <button id="downloadAllBtn">このフォルダのファイルをzipでダウンロード</button>
-                    <button id="deleteAllBtn">このフォルダのファイルを削除</button>
+                    <button id="downloadAllBtn" class="btn-ico"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>このフォルダのファイルをzipでダウンロード</span></button>
+                    <button id="deleteAllBtn" class="btn-ico"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg><span>このフォルダのファイルを削除</span></button>
                 </div>
 
                 <div id="breadcrumb"></div>
@@ -1010,7 +1030,7 @@
                         <button id="sortOrderBtn" title="昇順/降順">↑</button>
                     </div>
                     <div>
-                        <button id="refreshBtn" title="更新">⟳</button>
+                        <button id="refreshBtn" class="btn-ico" title="更新" aria-label="更新"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
                         <button id="clearCacheBtn" title="サムネイルキャッシュをクリア" style="font-size:0.8rem;">🗑 キャッシュ</button>
                         <button id="viewerModeBtn">🖼 グリッド</button>
                     </div>
@@ -1028,15 +1048,15 @@
                             <label id="clipboardNotifyLabel" style="font-size:0.85rem; color:#00695c; user-select:none; cursor:pointer;">
                                 <input type="checkbox" id="clipboardNotifyToggle"> 新着を通知
                             </label>
-                            <button id="downloadClipboardBtn" class="btn-download-clip" style="display: none;">TXTで保存</button>
-                            <button id="clearClipboardBtn" class="btn-clear-clip" style="display: none;">すべて削除</button>
+                            <button id="downloadClipboardBtn" class="btn-download-clip btn-ico" style="display: none;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>TXTで保存</span></button>
+                            <button id="clearClipboardBtn" class="btn-clear-clip btn-ico" style="display: none;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg><span>すべて削除</span></button>
                         </div>
                     </div>
                     <input type="text" id="clipboardTagInput" class="clipboard-tag-input" placeholder="送信元の名前（例: iPhone）" maxlength="30">
                     <div class="clipboard-input">
                         <textarea id="clipboardInput" placeholder="共有するテキストを入力..." rows="2"></textarea>
                         <button id="mentionPickerBtn" type="button" title="メンション一覧" aria-label="メンション一覧">@</button>
-                        <button id="sendClipboardBtn">送信</button>
+                        <button id="sendClipboardBtn" class="btn-ico"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg><span>送信</span></button>
                         <div id="mentionPickerPopover" role="listbox" aria-label="メンション候補" hidden></div>
                     </div>
                     <!-- #229: フィルタ / 検索 -->
@@ -1284,6 +1304,8 @@
                 }
                 if (serverInfo.clipboardEnabled !== false) startClipboardPolling();
                 applyModeRestrictions();
+                // #304: クリップボードタブ表示可否が確定した後で前回タブを復元
+                restoreActiveTab();
                 if (serverInfo.version) {
                     document.getElementById('version-badge').textContent = `v${serverInfo.version}`;
                 }
@@ -1404,28 +1426,41 @@
                 }
             };
 
-            // タブ切り替え処理
+            // タブ切り替え処理 (#304: 選択タブを localStorage に記憶し次回復元)
             const tabBtns = document.querySelectorAll('.tab-btn');
             const tabContents = document.querySelectorAll('.tab-content');
+            const ACTIVE_TAB_KEY = 'localnode.activeTab';
+
+            const activateTab = (targetTab, { persist = true } = {}) => {
+                const btn = document.querySelector(`.tab-btn[data-tab="${targetTab}"]`);
+                const content = document.getElementById(`tab-${targetTab}`);
+                if (!btn || !content) return;
+                tabBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                tabContents.forEach(c => c.classList.remove('active'));
+                content.classList.add('active');
+                // #204: クリップボードタブに切り替えた時点でドットを消す
+                if (targetTab === 'clipboard') clearTabUnread();
+                if (persist) {
+                    try { localStorage.setItem(ACTIVE_TAB_KEY, targetTab); } catch (_) {}
+                }
+            };
 
             tabBtns.forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const targetTab = btn.dataset.tab;
-
-                    // すべてのタブボタンからactiveを削除
-                    tabBtns.forEach(b => b.classList.remove('active'));
-                    // クリックされたボタンにactiveを追加
-                    btn.classList.add('active');
-
-                    // すべてのタブコンテンツを非表示
-                    tabContents.forEach(content => content.classList.remove('active'));
-                    // 対象のタブコンテンツを表示
-                    document.getElementById(`tab-${targetTab}`).classList.add('active');
-
-                    // #204: クリップボードタブに切り替えた時点でドットを消す
-                    if (targetTab === 'clipboard') clearTabUnread();
-                });
+                btn.addEventListener('click', () => activateTab(btn.dataset.tab));
             });
+
+            // #304: 前回開いていたタブを初期表示に復元。
+            // 非表示(--no-clipboard 等)や存在しないタブは無視して既定(files)のまま。
+            const restoreActiveTab = () => {
+                let saved = null;
+                try { saved = localStorage.getItem(ACTIVE_TAB_KEY); } catch (_) {}
+                if (!saved) return;
+                const btn = document.querySelector(`.tab-btn[data-tab="${saved}"]`);
+                if (btn && btn.style.display !== 'none') {
+                    activateTab(saved, { persist: false });
+                }
+            };
 
             // PIN認証処理
             pinForm.addEventListener('submit', async (event) => {
@@ -2045,7 +2080,7 @@
                             </div>
                         </div>
                         <div class="clipboard-item-actions">
-                            <button class="btn-copy" onclick="copyClipboardItem('${escapeHtml(item.id)}')">コピー</button>
+                            <button class="btn-copy btn-ico" onclick="copyClipboardItem('${escapeHtml(item.id)}')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span class="btn-label">コピー</span></button>
                             ${isDownloadOnly ? '' : `<button class="btn-delete-clip" onclick="deleteClipboardItem('${escapeHtml(item.id)}')">削除</button>`}
                         </div>
                     </div>
@@ -2338,11 +2373,13 @@
                 try {
                     await navigator.clipboard.writeText(text);
                     const btn = item.querySelector('.btn-copy');
-                    const originalText = btn.textContent;
-                    btn.textContent = 'コピー済み';
+                    // #304: アイコンを保持したままラベルだけ差し替える
+                    const label = btn.querySelector('.btn-label') || btn;
+                    const originalText = label.textContent;
+                    label.textContent = 'コピー済み';
                     btn.style.backgroundColor = '#4caf50';
                     setTimeout(() => {
-                        btn.textContent = originalText;
+                        label.textContent = originalText;
                         btn.style.backgroundColor = '';
                     }, 1000);
                 } catch (err) {
@@ -2872,5 +2909,8 @@
             init();
         });
     </script>
+    <!-- #304: 管理者テーマの JS フック。theme.js は管理者だけが設定するパスから
+         同一オリジンで配信される（未指定なら空）。本体JSの後に defer で読み込む。 -->
+    <script src="theme.js" defer></script>
 </body>
 </html>
