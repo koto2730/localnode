@@ -1,0 +1,98 @@
+/* =============================================================================
+ * LocalNode Web UI theme (#304) — example / starter
+ * =============================================================================
+ *
+ * Point the server at this file to restyle the Web UI:
+ *   localnode-cli --theme-css /etc/localnode/theme.css
+ * or `server.theme-css` in config.yaml, or pick it in the GUI app settings.
+ *
+ * How it works:
+ *   - This file is served same-origin as /theme.css and loaded AFTER the
+ *     built-in <style> block, so your rules win on equal specificity. For
+ *     stubborn cases add higher specificity or `!important`.
+ *   - It applies everywhere, including the PIN / passkey login screen.
+ *   - Omitting --theme-css serves an empty file, so the UI looks default.
+ *   - CSS only: you can override colors, fonts and layout. For behavior use
+ *     theme.js (see theme.example.js).
+ *
+ * The selectors below are the real ones used by the UI as of v1.12.0. Delete
+ * what you don't need — everything here is optional.
+ * ========================================================================== */
+
+/* ---- 1. Palette / typography ------------------------------------------------
+ * The built-in styles use literal colors (no CSS variables yet), so override
+ * the concrete elements you want to change. */
+
+body {
+  /* Page background + base font. */
+  background: #0f172a;                 /* dark slate */
+  color: #e2e8f0;
+  font-family: system-ui, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+}
+
+/* Cards / panels tend to be white with rounded corners; soften them for dark. */
+table,
+.upload-form,
+#tab-clipboard,
+#tab-files {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+/* ---- 2. Buttons -------------------------------------------------------------
+ * Most actions are <button>. Recolor the primary look here. Icon buttons use
+ * inline SVG with `stroke: currentColor`, so they follow the text color. */
+
+button {
+  border-radius: 8px;
+}
+
+#sendClipboardBtn,
+#uploadForm button[type="submit"] {
+  background: #6366f1;                 /* indigo */
+  color: #fff;
+}
+#sendClipboardBtn:hover,
+#uploadForm button[type="submit"]:hover {
+  background: #4f46e5;
+}
+
+/* Icons scale with font-size and inherit color via currentColor. */
+.icon {
+  width: 1.15em;
+  height: 1.15em;
+}
+
+/* ---- 3. Tab bar (Files / Clipboard) ---------------------------------------- */
+
+.tab-nav {
+  gap: 6px;
+}
+.tab-btn {
+  border-radius: 10px 10px 0 0;
+}
+.tab-btn.active {
+  background: #6366f1;
+  color: #fff;
+}
+
+/* ---- 4. Layout tweaks (optional) -------------------------------------------
+ * You can go beyond colors — e.g. widen the content area or reflow a toolbar.
+ * Uncomment and adjust to taste.
+ *
+ * .container, main {
+ *   max-width: 1100px;
+ *   margin: 0 auto;
+ * }
+ */
+
+/* ---- 5. Custom accents (optional) ------------------------------------------
+ * Example: a colored top bar via a pseudo-element on the body. */
+/*
+body::before {
+  content: "";
+  display: block;
+  height: 4px;
+  background: linear-gradient(90deg, #6366f1, #ec4899);
+}
+*/
