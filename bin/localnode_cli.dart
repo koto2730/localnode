@@ -744,7 +744,9 @@ Future<void> main(List<String> args) async {
   }
 
   final scheme = httpsMode ? 'https' : 'http';
-  final serverUrl = '$scheme://$advertisedHost:$port';
+  // #277: advertisedHost が IPv6 リテラルのときは URL 上でブラケットが必要
+  // （`https://[::1]:8080`）。IPv4/ホスト名はそのまま。
+  final serverUrl = '$scheme://${_hostForUrl(advertisedHost)}:$port';
 
   stdout.writeln('Server started.');
   stdout.writeln('');
@@ -1052,6 +1054,15 @@ Future<String> _selectIpAddress() async {
 // =============================================================================
 // QRコード表示
 // =============================================================================
+
+// #277: URL に埋め込むホスト表記。IPv6 リテラル（':' を含み未ブラケット）は
+// `[...]` で囲む。IPv4・ホスト名・既にブラケット済みはそのまま返す。
+String _hostForUrl(String host) {
+  if (host.contains(':') && !host.startsWith('[')) {
+    return '[$host]';
+  }
+  return host;
+}
 
 void _printQrCode(String data) {
   final qrCode = QrCode.fromData(
