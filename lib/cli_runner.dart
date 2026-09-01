@@ -47,9 +47,6 @@ class CliRunner {
       ..addOption('theme-css',
           help: 'Path to a CSS file customizing the Web UI (served as '
               '/theme.css). Omit for the default look.')
-      ..addOption('theme-js',
-          help: 'Path to a JS file loaded into the Web UI (served as '
-              '/theme.js, admin-only hook). Omit to inject nothing.')
       ..addFlag('help', abbr: 'h', help: 'Show help', negatable: false);
   }
 
@@ -94,15 +91,10 @@ class CliRunner {
     // TODO(v1.3.0): HTTPS support (#98)
     const String? httpsCertPath = null;
     const String? httpsKeyPath = null;
-    // #304: 管理者テーマ（存在必須）
+    // #304: 管理者テーマ CSS（存在必須）
     final themeCssPath = results['theme-css'] as String?;
-    final themeJsPath = results['theme-js'] as String?;
     if (themeCssPath != null && !File(themeCssPath).existsSync()) {
       stderr.writeln('Error: theme-css file does not exist: $themeCssPath');
-      exit(1);
-    }
-    if (themeJsPath != null && !File(themeJsPath).existsSync()) {
-      stderr.writeln('Error: theme-js file does not exist: $themeJsPath');
       exit(1);
     }
 
@@ -159,7 +151,6 @@ class CliRunner {
         httpsCertPath: httpsCertPath,
         httpsKeyPath: httpsKeyPath,
         themeCssPath: themeCssPath, // #304
-        themeJsPath: themeJsPath, // #304
       );
 
       final scheme = _serverService.isHttpsMode ? 'https' : 'http';
