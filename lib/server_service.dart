@@ -21,6 +21,8 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'mdns_announcer.dart';
+
 /// 動作モード
 enum OperationMode { normal, downloadOnly }
 
@@ -152,6 +154,65 @@ class ServerService {
   int? get port => _port;
   String? get pin => _pin;
   bool get isRunning => _server != null;
+
+  // #308: mDNS 告知（既定 OFF。有効時のみ生成される）
+  MdnsAnnouncer? _mdns;
+  bool _mdnsRequested = false;
+
+  /// mDNS で告知中のインスタンス名。無効 / 失敗時は null。
+  String? get mdnsInstanceName => _mdns?.instanceName;
+
+  /// mDNS で公開している `<host>.local` 名。無効 / 失敗時は null。
+  String? get mdnsHostName => _mdns?.hostName;
+
+  /// mDNS 告知を開始する。失敗してもサーバー本体は止めない。
+  Future<void> _startMdns() async {
+    if (!_mdnsRequested || _mdns != null) return;
+    final ip = _ipAddress;
+    final port = _server?.port ?? _port;
+    if (ip == null || port == null) return;
+    if (InternetAddress.tryParse(ip)?.type != InternetAddressType.IPv4) {
+      print('Warning: mDNS requires an IPv4 address (got "$ip"); disabled.');
+      return;
+    }
+    if (_appVersion.isEmpty) {
+      try {
+        _appVersion = (await PackageInfo.fromPlatform()).version;
+      } catch (_) {}
+    }
+    final announcer = MdnsAnnouncer(
+      instanceName: _serverName,
+      port: port,
+      address: ip,
+      txt: MdnsAnnouncer.buildTxt(
+        https: isHttpsMode,
+        serverName: _serverName,
+        authRequired: _authMode != AuthMode.noPin,
+        version: _appVersion,
+        host: (isHttpsMode &&
+                _httpsHostname != null &&
+                _httpsHostname!.isNotEmpty)
+            ? _httpsHostname
+            : null,
+      ),
+      onLog: _log,
+    );
+    try {
+      await announcer.start();
+      _mdns = announcer;
+    } catch (e) {
+      print('Warning: could not start mDNS announcement: $e');
+    }
+  }
+
+  Future<void> _stopMdns() async {
+    final a = _mdns;
+    _mdns = null;
+    _mdnsRequested = false;
+    try {
+      await a?.stop();
+    } catch (_) {}
+  }
   bool get isHttpsMode => _httpsCertPath != null && _httpsCertPath!.isNotEmpty &&
       _httpsKeyPath != null && _httpsKeyPath!.isNotEmpty;
 
@@ -2092,11 +2153,13 @@ class ServerService {
     String? httpsCertPath,
     String? httpsKeyPath,
     String? themeCssPath, // #304
+    bool mdnsEnabled = false, // #308
   }) async {
     if (_server != null) return;
 
     await _validateHttpsPaths(httpsCertPath, httpsKeyPath);
 
+    _mdnsRequested = mdnsEnabled; // #308
     _themeCssPath = themeCssPath; // #304
     _verboseLogging = verboseLogging;
     _clipboardEnabled = clipboardEnabled;
@@ -2160,6 +2223,7 @@ class ServerService {
       } else {
         _server = await _serveDualStack(handler, port);
       }
+      await _startMdns(); // #308
     } catch (e) {
       print('Error starting server: $e');
       await stopServer();
@@ -2179,11 +2243,13 @@ class ServerService {
     String? httpsHostname,
     int? maxUploadBytes,
     String? themeCssPath, // #304
+    bool mdnsEnabled = false, // #308
   }) async {
     if (_server != null) return;
 
     await _validateHttpsPaths(httpsCertPath, httpsKeyPath);
 
+    _mdnsRequested = mdnsEnabled; // #308
     _themeCssPath = themeCssPath; // #304
     _operationMode = operationMode;
     _authMode = authMode;
@@ -2246,6 +2312,7 @@ class ServerService {
         _server = await _serveDualStack(handler, port);
         _log('Serving at http://$_ipAddress:${_server!.port}');
       }
+      await _startMdns(); // #308
     } catch (e) {
       _log('Error starting server: $e');
       await stopServer();
@@ -2254,6 +2321,7 @@ class ServerService {
   }
 
   Future<void> stopServer() async {
+    await _stopMdns(); // #308
     await _server?.close(force: true);
     _server = null;
     _httpsCertPath = null;
@@ -2492,6 +2560,11 @@ class ServerService {
     // HTTPS 証明書のホスト名でアクセスする場合も許可（#275）。
     if (_httpsHostname != null && _httpsHostname!.isNotEmpty) {
       _allowedHosts.add(_normalizeHostValue(_httpsHostname!));
+    }
+    // #308: mDNS で公開する `<host>.local` 名でのアクセスも許可。
+    if (_mdnsRequested) {
+      _allowedHosts.add(
+          _normalizeHostValue('${MdnsAnnouncer.defaultHostLabel()}.local'));
     }
     try {
       final ifaces = await NetworkInterface.list(includeLoopback: true);

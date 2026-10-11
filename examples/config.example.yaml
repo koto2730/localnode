@@ -51,6 +51,7 @@ server:
   # curl 等からのアップロード / クリップボード POST 用の固定トークン。省略でランダム生成。
   token: change-me-upload-token  # 固定 Bearer トークン（省略でランダム）
   no-token: false                # true でトークン認証を無効化
+  mdns: false                    # true で mDNS(_localnode._tcp) によりネットワークへ自分を告知 (#308)
 
   # --- Web UI テーマ (#304, 任意) ---
   # 管理者が用意した CSS で Web UI の見た目を上書きする。指定したファイルは

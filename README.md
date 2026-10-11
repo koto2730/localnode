@@ -106,6 +106,7 @@ localnode --cli [options]
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |
 | `--advertise-host` | Hostname to show in the QR/URL, taken as-is from the certificate SAN, skipping DNS verification. For public-domain certs (e.g. via acme.sh) whose DNS does not resolve to the LAN IP by design. Requires `--ip` to also be set |
+| `--mdns` | Announce this server on the LAN via mDNS/DNS-SD (service `_localnode._tcp`, host `<machine>-localnode.local`) so launcher apps can discover it. **Disabled by default.** Requires an IPv4 address and UDP 5353 (multicast); see [mDNS announcement](#mdns-announcement) |
 | `--post-action` | Script to execute on matching uploads: `pattern=script` (repeatable, glob pattern) |
 | `--post-action-timeout` | Timeout in seconds for each post-action script; the process is killed if it exceeds this. `0` disables the timeout. Default: `300`. Prevents one hung script from blocking all later post-actions |
 | `--accounts-file` | Path to a YAML passkey accounts file (WebAuthn login). Enables per-user passkey login alongside the PIN. Requires HTTPS + a hostname (or `localhost`) — see [Passkey login](#passkey-login-webauthn) |
@@ -117,6 +118,22 @@ localnode --cli [options]
 | `--no-clipboard` | Hide clipboard content from console output |
 | `--verbose`, `-v` | Enable verbose request logging |
 | `--help`, `-h` | Show help |
+
+### mDNS announcement
+
+With `--mdns` (CLI) or the "mDNS でネットワークに告知" switch (desktop GUI) the server publishes itself on the local network. It is **off by default** and announces only while the server is running.
+
+| Item | Value |
+|---|---|
+| Service type | `_localnode._tcp` |
+| Instance name | server name (`--name`); a ` (2)`, ` (3)`… suffix is added if the name is already used on the LAN |
+| Host name | `<machine-name>-localnode.local` → the announced IPv4 address (also accepted by the Host-header guard) |
+| Port | the server port |
+| TXT | `txtvers=1`, `scheme=http\|https`, `path=/`, `name`, `auth=pin\|none`, `ver`, and `host` (HTTPS certificate host name, only when it differs from the address) |
+
+A client builds the URL as `scheme://host:port/path` (use `host` from the TXT record when present). Check with `dns-sd -B _localnode._tcp` (macOS) or `avahi-browse -r _localnode._tcp` (Linux).
+
+Notes: IPv4 only; one address (the selected interface) is announced; the firewall must allow UDP 5353. If port 5353 cannot be used, a warning is printed and the server keeps running without the announcement.
 
 **Examples:**
 

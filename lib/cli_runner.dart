@@ -47,6 +47,11 @@ class CliRunner {
       ..addOption('theme-css',
           help: 'Path to a CSS file customizing the Web UI (served as '
               '/theme.css). Omit for the default look.')
+      // #308
+      ..addFlag('mdns',
+          help: 'Announce this server on the LAN via mDNS/DNS-SD '
+              '(service _localnode._tcp). Disabled by default.',
+          negatable: false)
       ..addFlag('help', abbr: 'h', help: 'Show help', negatable: false);
   }
 
@@ -151,6 +156,7 @@ class CliRunner {
         httpsCertPath: httpsCertPath,
         httpsKeyPath: httpsKeyPath,
         themeCssPath: themeCssPath, // #304
+        mdnsEnabled: results['mdns'] as bool, // #308
       );
 
       final scheme = _serverService.isHttpsMode ? 'https' : 'http';
@@ -167,6 +173,11 @@ class CliRunner {
       }
       stdout.writeln(
           '  Mode: ${operationMode == OperationMode.downloadOnly ? "download-only" : "normal"}');
+      final mdnsName = _serverService.mdnsInstanceName;
+      if (mdnsName != null) {
+        stdout.writeln('  mDNS: $mdnsName (_localnode._tcp, '
+            '${_serverService.mdnsHostName})');
+      }
       stdout.writeln('');
 
       // QRコード表示
