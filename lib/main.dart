@@ -39,6 +39,7 @@ class ServerState {
     this.resolvedHttpsIp,
     this.maxUploadMB,
     this.themeCssPath,
+    this.mdnsEnabled = false,
   });
 
   final ServerStatus status;
@@ -63,6 +64,8 @@ class ServerState {
   final int? maxUploadMB;
   // #304: 管理者テーマ（Web UI の見た目を上書きする CSS のパス）
   final String? themeCssPath;
+  // #308: mDNS でネットワークに自分を告知する（既定 OFF）
+  final bool mdnsEnabled;
 
   bool get httpsMode =>
       httpsCertPath != null &&
@@ -90,6 +93,7 @@ class ServerState {
     String? resolvedHttpsIp,
     int? maxUploadMB,
     String? themeCssPath,
+    bool? mdnsEnabled,
     bool clearMaxUploadMB = false,
     bool clearThemeCssPath = false,
     bool clearPin = false,
@@ -130,6 +134,7 @@ class ServerState {
           clearMaxUploadMB ? null : (maxUploadMB ?? this.maxUploadMB),
       themeCssPath:
           clearThemeCssPath ? null : (themeCssPath ?? this.themeCssPath),
+      mdnsEnabled: mdnsEnabled ?? this.mdnsEnabled,
     );
   }
 }
@@ -229,6 +234,8 @@ class ServerNotifier extends Notifier<ServerState> {
         savedHttpsEnabled ? prefs.getString('https_hostname') : null;
     // #304: 管理者テーマ CSS
     final savedThemeCssPath = prefs.getString('theme_css_path');
+    // #308: mDNS 告知（既定 OFF）
+    final savedMdnsEnabled = prefs.getBool('mdns_enabled') ?? false;
 
     final opMode = opModeStr == 'downloadOnly'
         ? OperationMode.downloadOnly
@@ -252,6 +259,7 @@ class ServerNotifier extends Notifier<ServerState> {
       httpsKeyPath: savedHttpsKeyPath,
       httpsHostname: savedHttpsHostname,
       themeCssPath: savedThemeCssPath,
+      mdnsEnabled: savedMdnsEnabled,
     );
 
     // 起動後にSAN候補を復元し、保存済みホスト名と照合 (#55)
@@ -413,6 +421,7 @@ class ServerNotifier extends Notifier<ServerState> {
             ? state.maxUploadMB! * 1024 * 1024
             : null,
         themeCssPath: state.themeCssPath, // #304
+        mdnsEnabled: state.mdnsEnabled, // #308
       );
 
       state = state.copyWith(
@@ -454,6 +463,13 @@ class ServerNotifier extends Notifier<ServerState> {
 
   /// QR コードに埋め込む URL。サーバー停止中は null。
   String? get qrUrl => _serverService.qrUrl;
+
+  /// #308: mDNS 告知の ON/OFF。サーバー起動中の変更は次回起動時に反映される。
+  Future<void> setMdnsEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('mdns_enabled', enabled);
+    state = state.copyWith(mdnsEnabled: enabled);
+  }
 
   Future<void> setHttpsEnabled(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
@@ -1116,6 +1132,28 @@ class _HomePageState extends ConsumerState<HomePage> {
         ),
         // SSL/TLS 設定（Web / Android / iOS では cert/key の入手手段がないため非表示）(#150)
         if (!Platform.isAndroid && !Platform.isIOS) ...[
+          // #308: mDNS でネットワークに自分を知らせる（既定 OFF）
+          const SizedBox(height: 10),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'mDNS でネットワークに告知',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Switch(
+                  value: serverState.mdnsEnabled,
+                  onChanged: (value) {
+                    notifier.setMdnsEnabled(value);
+                  },
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 10),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 400),

@@ -25,8 +25,10 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:yaml/yaml.dart';
 
+import 'package:localnode/mdns_announcer.dart';
+
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.12.0';
+const String _appVersion = '1.13.0';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
@@ -118,6 +120,7 @@ class _LoadedConfig {
   int? port;
   String? ip;
   String? advertiseHost;
+  bool? mdns; // #308
   String? pin;
   String? dir;
   String? mode;
@@ -196,6 +199,7 @@ _LoadedConfig _loadConfig(String path) {
     cfg.port = _yamlInt(server, 'port');
     cfg.ip = _yamlString(server, 'ip');
     cfg.advertiseHost = _yamlString(server, 'advertise-host');
+    cfg.mdns = _yamlBool(server, 'mdns'); // #308
     cfg.pin = _yamlString(server, 'pin');
     cfg.dir = _yamlString(server, 'dir');
     cfg.mode = _yamlString(server, 'mode');
@@ -389,6 +393,10 @@ Future<void> main(List<String> args) async {
   final specifiedAdvertiseHost = results.wasParsed('advertise-host')
       ? results['advertise-host'] as String?
       : (cfg?.advertiseHost ?? results['advertise-host'] as String?);
+  // #308: mDNS 告知（既定 OFF。CLI arg > YAML）
+  final mdnsEnabled = results.wasParsed('mdns')
+      ? results['mdns'] as bool
+      : (cfg?.mdns ?? false);
   final noClipboard = results.wasParsed('no-clipboard')
       ? results['no-clipboard'] as bool
       : (cfg?.noClipboard ?? results['no-clipboard'] as bool);
@@ -662,6 +670,8 @@ Future<void> main(List<String> args) async {
     advertisedHost,
     ...?(cfg?.allowedHosts),
     ...(results['allowed-host'] as List<String>? ?? const []),
+    // #308: mDNS で公開する `<host>.local` 名でのアクセスを許可
+    if (mdnsEnabled) '${MdnsAnnouncer.defaultHostLabel()}.local',
   }.where((h) => h.isNotEmpty).toList();
 
   stdout.writeln('');
@@ -738,6 +748,18 @@ Future<void> main(List<String> args) async {
   // （`https://[::1]:8080`）。IPv4/ホスト名はそのまま。
   final serverUrl = '$scheme://${_hostForUrl(advertisedHost)}:$port';
 
+  // #308: mDNS 告知（失敗してもサーバー本体は継続）
+  final mdnsStatus = mdnsEnabled
+      ? await _startMdns(
+          ipAddress: ipAddress,
+          port: port,
+          https: httpsMode,
+          advertisedHost: advertisedHost,
+          serverName: serverName,
+          authRequired: authMode != _AuthMode.noPin,
+        )
+      : null;
+
   stdout.writeln('Server started.');
   stdout.writeln('');
   stdout.writeln('  URL:  $serverUrl');
@@ -748,6 +770,7 @@ Future<void> main(List<String> args) async {
   }
   stdout.writeln('  Name: $serverName');
   stdout.writeln('  Mode: ${downloadOnly ? "download-only" : "normal"}');
+  if (mdnsStatus != null) stdout.writeln('  mDNS: $mdnsStatus');
   if (hasFederation) {
     stdout.writeln('  DeviceID: $deviceId');
     stdout.writeln('  Federation:');
@@ -883,6 +906,12 @@ ArgParser _buildParser() {
             'cert is a public-domain cert (e.g. via acme.sh) whose DNS '
             'does not resolve to the LAN IP by design. Requires --ip to '
             'also be set explicitly.')
+    // #308
+    ..addFlag('mdns',
+        help: 'Announce this server on the local network via mDNS/DNS-SD '
+            '(service _localnode._tcp) so launcher apps can discover it. '
+            'Disabled by default.',
+        negatable: false)
     ..addOption('pin', help: 'Fixed PIN (random if not specified)')
     // #206
     ..addOption('pin-length',
@@ -1072,6 +1101,47 @@ void _printQrCode(String data) {
 
 bool _shuttingDown = false;
 
+// #308: mDNS 告知。--mdns / config の mdns: true のときのみ生成される。
+MdnsAnnouncer? _mdnsAnnouncer;
+
+/// mDNS 告知を開始し、コンソール表示用の説明文を返す。失敗時は警告を出し
+/// 「unavailable」を返す（サーバー本体は止めない）。
+Future<String> _startMdns({
+  required String ipAddress,
+  required int port,
+  required bool https,
+  required String advertisedHost,
+  required String serverName,
+  required bool authRequired,
+}) async {
+  if (InternetAddress.tryParse(ipAddress)?.type != InternetAddressType.IPv4) {
+    stderr.writeln('Warning: mDNS requires an IPv4 address (got "$ipAddress"); '
+        'announcement disabled. Use --ip to choose an interface.');
+    return 'unavailable (no IPv4 address)';
+  }
+  final announcer = MdnsAnnouncer(
+    instanceName: serverName,
+    port: port,
+    address: ipAddress,
+    txt: MdnsAnnouncer.buildTxt(
+      https: https,
+      serverName: serverName,
+      authRequired: authRequired,
+      version: _appVersion,
+      host: (https && advertisedHost != ipAddress) ? advertisedHost : null,
+    ),
+  );
+  try {
+    await announcer.start();
+    _mdnsAnnouncer = announcer;
+    return '${announcer.instanceName} (${MdnsAnnouncer.defaultServiceType}, '
+        '${announcer.hostName})';
+  } catch (e) {
+    stderr.writeln('Warning: could not start mDNS announcement: $e');
+    return 'unavailable';
+  }
+}
+
 
 void _setupSignalHandlers(_CliServer server) {
   try {
@@ -1109,6 +1179,9 @@ Future<void> _shutdown(_CliServer server) async {
   _flushWindowsInput();
   stdout.writeln('');
   stdout.writeln('Shutting down...');
+  try {
+    await _mdnsAnnouncer?.stop(); // #308
+  } catch (_) {}
   await server.stop();
   stdout.writeln('Server stopped.');
   exit(0);
