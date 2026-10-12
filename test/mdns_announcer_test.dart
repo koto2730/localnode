@@ -38,6 +38,15 @@ void main() {
       expect(txt['host'], 'example.com');
     });
 
+    test('default server name gets the machine name, custom names do not', () {
+      expect(MdnsAnnouncer.instanceNameFor('LocalNode', machineName: 'm6mac.local'),
+          'LocalNode (m6mac)');
+      expect(MdnsAnnouncer.instanceNameFor('', machineName: 'DESKTOP-1'),
+          'LocalNode (DESKTOP-1)');
+      expect(MdnsAnnouncer.instanceNameFor('Office', machineName: 'm6mac'),
+          'Office');
+    });
+
     test('start rejects non-IPv4 addresses', () async {
       final a = MdnsAnnouncer(
         instanceName: 'x',

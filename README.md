@@ -126,7 +126,7 @@ With `--mdns` (CLI) or the "mDNS でネットワークに告知" switch (desktop
 | Item | Value |
 |---|---|
 | Service type | `_localnode._tcp` |
-| Instance name | server name (`--name`); a ` (2)`, ` (3)`… suffix is added if the name is already used on the LAN |
+| Instance name | server name (`--name`). The default name `LocalNode` is published as `LocalNode (<machine name>)`. If another server on the LAN already uses the same name, a ` (2)`, ` (3)`… suffix is added (also while running) |
 | Host name | `<machine-name>-localnode.local` → the announced IPv4 address (also accepted by the Host-header guard) |
 | Port | the server port |
 | TXT | `txtvers=1`, `scheme=http\|https`, `path=/`, `name`, `auth=pin\|none`, `ver`, and `host` (HTTPS certificate host name, only when it differs from the address) |

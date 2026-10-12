@@ -28,7 +28,7 @@ import 'package:yaml/yaml.dart';
 import 'package:localnode/mdns_announcer.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.13.2';
+const String _appVersion = '1.13.3';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
@@ -1120,7 +1120,9 @@ Future<String> _startMdns({
     return 'unavailable (no IPv4 address)';
   }
   final announcer = MdnsAnnouncer(
-    instanceName: serverName,
+    instanceName: MdnsAnnouncer.instanceNameFor(serverName),
+    onRenamed: (name) =>
+        stdout.writeln('mDNS: instance name is taken, now announcing as "$name"'),
     port: port,
     address: ipAddress,
     txt: MdnsAnnouncer.buildTxt(
