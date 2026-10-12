@@ -165,6 +165,10 @@ class ServerService {
   /// mDNS で公開している `<host>.local` 名。無効 / 失敗時は null。
   String? get mdnsHostName => _mdns?.hostName;
 
+  /// mDNS の状態表示用テキスト（有効にしていない場合は null）。
+  String? get mdnsStatus => _mdnsStatus;
+  String? _mdnsStatus;
+
   /// mDNS 告知を開始する。失敗してもサーバー本体は止めない。
   Future<void> _startMdns() async {
     if (!_mdnsRequested || _mdns != null) return;
@@ -173,6 +177,7 @@ class ServerService {
     if (ip == null || port == null) return;
     if (InternetAddress.tryParse(ip)?.type != InternetAddressType.IPv4) {
       print('Warning: mDNS requires an IPv4 address (got "$ip"); disabled.');
+      _mdnsStatus = 'IPv4 アドレスが必要です（告知なし）';
       return;
     }
     if (_appVersion.isEmpty) {
@@ -200,8 +205,12 @@ class ServerService {
     try {
       await announcer.start();
       _mdns = announcer;
+      final via = announcer.egressInterface;
+      _mdnsStatus = '告知中: ${announcer.instanceName} '
+          '(${announcer.hostName}${via != null ? ' / $via' : ''})';
     } catch (e) {
       print('Warning: could not start mDNS announcement: $e');
+      _mdnsStatus = '告知を開始できませんでした: $e';
     }
   }
 
@@ -209,6 +218,7 @@ class ServerService {
     final a = _mdns;
     _mdns = null;
     _mdnsRequested = false;
+    _mdnsStatus = null;
     try {
       await a?.stop();
     } catch (_) {}

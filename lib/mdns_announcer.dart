@@ -65,7 +65,15 @@ class MdnsAnnouncer {
   final void Function(String message)? onLog;
 
   String _instanceName;
+  // Receives queries (bound to 0.0.0.0:5353).
   RawDatagramSocket? _socket;
+  // Sends announcements/replies out of the interface that owns [address]
+  // (bound to <address>:5353 with IP_MULTICAST_IF). Without it the OS picks
+  // the egress interface by routing metric, which on multi-homed machines
+  // (Windows with Wi-Fi + Ethernet + Hyper-V/WSL/VPN adapters) is often not
+  // the LAN the server was started on.
+  RawDatagramSocket? _sendSocket;
+  String? _egressInterface;
   Timer? _announceTimer;
   final Map<String, int> _lastReplyMs = {};
   bool _stopped = false;
@@ -77,6 +85,10 @@ class MdnsAnnouncer {
   String get hostName => '$hostLabel.local';
 
   bool get isRunning => _socket != null && !_stopped;
+
+  /// Name of the network interface announcements are sent from, if it could
+  /// be determined (diagnostics).
+  String? get egressInterface => _egressInterface;
 
   // ---------------------------------------------------------------------------
   // Public helpers
@@ -138,8 +150,11 @@ class MdnsAnnouncer {
     final socket = await _bind();
     _socket = socket;
     socket.multicastLoopback = true;
-    await _joinGroups(socket);
+    final iface = await _interfaceOwningAddress();
+    _egressInterface = iface?.name;
+    await _joinGroups(socket, iface);
     socket.listen(_onSocketEvent, onError: (_) {}, cancelOnError: false);
+    _sendSocket = await _openSendSocket();
 
     await _resolveConflicts();
     _announce(ttlZero: false);
@@ -148,7 +163,8 @@ class MdnsAnnouncer {
       if (!_stopped) _announce(ttlZero: false);
     });
     onLog?.call('mDNS: announcing "$_instanceName" as '
-        '$serviceType.local on $address:$port ($hostName)');
+        '$serviceType.local on $address:$port ($hostName) '
+        'via ${_egressInterface ?? 'default interface'}');
   }
 
   /// Sends goodbye packets (TTL 0) and releases the socket.
@@ -162,6 +178,8 @@ class MdnsAnnouncer {
     } catch (_) {}
     // Give the goodbye packet a moment to leave the socket before closing.
     await Future<void>.delayed(const Duration(milliseconds: 50));
+    _sendSocket?.close();
+    _sendSocket = null;
     _socket?.close();
     _socket = null;
     _lastReplyMs.clear();
@@ -191,7 +209,32 @@ class MdnsAnnouncer {
     }
   }
 
-  Future<void> _joinGroups(RawDatagramSocket socket) async {
+  /// The interface that has [address], or null if it is not found.
+  Future<NetworkInterface?> _interfaceOwningAddress() async {
+    try {
+      final ifaces = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      for (final iface in ifaces) {
+        if (iface.addresses.any((a) => a.address == address)) return iface;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _joinGroups(
+      RawDatagramSocket socket, NetworkInterface? owner) async {
+    // Prefer only the interface the server is bound to, so that queries from
+    // other segments are not answered with an address they cannot reach.
+    if (owner != null) {
+      try {
+        socket.joinMulticast(_group, owner);
+        return;
+      } catch (e) {
+        onLog?.call('mDNS: could not join group on ${owner.name}: $e');
+      }
+    }
     var joined = false;
     try {
       final ifaces = await NetworkInterface.list(
@@ -210,6 +253,42 @@ class MdnsAnnouncer {
     }
   }
 
+  // IP_MULTICAST_IF: 32 on Linux/Android, 9 on macOS/iOS/Windows.
+  int get _ipMulticastIf =>
+      (Platform.isLinux || Platform.isAndroid) ? 32 : 9;
+
+  /// Opens a socket bound to our own address so multicast leaves through the
+  /// right interface. Returns null (the receive socket is used) on failure.
+  Future<RawDatagramSocket?> _openSendSocket() async {
+    RawDatagramSocket? sock;
+    try {
+      sock = await RawDatagramSocket.bind(
+        InternetAddress(address),
+        _mdnsPort,
+        reuseAddress: true,
+        reusePort: !Platform.isWindows,
+      );
+      sock.multicastLoopback = true;
+      sock.setRawOption(RawSocketOption(
+        RawSocketOption.levelIPv4,
+        _ipMulticastIf,
+        Uint8List.fromList(InternetAddress(address).rawAddress),
+      ));
+      // Nothing is expected here, but drain it so the buffer cannot fill up.
+      sock.listen((e) {
+        if (e == RawSocketEvent.read) {
+          while (sock!.receive() != null) {}
+        }
+      }, onError: (_) {});
+      return sock;
+    } catch (e) {
+      onLog?.call('mDNS: could not select the outgoing interface '
+          '($address): $e; using the default one');
+      sock?.close();
+      return null;
+    }
+  }
+
   void _onSocketEvent(RawSocketEvent event) {
     if (event != RawSocketEvent.read) return;
     final socket = _socket;
@@ -225,7 +304,8 @@ class MdnsAnnouncer {
   }
 
   void _send(Uint8List data) {
-    _socket?.send(data, _group, _mdnsPort);
+    final sock = _sendSocket ?? _socket;
+    sock?.send(data, _group, _mdnsPort);
   }
 
   // ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ class ServerState {
     this.maxUploadMB,
     this.themeCssPath,
     this.mdnsEnabled = false,
+    this.mdnsStatus,
   });
 
   final ServerStatus status;
@@ -66,6 +67,8 @@ class ServerState {
   final String? themeCssPath;
   // #308: mDNS でネットワークに自分を告知する（既定 OFF）
   final bool mdnsEnabled;
+  // #308: 起動中の mDNS 告知の状態（成功 / 失敗の表示用）
+  final String? mdnsStatus;
 
   bool get httpsMode =>
       httpsCertPath != null &&
@@ -94,6 +97,8 @@ class ServerState {
     int? maxUploadMB,
     String? themeCssPath,
     bool? mdnsEnabled,
+    String? mdnsStatus,
+    bool clearMdnsStatus = false,
     bool clearMaxUploadMB = false,
     bool clearThemeCssPath = false,
     bool clearPin = false,
@@ -135,6 +140,7 @@ class ServerState {
       themeCssPath:
           clearThemeCssPath ? null : (themeCssPath ?? this.themeCssPath),
       mdnsEnabled: mdnsEnabled ?? this.mdnsEnabled,
+      mdnsStatus: clearMdnsStatus ? null : (mdnsStatus ?? this.mdnsStatus),
     );
   }
 }
@@ -430,6 +436,8 @@ class ServerNotifier extends Notifier<ServerState> {
         pin: _serverService.pin,
         port: _serverService.port,
         clearPin: _serverService.pin == null,
+        mdnsStatus: _serverService.mdnsStatus,
+        clearMdnsStatus: _serverService.mdnsStatus == null,
       );
 
       // クリップボードポーリングを開始
@@ -451,6 +459,7 @@ class ServerNotifier extends Notifier<ServerState> {
       status: ServerStatus.stopped,
       clearPin: true,
       clearErrorMessage: true,
+      clearMdnsStatus: true,
     );
     // 停止後もIPアドレスとパスは維持する
     loadIpAddresses();
@@ -1154,6 +1163,17 @@ class _HomePageState extends ConsumerState<HomePage> {
               ],
             ),
           ),
+          if (serverState.mdnsStatus != null)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 400),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 8, bottom: 4),
+                child: Text(
+                  serverState.mdnsStatus!,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
           const SizedBox(height: 10),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 400),
