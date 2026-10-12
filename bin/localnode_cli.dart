@@ -28,7 +28,7 @@ import 'package:yaml/yaml.dart';
 import 'package:localnode/mdns_announcer.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.13.1';
+const String _appVersion = '1.13.2';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
@@ -1134,8 +1134,9 @@ Future<String> _startMdns({
   try {
     await announcer.start();
     _mdnsAnnouncer = announcer;
+    final via = announcer.egressInterface;
     return '${announcer.instanceName} (${MdnsAnnouncer.defaultServiceType}, '
-        '${announcer.hostName})';
+        '${announcer.hostName}${via != null ? ', via $via' : ''})';
   } catch (e) {
     stderr.writeln('Warning: could not start mDNS announcement: $e');
     return 'unavailable';
