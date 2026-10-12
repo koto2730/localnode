@@ -46,6 +46,7 @@ class MdnsAnnouncer {
     this.serviceType = defaultServiceType,
     this.txt = const {},
     this.onLog,
+    this.onRenamed,
   })  : _instanceName = _truncateLabel(
             instanceName.trim().isEmpty ? 'LocalNode' : instanceName.trim()),
         hostLabel = hostLabel ?? defaultHostLabel();
@@ -63,6 +64,10 @@ class MdnsAnnouncer {
   final String serviceType;
   final Map<String, String> txt;
   final void Function(String message)? onLog;
+
+  /// Called with the new instance name when a conflict forced a rename while
+  /// the announcement was running.
+  final void Function(String instanceName)? onRenamed;
 
   String _instanceName;
   // Receives queries (bound to 0.0.0.0:5353).
@@ -113,6 +118,27 @@ class MdnsAnnouncer {
     return base.isEmpty ? 'localnode' : '$base-localnode';
   }
 
+  /// DNS-SD instance name for a server name.
+  ///
+  /// Instance names must be unique on the LAN. The default server name
+  /// "LocalNode" is shared by every machine that was not renamed, so it is
+  /// published as "LocalNode (machine name)" to keep the entries apart. Names the
+  /// user chose are published unchanged.
+  static String instanceNameFor(String serverName, {String? machineName}) {
+    final name = serverName.trim().isEmpty ? 'LocalNode' : serverName.trim();
+    if (name != 'LocalNode') return name;
+    var machine = machineName ?? '';
+    if (machine.isEmpty) {
+      try {
+        machine = Platform.localHostname;
+      } catch (_) {}
+    }
+    final dot = machine.indexOf('.');
+    if (dot > 0) machine = machine.substring(0, dot);
+    machine = machine.trim();
+    return machine.isEmpty ? name : '$name ($machine)';
+  }
+
   /// TXT record contents shared by GUI and CLI so the launcher sees the same
   /// schema everywhere.
   static Map<String, String> buildTxt({
@@ -156,7 +182,12 @@ class MdnsAnnouncer {
     socket.listen(_onSocketEvent, onError: (_) {}, cancelOnError: false);
     _sendSocket = await _openSendSocket();
 
+    // RFC 6762 §8.1: wait a random 0-250 ms before probing so that servers
+    // started at the same moment do not probe in lockstep.
+    await Future<void>.delayed(
+        Duration(milliseconds: Random().nextInt(250)));
     await _resolveConflicts();
+    _answering = true;
     _announce(ttlZero: false);
     // RFC 6762 §8.3: announce at least twice, one second apart.
     _announceTimer = Timer(const Duration(seconds: 1), () {
@@ -368,7 +399,7 @@ class MdnsAnnouncer {
       _onResponse(msg); // only conflict probing cares about responses
       return;
     }
-    if (_stopped) return;
+    if (_stopped || !_answering) return;
 
     final answers = <_Rr>[];
     final extras = <_Rr>[];
@@ -427,15 +458,66 @@ class MdnsAnnouncer {
   bool _conflictSeen = false;
 
   void _onResponse(_Message msg) {
-    if (!_probing) return;
+    if (_stopped) return;
     for (final r in msg.records) {
       if (r.type != _typeSrv || !_sameName(r.name, _instanceFqdn)) continue;
       final other = _srvTarget(msg.raw, r);
       if (other == null) continue;
       // Our own looped-back announcements carry the same port + host.
       final mine = other.port == port && _sameName(other.target, _hostFqdn);
-      if (!mine) _conflictSeen = true;
+      if (mine) continue;
+
+      if (_probing) {
+        // Starting up: the name is taken, pick another one.
+        _conflictSeen = true;
+        continue;
+      }
+      // Running (RFC 6762 §9): somebody else is using our instance name.
+      // Exactly one of the two renames, decided by a tie-break both sides
+      // compute identically, so they cannot both rename and collide again.
+      final theirs = '${other.target.isNotEmpty ? other.target.first : ''}'
+              ':${other.port}'
+          .toLowerCase();
+      final ours = '${hostLabel.toLowerCase()}:$port';
+      if (ours.compareTo(theirs) > 0) {
+        _renameAfterConflict();
+      }
     }
+  }
+
+  DateTime? _lastRename;
+
+  // False while the name is still being probed: we must not answer queries for
+  // a name we have not claimed yet (two servers would "confirm" each other's
+  // name and keep renaming in lockstep).
+  bool _answering = false;
+
+  /// Re-announces under a new instance name after a conflict was detected
+  /// while running.
+  void _renameAfterConflict() {
+    final now = DateTime.now();
+    final last = _lastRename;
+    if (last != null && now.difference(last) < const Duration(seconds: 5)) {
+      return;
+    }
+    _lastRename = now;
+
+    final old = _instanceName;
+    // Withdraw the old name, then announce the new one.
+    try {
+      _announce(ttlZero: true);
+    } catch (_) {}
+    final match = RegExp(r' \((\d+)\)$').firstMatch(old);
+    final next = match == null ? 2 : int.parse(match.group(1)!) + 1;
+    _instanceName = _truncateLabel('${_baseInstanceName()} ($next)');
+    _announce(ttlZero: false);
+    _announceTimer?.cancel();
+    _announceTimer = Timer(const Duration(seconds: 1), () {
+      if (!_stopped) _announce(ttlZero: false);
+    });
+    onLog?.call('mDNS: name "$old" is used by another server; '
+        'now announcing as "$_instanceName"');
+    onRenamed?.call(_instanceName);
   }
 
   String _baseInstanceName() =>

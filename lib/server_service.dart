@@ -185,8 +185,9 @@ class ServerService {
         _appVersion = (await PackageInfo.fromPlatform()).version;
       } catch (_) {}
     }
-    final announcer = MdnsAnnouncer(
-      instanceName: _serverName,
+    late final MdnsAnnouncer announcer;
+    announcer = MdnsAnnouncer(
+      instanceName: MdnsAnnouncer.instanceNameFor(_serverName),
       port: port,
       address: ip,
       txt: MdnsAnnouncer.buildTxt(
@@ -201,6 +202,10 @@ class ServerService {
             : null,
       ),
       onLog: _log,
+      onRenamed: (name) {
+        _mdnsStatus = '告知中: $name (${announcer.hostName}'
+            '${announcer.egressInterface != null ? ' / ${announcer.egressInterface}' : ''})';
+      },
     );
     try {
       await announcer.start();
