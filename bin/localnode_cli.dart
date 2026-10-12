@@ -28,7 +28,7 @@ import 'package:yaml/yaml.dart';
 import 'package:localnode/mdns_announcer.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.13.0';
+const String _appVersion = '1.13.1';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
