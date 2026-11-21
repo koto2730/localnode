@@ -25,10 +25,11 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
 import 'package:yaml/yaml.dart';
 
+import 'package:localnode/cert_host_match.dart';
 import 'package:localnode/mdns_announcer.dart';
 
 // pubspec.yaml の version と一致させる
-const String _appVersion = '1.13.3';
+const String _appVersion = '1.13.4';
 
 // #174 + #220: 予約メンション名。ユーザーが `--mention-action <name>=...` で
 // 登録できない。
@@ -901,8 +902,9 @@ ArgParser _buildParser() {
         abbr: 'p', help: 'Server port number', defaultsTo: '8080')
     ..addOption('ip', help: 'IP address to bind (skip auto-detection)')
     ..addOption('advertise-host',
-        help: 'Hostname to show in the QR/URL, taken as-is from the '
-            'certificate SAN without DNS verification. Use this when the '
+        help: 'Hostname to show in the QR/URL, without DNS verification. '
+            'Must be covered by a certificate SAN (wildcard SANs such as '
+            '*.example.com are accepted). Use this when the '
             'cert is a public-domain cert (e.g. via acme.sh) whose DNS '
             'does not resolve to the LAN IP by design. Requires --ip to '
             'also be set explicitly.')
@@ -1291,9 +1293,10 @@ Future<_HttpsHostResult> _resolveHttpsHost({
       stderr.writeln('Error: No SANs found in certificate. Cannot determine HTTPS hostname.');
       exit(1);
     }
-    if (!sans.contains(specifiedAdvertiseHost)) {
-      stderr.writeln('Error: --advertise-host "$specifiedAdvertiseHost" is not a SAN of the '
-          'certificate.');
+    // ワイルドカード SAN (*.example.com) にも対応 (RFC 6125)
+    if (!sansCoverHost(sans, specifiedAdvertiseHost)) {
+      stderr.writeln('Error: --advertise-host "$specifiedAdvertiseHost" is not covered by '
+          'the certificate SANs.');
       stderr.writeln('  Certificate SANs: ${sans.join(', ')}');
       exit(1);
     }

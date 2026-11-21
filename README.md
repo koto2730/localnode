@@ -105,7 +105,7 @@ localnode --cli [options]
 | `--mode`, `-m` | Operation mode: `normal` or `download-only` |
 | `--https-cert` | Path to TLS certificate file (cert.pem) |
 | `--https-key` | Path to TLS private key file (key.pem) |
-| `--advertise-host` | Hostname to show in the QR/URL, taken as-is from the certificate SAN, skipping DNS verification. For public-domain certs (e.g. via acme.sh) whose DNS does not resolve to the LAN IP by design. Requires `--ip` to also be set |
+| `--advertise-host` | Hostname to show in the QR/URL, skipping DNS verification. Must be covered by a certificate SAN; wildcard SANs (e.g. `*.example.com` covers `host.example.com`) are accepted. For public-domain certs (e.g. via acme.sh) whose DNS does not resolve to the LAN IP by design. Requires `--ip` to also be set |
 | `--mdns` | Announce this server on the LAN via mDNS/DNS-SD (service `_localnode._tcp`, host `<machine>-localnode.local`) so launcher apps can discover it. **Disabled by default.** Requires an IPv4 address and UDP 5353 (multicast); see [mDNS announcement](#mdns-announcement) |
 | `--post-action` | Script to execute on matching uploads: `pattern=script` (repeatable, glob pattern) |
 | `--post-action-timeout` | Timeout in seconds for each post-action script; the process is killed if it exceeds this. `0` disables the timeout. Default: `300`. Prevents one hung script from blocking all later post-actions |
@@ -161,6 +161,10 @@ localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem
 # advertise the cert's hostname explicitly
 localnode-cli --https-cert /path/to/cert.pem --https-key /path/to/key.pem \
   --advertise-host my-device.example.com --ip 192.168.1.100
+
+# Same, with a wildcard certificate (SANs: example.com, *.example.com)
+localnode-cli --https-cert /path/to/fullchain.pem --https-key /path/to/privkey.pem \
+  --advertise-host host.example.com --ip 192.168.1.100
 
 # Run scripts based on uploaded file type
 localnode-cli --post-action "*.png=./move-pic.sh" --post-action "*.zip=./unzip.sh"
